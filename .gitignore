@@ -1,0 +1,11 @@
+/dist/
+/weft-loom
+*.test
+.DS_Store
+web/node_modules/
+web/dist/
+internal/web/dist/*
+!internal/web/dist/index.html
+node_modules/
+.env
+.env.local

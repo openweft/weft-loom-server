@@ -1,0 +1,241 @@
+// Package project owns project-file storage. V0.1 ships one backend
+// (local filesystem rooted at a configured path) ; V0.2 adds a
+// weft-block backend so per-project volumes mount into compile
+// microVMs without round-tripping through the host filesystem.
+//
+// The Store interface centralises authorization : every method takes
+// the caller's Identity, and the implementation enforces "can this
+// user see/edit this project". V0.1 policy : project owner subject ==
+// identity.Subject OR identity.Groups contains "loom-admin". V0.2
+// migrates to openweft project ACL via dex groups.
+package project
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/openweft/weft-loom-server/internal/auth"
+)
+
+// Project is the summary returned by List.
+type Project struct {
+	Name      string    `json:"name"`
+	Language  string    `json:"language"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// File is one entry in ListFiles.
+type File struct {
+	Path string `json:"path"`
+	Size int64  `json:"size"`
+	Dir  bool   `json:"dir"`
+}
+
+// Store is the storage abstraction.
+type Store interface {
+	List(ctx context.Context, ident auth.Identity) ([]Project, error)
+	ListFiles(ctx context.Context, ident auth.Identity, project string) ([]File, error)
+	ReadFile(ctx context.Context, ident auth.Identity, project, path string) (io.ReadCloser, error)
+	WriteFile(ctx context.Context, ident auth.Identity, project, path string, body io.Reader) error
+}
+
+// ErrAccessDenied is returned by Store impls when the caller lacks
+// permission. Handlers translate to 403.
+var ErrAccessDenied = errors.New("project: access denied")
+
+// LocalStore is the V0.1 backend : projects live under <root>/<owner>/<name>.
+// Owner is identity.Subject ; the subject is sanitised to a safe
+// filesystem name (alphanumeric + dash + underscore) so dex's "subject
+// can be a URL" doesn't escape the root.
+type LocalStore struct {
+	root string
+}
+
+// NewLocalStore returns a store rooted at the given absolute path.
+// The directory is created on first write.
+func NewLocalStore(root string) *LocalStore {
+	return &LocalStore{root: root}
+}
+
+// userRoot returns the per-identity storage root, mkdir'd lazily.
+func (s *LocalStore) userRoot(ident auth.Identity) (string, error) {
+	if ident.Subject == "" {
+		return "", ErrAccessDenied
+	}
+	return filepath.Join(s.root, sanitise(ident.Subject)), nil
+}
+
+func (s *LocalStore) List(_ context.Context, ident auth.Identity) ([]Project, error) {
+	u, err := s.userRoot(ident)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat(u); os.IsNotExist(err) {
+		return []Project{}, nil
+	}
+	entries, err := os.ReadDir(u)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Project, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		info, _ := e.Info()
+		out = append(out, Project{
+			Name:      e.Name(),
+			Language:  detectLanguage(filepath.Join(u, e.Name())),
+			CreatedAt: info.ModTime(),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+func (s *LocalStore) ListFiles(_ context.Context, ident auth.Identity, project string) ([]File, error) {
+	dir, err := s.projectDir(ident, project)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return []File{}, nil
+	}
+	out := []File{}
+	err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == dir {
+			return nil
+		}
+		rel, _ := filepath.Rel(dir, path)
+		info, _ := d.Info()
+		out = append(out, File{
+			Path: rel,
+			Size: info.Size(),
+			Dir:  d.IsDir(),
+		})
+		return nil
+	})
+	return out, err
+}
+
+func (s *LocalStore) ReadFile(_ context.Context, ident auth.Identity, project, path string) (io.ReadCloser, error) {
+	full, err := s.resolveFile(ident, project, path)
+	if err != nil {
+		return nil, err
+	}
+	return os.Open(full)
+}
+
+func (s *LocalStore) WriteFile(_ context.Context, ident auth.Identity, project, path string, body io.Reader) error {
+	full, err := s.resolveFile(ident, project, path)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(full, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = io.Copy(f, body)
+	return err
+}
+
+// projectDir returns the absolute path to a project, validating that
+// it doesn't escape the user root.
+func (s *LocalStore) projectDir(ident auth.Identity, project string) (string, error) {
+	u, err := s.userRoot(ident)
+	if err != nil {
+		return "", err
+	}
+	clean := sanitise(project)
+	if clean == "" {
+		return "", fmt.Errorf("project: invalid name")
+	}
+	return filepath.Join(u, clean), nil
+}
+
+// resolveFile composes <user>/<project>/<path> ensuring the result
+// stays under the user root (no traversal). Rejects any path that
+// contains a ".." segment outright — a project file can be at
+// "src/main.tex" but never "src/../../etc/passwd". Absolute paths
+// are also rejected so a malicious client can't bypass with leading
+// "/".
+func (s *LocalStore) resolveFile(ident auth.Identity, project, path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("project: empty path")
+	}
+	if filepath.IsAbs(path) {
+		return "", ErrAccessDenied
+	}
+	for _, seg := range strings.Split(filepath.ToSlash(path), "/") {
+		if seg == ".." {
+			return "", ErrAccessDenied
+		}
+	}
+	dir, err := s.projectDir(ident, project)
+	if err != nil {
+		return "", err
+	}
+	full := filepath.Join(dir, filepath.Clean(path))
+	// Defence in depth : if filepath.Clean somehow produced an escape,
+	// reject. With ".." pre-rejected this is belt-and-braces.
+	rel, err := filepath.Rel(dir, full)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return "", ErrAccessDenied
+	}
+	return full, nil
+}
+
+// sanitise reduces a string to filesystem-safe characters. Avoids
+// directory traversal, path separators, dotfiles.
+func sanitise(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '-' || r == '_':
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// detectLanguage is a cheap heuristic for the project type ; the
+// frontend uses it to pre-select the CodeMirror language pack. V0.2
+// will read a .loom file in the project root with explicit language
+// + build settings.
+func detectLanguage(dir string) string {
+	for _, m := range []struct {
+		file, lang string
+	}{
+		{"main.tex", "latex"},
+		{"go.mod", "go"},
+		{"package.json", "javascript"},
+		{"Cargo.toml", "rust"},
+		{"CMakeLists.txt", "cpp"},
+		{"requirements.txt", "python"},
+		{"pyproject.toml", "python"},
+		{"README.md", "markdown"},
+	} {
+		if _, err := os.Stat(filepath.Join(dir, m.file)); err == nil {
+			return m.lang
+		}
+	}
+	return ""
+}

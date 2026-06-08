@@ -1,0 +1,94 @@
+version: '3'
+
+# weft-loom-server : collaborative editor + sandboxed compile.
+# Pure-Go server (CGO=0) ; Svelte+CodeMirror+Yjs frontend embedded
+# at build time via //go:embed.
+
+vars:
+  BINARY: weft-loom
+  PKG: github.com/openweft/weft-loom-server
+  VERSION: '{{.VERSION | default "dev"}}'
+  COMMIT:
+    sh: git rev-parse --short HEAD 2>/dev/null || echo none
+  DATE:
+    sh: date -u +%Y-%m-%dT%H:%M:%SZ
+  LDFLAGS: >-
+    -X {{.PKG}}/cmd/{{.BINARY}}.version={{.VERSION}}
+    -X {{.PKG}}/cmd/{{.BINARY}}.commit={{.COMMIT}}
+    -X {{.PKG}}/cmd/{{.BINARY}}.date={{.DATE}}
+
+tasks:
+  default:
+    cmds: [task --list-all]
+
+  vet:
+    cmds: [go vet ./...]
+
+  test:
+    cmds: [go test -count=1 ./...]
+
+  web-deps:
+    desc: Install frontend deps (one-shot)
+    dir: web
+    cmds: [npm install]
+    status: [test -d node_modules]
+
+  web-build:
+    desc: Build the SPA into internal/web/dist (read by //go:embed)
+    deps: [web-deps]
+    dir: web
+    cmds: [npm run build]
+
+  web-check:
+    desc: TypeScript + Svelte lint
+    deps: [web-deps]
+    dir: web
+    cmds: [npm run check]
+
+  build:
+    desc: Build the server binary (host arch)
+    deps: [web-build]
+    cmds:
+      - go build -trimpath -ldflags "{{.LDFLAGS}}" -o {{.BINARY}} ./cmd/{{.BINARY}}
+
+  cross-build:
+    desc: Cross-build the binary for linux + darwin × amd64 + arm64
+    deps: [web-build]
+    cmds:
+      - mkdir -p dist
+      - |
+        for goos in linux darwin; do
+          for goarch in amd64 arm64; do
+            out=dist/{{.BINARY}}-$goos-$goarch
+            echo "build $out"
+            GOOS=$goos GOARCH=$goarch CGO_ENABLED=0 \
+              go build -trimpath -ldflags "{{.LDFLAGS}}" \
+              -o "$out" ./cmd/{{.BINARY}}
+          done
+        done
+
+  ci:
+    desc: Full CI sequence
+    cmds:
+      - task: vet
+      - task: test
+      - task: web-check
+      - task: cross-build
+
+  dev:
+    desc: Run server + Vite dev server in parallel (split your terminal)
+    cmds:
+      - |
+        echo 'In one terminal :'
+        echo '  go run ./cmd/{{.BINARY}} serve --config ./config.dev.hcl'
+        echo
+        echo 'In another :'
+        echo '  cd web && npm run dev'
+        echo
+        echo 'Vite proxies /api + WS to localhost:8080 ; open http://localhost:5173'
+
+  clean:
+    cmds:
+      - rm -rf dist {{.BINARY}}
+      - rm -rf web/node_modules web/dist
+      - rm -rf internal/web/dist/*
