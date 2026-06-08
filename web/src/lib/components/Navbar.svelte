@@ -1,12 +1,21 @@
 <script lang="ts">
+  import ProjectSwitcher from './ProjectSwitcher.svelte';
+
   interface Props {
     project: string;
     language: string;
     connectionStatus: 'connecting' | 'connected' | 'disconnected';
     onCompile: () => void;
+    onSwitch: (name: string, language: string) => void;
   }
 
-  let { project, language, connectionStatus, onCompile }: Props = $props();
+  let {
+    project,
+    language,
+    connectionStatus,
+    onCompile,
+    onSwitch,
+  }: Props = $props();
 
   // daisyUI badge variant maps to the y-websocket lifecycle state.
   const statusBadge = $derived(
@@ -26,9 +35,7 @@
     </span>
   </div>
   <div class="flex-none gap-2">
-    <span class="text-sm opacity-70">
-      <span class="font-mono">{project}</span>
-    </span>
+    <ProjectSwitcher current={project} {onSwitch} />
     <div class="divider divider-horizontal mx-0"></div>
     <span class="text-sm opacity-70">
       lang : <span class="font-mono">{language}</span>
