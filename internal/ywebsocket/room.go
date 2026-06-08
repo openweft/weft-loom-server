@@ -109,12 +109,20 @@ func (r *Room) add(conn ConnID) *Membership {
 
 func (r *Room) remove(m *Membership) {
 	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.members[m]; !ok {
+		// Already removed ; idempotent.
+		return
+	}
 	delete(r.members, m)
-	empty := len(r.members) == 0
-	r.mu.Unlock()
+	// Close recv + closed UNDER the lock so any concurrent broadcast
+	// (which also takes r.mu) is fully serialised — no chance of a
+	// "send on closed channel" panic.
 	close(m.recv)
 	close(m.closed)
-	if empty {
+	if len(r.members) == 0 {
+		// gcRoom takes the hub lock but never the room lock, so the
+		// lock ordering is fine.
 		r.hub.gcRoom(r.id)
 	}
 }
@@ -122,16 +130,18 @@ func (r *Room) remove(m *Membership) {
 // broadcast pushes payload to every member EXCEPT sender. Slow
 // receivers (full send buffer) get the frame dropped — Yjs's
 // protocol recovers via the sync-step handshake on the next message.
+//
+// The whole iteration runs under r.mu so a concurrent Leave can't
+// close m.recv mid-send. Sends are non-blocking (default arm) so
+// the critical section stays tight — microseconds even at 100s of
+// members.
 func (r *Room) broadcast(payload []byte, sender *Membership) {
 	r.mu.Lock()
-	peers := make([]*Membership, 0, len(r.members))
+	defer r.mu.Unlock()
 	for m := range r.members {
-		if m != sender {
-			peers = append(peers, m)
+		if m == sender {
+			continue
 		}
-	}
-	r.mu.Unlock()
-	for _, m := range peers {
 		select {
 		case m.recv <- payload:
 		default:

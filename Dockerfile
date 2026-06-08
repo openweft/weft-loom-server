@@ -1,48 +1,46 @@
 # Multi-stage build for weft-loom-server.
 #
-# Stage 1 generates openapi.json from the Go huma spec + builds the
-# Svelte SPA. Stage 2 compiles the Go binary with the SPA embedded
-# via //go:embed. Stage 3 is the minimal distroless runtime — matches
-# the openweft infra-images convention.
+# Stage 1 : gen the openapi.json from the live huma spec (Go).
+# Stage 2 : build the Svelte SPA (Node 22 ; consumes openapi.json
+#           for openapi-typescript regen).
+# Stage 3 : compile the Go binary with the SPA embedded via //go:embed.
+# Stage 4 : minimal distroless runtime ; matches openweft infra-
+#           images convention.
 #
 # Image lands at ghcr.io/openweft/weft-loom-server. weft-agent pulls
 # it on each DC via `weft microvm pull` (or autopull from cluster.hcl)
-# and runs it as a microVM with the listener bound to the per-DC
-# service mesh interface.
+# and runs it as a microVM bound to the per-DC service mesh.
 
-# --- Stage 1 : openapi.json + SPA ----------------------------------
-# We need Go in this stage too because openapi.json is produced by
-# `go run ./tools/dump-openapi`. Keeping that here avoids shipping
-# the openapi.json artefact through git ; the spec is always derived
-# from the live huma registration.
-FROM golang:1.26-bookworm AS spa
+# --- Stage 1 : openapi.json (Go-side huma spec dump) ----------------
+FROM golang:1.26-bookworm AS gen
 WORKDIR /build
-
-# Copy npm manifests FIRST so the install layer caches across source
-# edits ; rebuild only happens on package.json / lock change.
-COPY web/package*.json ./web/
-RUN cd web && \
-    apt-get update && apt-get install -y --no-install-recommends nodejs npm && \
-    npm install --no-audit --no-fund && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# Now the source.
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+RUN go run ./tools/dump-openapi > openapi.json
 
-# Generate openapi.json from the live huma spec, then run the Vite
-# build which reads it via openapi-typescript.
-RUN go run ./tools/dump-openapi > openapi.json && \
-    cd web && npm run gen-api && npm run build
+# --- Stage 2 : SPA build (Node 22) ----------------------------------
+FROM node:22-bookworm-slim AS spa
+WORKDIR /build
+# Copy npm manifests + lock FIRST so the install layer caches across
+# source edits ; rebuild only happens on package.json / lock change.
+COPY web/package.json web/package-lock.json ./web/
+RUN cd web && npm ci --no-audit --no-fund
+# Now bring in the SPA source + the openapi.json the TS client
+# regenerates from. internal/web is needed because vite.config.ts
+# emits the bundle there ; the //go:embed in stage 3 picks it up.
+COPY web ./web
+COPY internal/web ./internal/web
+COPY --from=gen /build/openapi.json ./openapi.json
+RUN cd web && npm run gen-api && npm run build
 
-# --- Stage 2 : Go binary -------------------------------------------
+# --- Stage 3 : Go binary --------------------------------------------
 FROM golang:1.26-bookworm AS go
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-# Bring in the freshly-built SPA from stage 1 — the //go:embed in
+# Bring in the freshly-built SPA from stage 2 — the //go:embed in
 # internal/web/embed.go picks it up at compile time.
 COPY --from=spa /build/internal/web/dist ./internal/web/dist
 ARG VERSION=dev
@@ -55,8 +53,8 @@ RUN CGO_ENABLED=0 GOOS=linux \
                 -X github.com/openweft/weft-loom-server/cmd/weft-loom.date=${DATE}" \
       -o /weft-loom ./cmd/weft-loom
 
-# --- Stage 3 : runtime ---------------------------------------------
-# distroless/static-debian13 : ~2 MB ; just CA certs + tzdata +
+# --- Stage 4 : runtime ----------------------------------------------
+# distroless/static-debian13 : ~2 MB ; CA certs + tzdata +
 # /etc/passwd with nonroot:65532. No shell, no package manager.
 FROM gcr.io/distroless/static-debian13:nonroot
 USER nonroot:nonroot
@@ -75,6 +73,6 @@ ENTRYPOINT ["/usr/local/bin/weft-loom"]
 CMD ["serve", "--config", "/etc/weft-loom/config.hcl"]
 
 LABEL org.opencontainers.image.title="weft-loom-server"
-LABEL org.opencontainers.image.description="Collaborative editor + sandboxed compile for openweft. Run as a microVM ; SSO via dex (V0.3) ; compile dispatch via weft-agent gRPC (V0.3) ; backed by language-specific OCI sandbox images (weft-loom-texlive / -golang / -cpp / -python / -rust / -node)."
+LABEL org.opencontainers.image.description="Collaborative editor + sandboxed compile for openweft. Run as a microVM ; metadata in weft-ha-postgresql (HA via etcd-DCS) ; project files on a shared weft-block volume across all DCs ; SSO via dex (V0.3) ; compile dispatch via weft-agent gRPC (V0.3) ; backed by language-specific OCI sandbox images (weft-loom-texlive / -golang / -cpp / -python / -rust / -node)."
 LABEL org.opencontainers.image.source="https://github.com/openweft/weft-loom-server"
 LABEL org.opencontainers.image.licenses="BSD-3-Clause"
