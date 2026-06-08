@@ -54,13 +54,13 @@ func TestHub_DifferentRoomsIsolated(t *testing.T) {
 func TestHub_GCEmptyRooms(t *testing.T) {
 	h := NewHub()
 	m := h.Join("room1", "c1")
-	if len(h.rooms) != 1 {
-		t.Errorf("want 1 room after join ; got %d", len(h.rooms))
+	if h.roomCount() != 1 {
+		t.Errorf("want 1 room after join ; got %d", h.roomCount())
 	}
 	m.Leave()
 	// After last member leaves, the room should be GC'd.
-	if len(h.rooms) != 0 {
-		t.Errorf("want 0 rooms after last leave ; got %d", len(h.rooms))
+	if h.roomCount() != 0 {
+		t.Errorf("want 0 rooms after last leave ; got %d", h.roomCount())
 	}
 }
 
@@ -114,7 +114,7 @@ func TestHub_ConcurrentJoinSendLeave(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-	if len(h.rooms) != 0 {
-		t.Errorf("rooms leaked after burst : %d", len(h.rooms))
+	if h.roomCount() != 0 {
+		t.Errorf("rooms leaked after burst : %d", h.roomCount())
 	}
 }

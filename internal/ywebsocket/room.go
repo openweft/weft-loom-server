@@ -71,6 +71,15 @@ func (h *Hub) gcRoom(roomID string) {
 	h.mu.Unlock()
 }
 
+// roomCount returns the number of live rooms. Goes through h.mu so
+// tests and future Prometheus exporters don't race against
+// concurrent Join/gcRoom.
+func (h *Hub) roomCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.rooms)
+}
+
 // ConnID is the opaque connection identifier the caller passes in.
 // Typically the remote-addr ; only used for log lines + tie-breaking
 // in awareness.
