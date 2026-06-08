@@ -1,0 +1,16 @@
+.git/
+.github/
+**/node_modules/
+**/dist/
+internal/web/dist/
+web/dist/
+
+# Drop the host's built binary if present.
+weft-loom
+*.test
+
+# Ephemeral artefacts.
+openapi.json
+.vscode/
+.idea/
+.DS_Store
