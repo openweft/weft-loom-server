@@ -1,0 +1,23 @@
+@import 'tailwindcss';
+@plugin 'daisyui' {
+  themes: light --default, dark --prefersdark;
+}
+
+/* CodeMirror needs the editor surface to fill its container ; tailwind's
+   preflight resets affect contenteditable so we restore the bare
+   minimum for keystroke visibility. */
+.cm-editor {
+  height: 100%;
+  outline: none;
+}
+.cm-editor .cm-scroller {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, 'Cascadia Mono',
+    'Roboto Mono', Consolas, monospace;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* Awareness cursor (set by y-codemirror.next on remote users). */
+.ySelection {
+  border-left: 2px solid var(--y-color, theme(colors.primary));
+}

@@ -80,6 +80,15 @@ func New(opts Options) (*Server, error) {
 // the auth middleware lives inside the route registrations so we
 // can keep healthz unauthenticated.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Inject identity into ctx for every request. healthz / SPA static
+	// don't read it ; everything else (huma operations + raw handlers)
+	// pulls it via auth.IdentityFrom. Unauthenticated requests still
+	// reach the mux ; the handlers that need an identity check via the
+	// IdentityFrom ok-flag.
+	ident, ok := s.identify(r)
+	if ok {
+		r = r.WithContext(auth.WithIdentity(r.Context(), ident))
+	}
 	s.mux.ServeHTTP(w, r)
 }
 
@@ -90,36 +99,40 @@ func (s *Server) routes() {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
-	// SPA — fall-through on every other GET that isn't an API call.
-	// The static FS is rooted at the dist/ directory the build
-	// emits.
+	// Typed API surface (list-projects, list-files, start-compile)
+	// flows through huma, which registers operations on s.mux and
+	// publishes the spec at /api/openapi + interactive docs at
+	// /api/docs.
+	mountAPI(s.mux, s)
+
+	// Routes that don't fit huma cleanly stay raw :
+	//   - binary file IO (read/write through io.Reader)
+	//   - SSE compile log stream
+	//   - WebSocket sync bridge
+	// Auth is checked inside via auth.IdentityFrom — ServeHTTP
+	// already injected the identity into ctx by the time we get here.
+	s.mux.HandleFunc("GET /api/projects/{name}/files/{path...}", s.requireAuth(s.handleReadFile))
+	s.mux.HandleFunc("PUT /api/projects/{name}/files/{path...}", s.requireAuth(s.handleWriteFile))
+	s.mux.HandleFunc("GET /api/projects/{name}/compile/{id}", s.requireAuth(s.handleCompileStream))
+	s.mux.HandleFunc("GET /api/projects/{name}/sync", s.handleSync)
+
+	// SPA — fall-through on every other GET. The static FS is rooted
+	// at the dist/ directory the build emits.
 	if s.opts.Static != nil {
 		s.mux.Handle("GET /", http.FileServer(http.FS(s.opts.Static)))
 	}
-
-	// Authed.
-	s.mux.HandleFunc("GET /api/projects", s.guard(s.handleListProjects))
-	s.mux.HandleFunc("GET /api/projects/{name}/files", s.guard(s.handleListFiles))
-	s.mux.HandleFunc("GET /api/projects/{name}/files/{path...}", s.guard(s.handleReadFile))
-	s.mux.HandleFunc("PUT /api/projects/{name}/files/{path...}", s.guard(s.handleWriteFile))
-	s.mux.HandleFunc("POST /api/projects/{name}/compile", s.guard(s.handleCompileStart))
-	s.mux.HandleFunc("GET /api/projects/{name}/compile/{id}", s.guard(s.handleCompileStream))
-	// WS upgrade — auth handled inside the handler so we can return
-	// 401 BEFORE upgrading.
-	s.mux.HandleFunc("GET /api/projects/{name}/sync", s.handleSync)
 }
 
-// guard wraps a handler with auth + identity injection. Dev mode
-// (Auth=nil) synthesises a fixed identity so the panel works without
-// dex configured.
-func (s *Server) guard(h http.HandlerFunc) http.HandlerFunc {
+// requireAuth refuses the request when no identity was injected by
+// ServeHTTP (i.e. the bearer was missing or didn't verify). Dev mode
+// (Auth=nil) synthesises a "dev-user" identity in identify() so this
+// guard is transparent locally.
+func (s *Server) requireAuth(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ident, ok := s.identify(r)
-		if !ok {
+		if _, ok := auth.IdentityFrom(r.Context()); !ok {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		r = r.WithContext(auth.WithIdentity(r.Context(), ident))
 		h(w, r)
 	}
 }

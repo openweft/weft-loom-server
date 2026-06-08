@@ -8,19 +8,21 @@ compile jobs to ephemeral microVMs via weft-agent. Auth via dex.
 Conceptually : **Overleaf, but generic + microVM-native instead of
 Docker, + openweft SSO**.
 
-## V0.1 status
+## Status (v0.2.0)
 
 - ✅ y-websocket relay (in-memory rooms, broadcast fan-out, slow-peer drop)
 - ✅ Project file store (local filesystem ; traversal-safe ; per-user isolation)
-- ✅ Compile orchestration STUB (returns canned result ; V0.2 wires gRPC to weft-agent)
+- ✅ Compile orchestration STUB (returns canned result ; V0.3 wires gRPC to weft-agent)
 - ✅ HTTP/WebSocket server (cobra CLI, slog→NATS via weft-slognats)
-- ✅ Auth abstraction (StaticVerifier for dev ; OIDC/dex stub for V0.2)
-- ✅ Frontend skeleton (Svelte 5 + Vite + CodeMirror 6 + Yjs + y-codemirror.next)
-- ⏳ Real microVM dispatch (V0.2)
-- ⏳ Project persistence on weft-block volume (V0.2)
-- ⏳ OIDC verifier + dex integration (V0.2)
-- ⏳ PDF preview pane (V0.2)
-- ⏳ Project file tree + multi-project switcher (V0.2)
+- ✅ Auth abstraction (StaticVerifier for dev ; OIDC/dex stub for V0.3)
+- ✅ **huma-typed API** : `/api/projects`, `/api/projects/{name}/files`, `/api/projects/{name}/compile` ; OpenAPI 3.1 spec at `/api/openapi`, interactive docs at `/api/docs`
+- ✅ **Svelte 5 + daisyUI 5 + Tailwind 4 frontend** : navbar with connection status badge, modal compile drawer with SSE log tail, CodeMirror 6 editor with Yjs collab
+- ✅ **Typed TS client** : openapi-typescript + openapi-fetch ; `task gen-api` regenerates from huma spec
+- ⏳ Real microVM dispatch (V0.3)
+- ⏳ Project persistence on weft-block volume (V0.3)
+- ⏳ OIDC verifier + dex integration (V0.3)
+- ⏳ PDF preview pane (V0.3)
+- ⏳ Project file tree + multi-project switcher (V0.3)
 
 ## Architecture
 

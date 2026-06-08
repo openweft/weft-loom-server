@@ -10,7 +10,6 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/openweft/weft-loom-server/internal/auth"
-	"github.com/openweft/weft-loom-server/internal/compile"
 	"github.com/openweft/weft-loom-server/internal/ywebsocket"
 )
 
@@ -24,26 +23,6 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(body)
-}
-
-func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
-	ident, _ := auth.IdentityFrom(r.Context())
-	projects, err := s.opts.Projects.List(r.Context(), ident)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"projects": projects})
-}
-
-func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
-	ident, _ := auth.IdentityFrom(r.Context())
-	files, err := s.opts.Projects.ListFiles(r.Context(), ident, projectName(r))
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"files": files})
 }
 
 func (s *Server) handleReadFile(w http.ResponseWriter, r *http.Request) {
@@ -66,22 +45,6 @@ func (s *Server) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) handleCompileStart(w http.ResponseWriter, r *http.Request) {
-	ident, _ := auth.IdentityFrom(r.Context())
-	var req compile.JobSpec
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	req.Project = projectName(r)
-	id, err := s.opts.Compiler.Start(r.Context(), ident, req)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]string{"id": id})
 }
 
 // handleCompileStream serves Server-Sent Events for one compile job :

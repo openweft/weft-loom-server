@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
+import tailwindcss from '@tailwindcss/vite';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
@@ -10,7 +11,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // `go build` is the single source of truth for the deployed
 // artefact.
 export default defineConfig({
-  plugins: [svelte()],
+  plugins: [svelte(), tailwindcss()],
   build: {
     outDir: resolve(__dirname, '../internal/web/dist'),
     emptyOutDir: true,
