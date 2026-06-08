@@ -26,7 +26,12 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - run: cd web && npm install && npm run build
+      - name: install web deps
+        run: cd web && npm ci
+      - name: regenerate openapi + ts client + vite build
+        run: |
+          go run ./tools/dump-openapi > openapi.json
+          cd web && npm run gen-api && npm run build
       - name: build ${{ matrix.goos }}/${{ matrix.goarch }}
         env:
           GOOS: ${{ matrix.goos }}

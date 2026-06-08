@@ -19,7 +19,7 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: go vet ./...
-      - run: go test -count=1 ./...
+      - run: go test -count=1 -race ./...
 
   cross-build:
     runs-on: ubuntu-latest
@@ -44,11 +44,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - run: cd web && npm install
-      - run: cd web && npm run check
-      - run: cd web && npm run build
+      - name: install web deps
+        run: cd web && npm ci
+      - name: regenerate openapi + ts client
+        run: |
+          go run ./tools/dump-openapi > openapi.json
+          cd web && npm run gen-api
+      - name: svelte-check
+        run: cd web && npm run check
+      - name: vite build
+        run: cd web && npm run build
