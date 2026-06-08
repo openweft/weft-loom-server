@@ -56,15 +56,32 @@ RUN CGO_ENABLED=0 GOOS=linux \
 # --- Stage 4 : runtime ----------------------------------------------
 # distroless/static-debian13 : ~2 MB ; CA certs + tzdata +
 # /etc/passwd with nonroot:65532. No shell, no package manager.
+#
+# We pre-bake a /etc/weft-loom/config.hcl (LocalStore default ; no
+# Postgres) so a bare `weft microvm run <image>` boots cleanly
+# without any operator-supplied mount. An HA deployment overlays
+# /etc/weft-loom/config.hcl via virtio-fs share + pod-mounts the
+# weft-block volume at /var/lib/weft-loom ; the baked default is
+# overridden by any operator-supplied mount at the same path.
+
+# Stage 4a : seed the writable dir with the nonroot ownership BEFORE
+# the distroless FROM (distroless has no useradd/chmod). Use
+# alpine as a one-shot to mkdir + chown.
+FROM alpine:3.21 AS seed
+RUN mkdir -p /seed/var/lib/weft-loom /seed/etc/weft-loom && \
+    chown -R 65532:65532 /seed/var/lib/weft-loom
+
 FROM gcr.io/distroless/static-debian13:nonroot
-USER nonroot:nonroot
 WORKDIR /app
 
 COPY --from=go /weft-loom /usr/local/bin/weft-loom
+# Default config — LocalStore, single-replica. HA setups overlay it.
+COPY --chown=65532:65532 config.default.hcl /etc/weft-loom/config.hcl
+# Pre-created storage_root with nonroot ownership so the binary
+# can write without the operator pre-chmoding the host volume.
+COPY --from=seed --chown=65532:65532 /seed/var /var
 
-# microVM convention : operator mounts a configurable storage volume
-# at /var/lib/weft-loom, and a read-only config at
-# /etc/weft-loom/config.hcl.
+USER nonroot:nonroot
 VOLUME /var/lib/weft-loom
 
 EXPOSE 8080
