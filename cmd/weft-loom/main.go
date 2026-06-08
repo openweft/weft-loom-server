@@ -94,7 +94,22 @@ func serve(ctx context.Context, cfg config.Config) error {
 	if err := os.MkdirAll(cfg.StorageRoot, 0o755); err != nil {
 		return fmt.Errorf("storage_root mkdir: %w", err)
 	}
-	store := project.NewLocalStore(cfg.StorageRoot)
+	// Factory : PostgresStore for HA clusters (metadata in weft-ha-
+	// postgresql, file content on a shared weft-block volume mounted
+	// at StorageRoot), LocalStore for dev (everything on local FS).
+	var store project.Store
+	if cfg.PostgresDSN != "" {
+		pgStore, err := project.NewPostgresStore(ctx, cfg.PostgresDSN, cfg.StorageRoot)
+		if err != nil {
+			return fmt.Errorf("postgres store: %w", err)
+		}
+		defer pgStore.Close()
+		store = pgStore
+		log.Info("project store : postgres", "files_root", cfg.StorageRoot)
+	} else {
+		store = project.NewLocalStore(cfg.StorageRoot)
+		log.Info("project store : local fs", "root", cfg.StorageRoot)
+	}
 	compiler := compile.New(store)
 
 	// SPA bundle is held by the internal/web package — keeping the

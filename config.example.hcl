@@ -8,11 +8,20 @@
 # configures in app.json (clusters[].dcs[].webui_addr).
 listen = ":8080"
 
-# Project files live on the microVM's writable volume (declared
-# VOLUME /var/lib/weft-loom in the Dockerfile). Operators back this
-# with a weft-block replica for HA in V0.3 ; for V0.2 demos a plain
-# qcow2 disk is fine.
+# Project file content lives here. With `postgres { dsn = ... }` set,
+# this MUST be a shared weft-block volume mounted on every replica so
+# all 3 loom-server instances see the same files. Without postgres,
+# this is the LocalStore root (single-replica dev only).
 storage_root = "/var/lib/weft-loom"
+
+# Postgres backend : metadata + ACL in weft-ha-postgresql (HA, failover-
+# safe), file CONTENT on storage_root (shared weft-block volume).
+# Omit the block entirely for dev / single-replica setups : the
+# server falls back to LocalStore (local FS, no ACL beyond per-owner
+# sanitised directory).
+postgres {
+  dsn = "postgres://weft-loom:CHANGEME@loom-db.weft.svc:5432/loom?sslmode=require"
+}
 
 # V0.2 : OIDC stays empty (StaticVerifier dev mode). V0.3 wires dex.
 # oidc {
@@ -21,8 +30,8 @@ storage_root = "/var/lib/weft-loom"
 # }
 
 compile {
-  # Per-job cap. V0.2 returns a canned result instantly ; V0.3
-  # spawns a real microVM and the cap is load-bearing.
+  # Per-job cap. V0.2 returns a canned result instantly ; V0.3 spawns
+  # a real microVM and the cap is load-bearing.
   timeout = "5m"
 }
 

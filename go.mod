@@ -6,6 +6,7 @@ require (
 	github.com/coder/websocket v1.8.13
 	github.com/danielgtaylor/huma/v2 v2.38.0
 	github.com/hashicorp/hcl/v2 v2.23.0
+	github.com/jackc/pgx/v5 v5.10.0
 	github.com/openweft/weft-slognats v0.2.0
 	github.com/spf13/cobra v1.10.2
 )
@@ -16,6 +17,9 @@ require (
 	github.com/apparentlymart/go-textseg/v15 v15.0.0 // indirect
 	github.com/google/go-cmp v0.6.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/mitchellh/go-wordwrap v0.0.0-20150314170334-ad45545899c7 // indirect
 	github.com/nats-io/nats.go v1.43.0 // indirect

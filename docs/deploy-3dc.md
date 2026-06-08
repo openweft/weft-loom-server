@@ -21,10 +21,48 @@ git push origin v0.3.0-rc1
 Or, for ad-hoc builds without a tag, run `workflow_dispatch` from
 the Actions tab with a manual tag.
 
-## 2 — Wire into `cluster.hcl`
+## 2 — Provision shared storage
 
-Add a microvm block per DC pointing at the image. The same image
-runs on every DC (stateless ; project files live on per-DC volumes).
+Loom is stateful — the 3 replicas serve the SAME project list. Two
+backends carry that state in V0.2.1+ :
+
+- **weft-ha-postgresql** : project metadata + ACL (small, structured,
+  HA via etcd-DCS + VMFencer). One Postgres replica per DC, the
+  loom-server DSN points at the cluster's load-balanced read/write
+  endpoint.
+- **weft-block volume** : project file content, mounted at
+  `/var/lib/weft-loom` on every loom-server replica. Single
+  replicated source of truth ; reads served locally on each DC,
+  writes replicated synchronously to the other 2.
+
+Provision before deploying loom :
+
+```hcl
+# tests/integration/3host-live/cluster.hcl — additions
+
+# Postgres HA backend (already present in many openweft clusters ;
+# adapt to the existing block if so).
+ha_postgresql "loom-db" {
+  cluster_name = "loom"
+  replicas = 3
+  database = "loom"
+  user     = "weft-loom"
+  # Operator-set password ; generate + seal via vault / SOPS.
+  password_secret_ref = "loom-db-password"
+}
+
+# Shared block volume (replicated across the 3 DCs).
+volume "loom-files" {
+  size     = "50Gi"
+  driver   = "block"
+  replicas = 3
+}
+```
+
+## 3 — Wire loom-server microVMs into `cluster.hcl`
+
+One microvm block per DC, all pointing at the same image AND the
+shared volume + Postgres DSN.
 
 ```hcl
 # tests/integration/3host-live/cluster.hcl
@@ -33,17 +71,19 @@ runs on every DC (stateless ; project files live on per-DC volumes).
 
 microvm "loom-dc1" {
   host  = "dc1-r1-h1"
-  image = "ghcr.io/openweft/weft-loom-server:0.3.0-rc1"
+  image = "ghcr.io/openweft/weft-loom-server:0.2.2"
   cpu   = 2
   memory_mib = 1024
 
-  volume "data" {
-    size = "10Gi"
+  # Mount the SHARED block volume (replicated across 3 DCs).
+  # Every loom-server replica reads/writes the same project files
+  # via this mount ; weft-block handles the replication.
+  volume_attach "loom-files" {
     mount = "/var/lib/weft-loom"
   }
 
   config_file "/etc/weft-loom/config.hcl" {
-    source = "./config-loom-dc1.hcl"
+    source = "./config-loom.hcl"  # SAME config for all 3 DCs
   }
 
   network {
@@ -55,15 +95,31 @@ microvm "loom-dc1" {
 
 microvm "loom-dc2" {
   host  = "dc2-r1-h1"
-  image = "ghcr.io/openweft/weft-loom-server:0.3.0-rc1"
-  # ... same structure with dc2-specific config_file
+  image = "ghcr.io/openweft/weft-loom-server:0.2.2"
+  # ... same blocks ; only the host differs
 }
 
 microvm "loom-dc3" {
   host  = "dc3-r1-h1"
-  image = "ghcr.io/openweft/weft-loom-server:0.3.0-rc1"
-  # ... same structure with dc3-specific config_file
+  image = "ghcr.io/openweft/weft-loom-server:0.2.2"
+  # ... same blocks ; only the host differs
 }
+```
+
+The `config-loom.hcl` is THE SAME on all 3 DCs (postgres DSN points
+at the HA cluster, storage_root points at the shared mount). HA is
+in the backends, not in per-instance config :
+
+```hcl
+# config-loom.hcl
+listen       = ":8080"
+storage_root = "/var/lib/weft-loom"
+
+postgres {
+  dsn = "postgres://weft-loom@loom-db.weft.svc:5432/loom?sslmode=require"
+}
+
+compile { timeout = "5m" }
 ```
 
 ## 3 — Apply
@@ -137,14 +193,30 @@ From the desktop app's tray menu :
 6. Click "Compile" — stub returns canned result (V0.2 ; V0.3 spawns
    a real `weft-loom-texlive` microVM)
 
-## What's NOT in V0.2
+## What's NOT in V0.2.2
 
-- Shared / replicated storage across DCs (each instance has its own
-  project files) — V0.3 mounts the same weft-block volume on all 3
 - OIDC SSO via dex (StaticVerifier dev mode for now) — V0.3
 - Real microVM compile dispatch (stub returns canned PDF link) — V0.3
 - y-websocket persistence across server restarts (Yjs state lives
-  in connected clients only) — V0.3 snapshots to disk every 5 min
+  in connected clients only) — V0.3 snapshots to weft-block every
+  5 min via the same volume mount that Postgres already uses
+- etcd-backed session store (sessions live in memory ; restarting a
+  loom-server replica logs every user on that replica back out) —
+  V0.3 wires etcd for sessions + compile job state
 
-These are all "additive" — the V0.2 image + cluster wiring stay
+These are all "additive" — the V0.2.2 image + cluster wiring stay
 unchanged across the upgrades.
+
+## V0.2.2 storage architecture rationale
+
+| Data | Backend | Why |
+|---|---|---|
+| Project metadata (name, owner, language) | weft-ha-postgresql | Structured, queryable, ACL-able, HA via etcd-DCS + VMFencer |
+| Project file content | weft-block volume (3-way replica) | Large blobs ; filesystem semantics ; BLOBs in Postgres = anti-pattern |
+| Yjs CRDT live state | In-memory + V0.3 snapshot to weft-block | Clients converge among themselves ; server is just a relay |
+| Sessions (V0.3) | etcd | Small, lookup-frequent, leader-election native |
+| Compile job state (V0.3) | etcd | Short-lived, watch-able for SSE streams |
+
+The V0.2.2 image SHIPS the Postgres backend ; the operator opts in
+via the `postgres { dsn = ... }` block. Without it, loom-server
+degrades cleanly to LocalStore — single-replica dev mode.

@@ -15,8 +15,16 @@ import (
 type Config struct {
 	// Listen is the bind address (e.g. ":8080"). Default :8080.
 	Listen string
-	// StorageRoot is where LocalStore persists project files. Required.
+	// StorageRoot is where project files land. With PostgresDSN set,
+	// this is the shared weft-block volume mount path ; without it,
+	// LocalStore uses it as the local-FS root.
 	StorageRoot string
+	// PostgresDSN, when non-empty, switches the project store from
+	// LocalStore to PostgresStore. Metadata + ACL live in the DB
+	// (replicated by weft-ha-postgresql) ; file content stays on
+	// StorageRoot (a shared weft-block volume across all loom-server
+	// replicas).
+	PostgresDSN string
 	// OIDC issuer URL (dex). Empty = dev mode (auth disabled).
 	OIDCIssuer string
 	// OIDC client ID registered with dex.
@@ -31,11 +39,16 @@ type Config struct {
 
 // hclConfig mirrors Config with HCL tags.
 type hclConfig struct {
-	Listen          string  `hcl:"listen,optional"`
-	StorageRoot     string  `hcl:"storage_root"`
-	OIDC            *oidcBlock `hcl:"oidc,block"`
-	Compile         *compileBlock `hcl:"compile,block"`
-	WeftAgentSocket string  `hcl:"weft_agent_socket,optional"`
+	Listen          string         `hcl:"listen,optional"`
+	StorageRoot     string         `hcl:"storage_root"`
+	Postgres        *postgresBlock `hcl:"postgres,block"`
+	OIDC            *oidcBlock     `hcl:"oidc,block"`
+	Compile         *compileBlock  `hcl:"compile,block"`
+	WeftAgentSocket string         `hcl:"weft_agent_socket,optional"`
+}
+
+type postgresBlock struct {
+	DSN string `hcl:"dsn"`
 }
 
 type oidcBlock struct {
@@ -66,6 +79,9 @@ func Load(path string) (Config, error) {
 		Listen:          raw.Listen,
 		StorageRoot:     raw.StorageRoot,
 		WeftAgentSocket: raw.WeftAgentSocket,
+	}
+	if raw.Postgres != nil {
+		cfg.PostgresDSN = raw.Postgres.DSN
 	}
 	if raw.OIDC != nil {
 		cfg.OIDCIssuer = raw.OIDC.Issuer
