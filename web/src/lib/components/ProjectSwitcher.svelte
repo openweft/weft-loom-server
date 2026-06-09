@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { listProjects, type Project } from '../api';
+  import CloneProjectDialog from './CloneProjectDialog.svelte';
 
   interface Props {
     current: string;
@@ -12,10 +13,8 @@
   let projects = $state<Project[]>([]);
   let loadError = $state<string | null>(null);
   let loading = $state(false);
+  let cloneOpen = $state(false);
 
-  // Fetch projects on mount + every time the dropdown opens. Cheap GET
-  // — pertinent if another browser tab just created a new project ;
-  // keeping the list fresh without a polling timer.
   async function refresh() {
     loading = true;
     loadError = null;
@@ -32,6 +31,11 @@
 
   function selectProject(p: Project) {
     onSwitch(p.name, p.language ?? 'markdown');
+  }
+
+  function onCloned(name: string) {
+    refresh();
+    onSwitch(name, 'markdown');
   }
 </script>
 
@@ -84,9 +88,16 @@
       {/each}
     {/if}
     <li class="mt-1 border-t pt-1">
+      <button type="button" onclick={() => (cloneOpen = true)} class="text-xs">
+        <span class="opacity-80">⎇ Clone repo…</span>
+      </button>
+    </li>
+    <li>
       <button type="button" onclick={refresh} class="text-xs">
         <span class="opacity-60">⟳ refresh</span>
       </button>
     </li>
   </ul>
 </details>
+
+<CloneProjectDialog bind:open={cloneOpen} onClose={() => (cloneOpen = false)} onCreated={onCloned} />

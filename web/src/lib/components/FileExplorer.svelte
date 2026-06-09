@@ -8,7 +8,6 @@
   // disclosure triangles. Each file click rebinds the editor to the
   // per-file Yjs ytext key ; openinng a different file in the same
   // project doesn't reconnect the WS provider.
-  import { onMount } from 'svelte';
   import { listFiles, deleteFile, type File } from '../api';
   import { languageForPath } from '../theme';
   import NewFileDialog from './NewFileDialog.svelte';
@@ -31,23 +30,36 @@
   // Default = expanded (rooted on initial mount).
   let collapsed = $state<Set<string>>(new Set());
 
+  // refreshSeq guards against overlapping refreshes : if a second
+  // refresh starts while the first is still in-flight, only the
+  // latest one's result is taken. Without this we had loading
+  // stuck at true when $effect + onMount both fired on initial
+  // mount and the second response landed before the first's
+  // finally{} cleared the flag.
+  let refreshSeq = 0;
+
   async function refresh() {
+    const mySeq = ++refreshSeq;
     loading = true;
     loadError = null;
     try {
-      files = await listFiles(project);
+      const next = await listFiles(project);
+      if (mySeq === refreshSeq) files = next;
     } catch (e) {
-      loadError = String(e);
+      if (mySeq === refreshSeq) loadError = String(e);
     } finally {
-      loading = false;
+      if (mySeq === refreshSeq) loading = false;
     }
   }
 
+  // Single source of refresh triggers : $effect fires on initial
+  // mount AND on every subsequent project change. The previous
+  // onMount(refresh) duplicated the first call ; the in-flight
+  // guard above masked the race but the cleaner fix is to drop
+  // the duplicate.
   $effect(() => {
     if (project) refresh();
   });
-
-  onMount(refresh);
 
   // ---- Tree building --------------------------------------------
   // From a flat list of paths build a hierarchical structure suitable
