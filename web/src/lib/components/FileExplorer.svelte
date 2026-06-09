@@ -12,6 +12,7 @@
   import { listFiles, deleteFile, type File } from '../api';
   import { languageForPath } from '../theme';
   import NewFileDialog from './NewFileDialog.svelte';
+  import GitPanel from './GitPanel.svelte';
 
   interface Props {
     project: string;
@@ -25,6 +26,7 @@
   let loadError = $state<string | null>(null);
   let loading = $state(false);
   let newOpen = $state(false);
+  let gitOpen = $state(false);
   // collapsed: paths of directories the user has explicitly collapsed.
   // Default = expanded (rooted on initial mount).
   let collapsed = $state<Set<string>>(new Set());
@@ -163,6 +165,15 @@
       <button
         type="button"
         class="btn btn-ghost btn-xs"
+        title="Git sync (GitHub / GitLab / Forgejo)"
+        aria-label="Git sync"
+        onclick={() => (gitOpen = true)}
+      >
+        ⎇
+      </button>
+      <button
+        type="button"
+        class="btn btn-ghost btn-xs"
         title="Refresh file list"
         aria-label="Refresh"
         onclick={refresh}
@@ -232,3 +243,4 @@
 {/snippet}
 
 <NewFileDialog bind:open={newOpen} {project} onClose={() => (newOpen = false)} onCreated={onCreated} />
+<GitPanel bind:open={gitOpen} {project} onClose={() => (gitOpen = false)} onSynced={refresh} />

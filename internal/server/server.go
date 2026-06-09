@@ -53,6 +53,7 @@ type Server struct {
 	opts Options
 	hub  *ywebsocket.Hub
 	mux  *http.ServeMux
+	git  *gitState
 }
 
 // New wires the routes ; returns an http.Handler ready to mount on
@@ -71,6 +72,7 @@ func New(opts Options) (*Server, error) {
 		opts: opts,
 		hub:  ywebsocket.NewHub(),
 		mux:  http.NewServeMux(),
+		git:  newGitState(),
 	}
 	s.routes()
 	return s, nil
@@ -114,6 +116,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/projects/{name}/files/{path...}", s.requireAuth(s.handleReadFile))
 	s.mux.HandleFunc("PUT /api/projects/{name}/files/{path...}", s.requireAuth(s.handleWriteFile))
 	s.mux.HandleFunc("DELETE /api/projects/{name}/files/{path...}", s.requireAuth(s.handleDeleteFile))
+	// V0.3 git surface — UI-complete with stub backends ; go-git
+	// wiring is the next milestone. See internal/server/api_git.go
+	// for the contract the client lib/git.ts mirrors.
+	s.mux.HandleFunc("GET /api/projects/{name}/git/status", s.requireAuth(s.handleGitStatus))
+	s.mux.HandleFunc("POST /api/projects/{name}/git/config", s.requireAuth(s.handleGitConfig))
+	s.mux.HandleFunc("POST /api/projects/{name}/git/clone", s.requireAuth(s.handleGitClone))
+	s.mux.HandleFunc("POST /api/projects/{name}/git/pull", s.requireAuth(s.handleGitPull))
+	s.mux.HandleFunc("POST /api/projects/{name}/git/push", s.requireAuth(s.handleGitPush))
 	s.mux.HandleFunc("GET /api/projects/{name}/compile/{id}", s.requireAuth(s.handleCompileStream))
 	s.mux.HandleFunc("GET /api/projects/{name}/sync", s.handleSync)
 
