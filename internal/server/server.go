@@ -113,6 +113,7 @@ func (s *Server) routes() {
 	// already injected the identity into ctx by the time we get here.
 	s.mux.HandleFunc("GET /api/projects/{name}/files/{path...}", s.requireAuth(s.handleReadFile))
 	s.mux.HandleFunc("PUT /api/projects/{name}/files/{path...}", s.requireAuth(s.handleWriteFile))
+	s.mux.HandleFunc("DELETE /api/projects/{name}/files/{path...}", s.requireAuth(s.handleDeleteFile))
 	s.mux.HandleFunc("GET /api/projects/{name}/compile/{id}", s.requireAuth(s.handleCompileStream))
 	s.mux.HandleFunc("GET /api/projects/{name}/sync", s.handleSync)
 

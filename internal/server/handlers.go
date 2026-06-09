@@ -47,6 +47,15 @@ func (s *Server) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) handleDeleteFile(w http.ResponseWriter, r *http.Request) {
+	ident, _ := auth.IdentityFrom(r.Context())
+	if err := s.opts.Projects.DeleteFile(r.Context(), ident, projectName(r), filePath(r)); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // handleCompileStream serves Server-Sent Events for one compile job :
 // log lines as they arrive, then a "result" event with the artifact
 // metadata (URL / size) on completion.

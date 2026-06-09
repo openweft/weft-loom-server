@@ -34,6 +34,56 @@ export async function listFiles(project: string): Promise<File[]> {
   return data.items ?? [];
 }
 
+// Raw read/write/delete bypass the typed huma surface — the openapi
+// spec only documents the high-level list. Editor + FileExplorer talk
+// to these directly.
+export async function writeFile(
+  project: string,
+  path: string,
+  body: string,
+): Promise<void> {
+  const url = `/api/projects/${encodeURIComponent(project)}/files/${path
+    .split('/')
+    .map(encodeURIComponent)
+    .join('/')}`;
+  const resp = await fetch(url, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'text/plain' },
+    body,
+  });
+  if (!resp.ok) {
+    throw new Error(`write-file ${resp.status}: ${await resp.text()}`);
+  }
+}
+
+export async function readFile(
+  project: string,
+  path: string,
+): Promise<string> {
+  const url = `/api/projects/${encodeURIComponent(project)}/files/${path
+    .split('/')
+    .map(encodeURIComponent)
+    .join('/')}`;
+  const resp = await fetch(url);
+  if (!resp.ok) {
+    throw new Error(`read-file ${resp.status}: ${await resp.text()}`);
+  }
+  return resp.text();
+}
+
+export async function deleteFile(project: string, path: string): Promise<void> {
+  const url = `/api/projects/${encodeURIComponent(project)}/files/${path
+    .split('/')
+    .map(encodeURIComponent)
+    .join('/')}`;
+  const resp = await fetch(url, { method: 'DELETE' });
+  // Treat 404 as success — the file's already gone (concurrent
+  // delete from another tab, e.g.).
+  if (!resp.ok && resp.status !== 404) {
+    throw new Error(`delete-file ${resp.status}: ${await resp.text()}`);
+  }
+}
+
 export interface CompileSpec {
   language: string;
   entry?: string;

@@ -45,6 +45,7 @@ type Store interface {
 	ListFiles(ctx context.Context, ident auth.Identity, project string) ([]File, error)
 	ReadFile(ctx context.Context, ident auth.Identity, project, path string) (io.ReadCloser, error)
 	WriteFile(ctx context.Context, ident auth.Identity, project, path string, body io.Reader) error
+	DeleteFile(ctx context.Context, ident auth.Identity, project, path string) error
 }
 
 // ErrAccessDenied is returned by Store impls when the caller lacks
@@ -152,6 +153,21 @@ func (s *LocalStore) WriteFile(_ context.Context, ident auth.Identity, project, 
 	defer f.Close()
 	_, err = io.Copy(f, body)
 	return err
+}
+
+// DeleteFile removes <user>/<project>/<path>. Idempotent on missing
+// paths : returns nil even if the file is already gone, so a
+// concurrent delete from another browser tab doesn't bubble up as an
+// error to the UI. Traversal-safe via resolveFile.
+func (s *LocalStore) DeleteFile(_ context.Context, ident auth.Identity, project, path string) error {
+	full, err := s.resolveFile(ident, project, path)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(full); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // projectDir returns the absolute path to a project, validating that

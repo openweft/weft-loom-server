@@ -193,6 +193,27 @@ func (s *PostgresStore) WriteFile(ctx context.Context, ident auth.Identity, proj
 	return tx.Commit(ctx)
 }
 
+// DeleteFile removes the on-disk file. Idempotent on missing paths.
+// Doesn't bump the project's updated_at row — the V0.2 schema keeps
+// file-level state in the filesystem ; future per-file metadata
+// (history, last_modified_by) will move that bookkeeping here.
+func (s *PostgresStore) DeleteFile(ctx context.Context, ident auth.Identity, project, path string) error {
+	if ident.Subject == "" {
+		return ErrAccessDenied
+	}
+	if err := s.authorize(ctx, ident, project); err != nil {
+		return err
+	}
+	full, err := s.resolveFile(ident, project, path)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(full); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // authorize : caller must own the project. V0.3 will widen this to
 // project ACL via dex groups ; V0.2.1 keeps the per-owner gate that
 // LocalStore enforces too.
