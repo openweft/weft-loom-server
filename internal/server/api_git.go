@@ -58,13 +58,30 @@ type gitStatus struct {
 // survives a process restart. The mutex serialises every config /
 // sync mutation per project — go-git operations themselves aren't
 // safe to call concurrently against the same working tree.
+//
+// pushTimers carries one debounced auto-push timer per project ;
+// every file write (handleWriteFile / handleDeleteFile) resets the
+// timer to autoPushIdle seconds. When the timer fires the project is
+// auto-committed + auto-pushed in a background goroutine so the
+// user doesn't need to click anything between bursts of edits.
 type gitState struct {
-	mu   sync.Mutex
-	last map[string]gitStatus // (owner|project) → last sync status
+	mu         sync.Mutex
+	last       map[string]gitStatus // (owner|project) → last sync status
+	pushTimers map[string]*time.Timer
 }
 
+// autoPushIdle is how long the server waits after the last file
+// write before kicking off an auto-commit + push. Pick big enough
+// that a save → edit → save run doesn't fire two pushes in a
+// second, small enough that a leaving user's last save makes it to
+// the remote before their browser closes the WS.
+const autoPushIdle = 5 * time.Second
+
 func newGitState() *gitState {
-	return &gitState{last: map[string]gitStatus{}}
+	return &gitState{
+		last:       map[string]gitStatus{},
+		pushTimers: map[string]*time.Timer{},
+	}
 }
 
 func gitKey(ident auth.Identity, project string) string {
@@ -510,6 +527,89 @@ func commitIdent(ident auth.Identity) (string, string) {
 	return name, email
 }
 
-// Unused but kept so the compiler doesn't drop context imports if a
-// future revision shifts a handler to ctx-aware path.
-var _ = context.Background
+// schedulePush is the debounced auto-push hook. Every file write
+// (handleWriteFile / handleDeleteFile) calls this with the
+// (identity, project) pair ; we reset a per-project timer that fires
+// autoPushIdle seconds after the last call and runs autoCommit +
+// push in a background goroutine. Errors land in
+// last[key].LastError so the UI surfaces them on the next status
+// refresh — they don't blow up the foreground write.
+//
+// No-op when the project isn't git-configured ; the write succeeds
+// as a pure local-disk operation.
+func (s *Server) schedulePush(ident auth.Identity, project string) {
+	key := gitKey(ident, project)
+	dir, err := s.projectWorkingDir(ident, project)
+	if err != nil {
+		return
+	}
+	cfg, ok := readConfig(dir)
+	if !ok {
+		return // unconfigured project — local-only file edits
+	}
+
+	s.git.mu.Lock()
+	if t, ok := s.git.pushTimers[key]; ok {
+		t.Stop()
+	}
+	s.git.pushTimers[key] = time.AfterFunc(autoPushIdle, func() {
+		s.runAutoPush(ident, project, cfg)
+	})
+	s.git.mu.Unlock()
+}
+
+// runAutoPush is what the debounce timer fires : autoCommit + push
+// against the cached config snapshot. Holds the gitState mutex for
+// the full duration so a concurrent foreground push doesn't race
+// the working tree.
+func (s *Server) runAutoPush(ident auth.Identity, project string, cfg gitConfig) {
+	key := gitKey(ident, project)
+	dir, err := s.projectWorkingDir(ident, project)
+	if err != nil {
+		return
+	}
+	repo, err := git.PlainOpen(dir)
+	if err != nil {
+		return
+	}
+	s.git.mu.Lock()
+	defer s.git.mu.Unlock()
+	delete(s.git.pushTimers, key) // we're firing — drop the entry
+
+	if err := autoCommit(repo, ident); err != nil {
+		s.recordAutoErr(key, cfg, "auto-commit: "+err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := repo.PushContext(ctx, &git.PushOptions{
+		RemoteName: "origin",
+		RefSpecs:   []config.RefSpec{config.RefSpec(fmt.Sprintf("refs/heads/%s:refs/heads/%s", cfg.Branch, cfg.Branch))},
+		Auth:       authMethod(cfg),
+	}); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
+		s.recordAutoErr(key, cfg, "auto-push: "+err.Error())
+		return
+	}
+	// On success record the timestamp ; the next status refresh
+	// shows it as "last sync : N seconds ago".
+	st := s.git.last[key]
+	st.Configured = true
+	st.Provider = cfg.Provider
+	st.RemoteURL = cfg.RemoteURL
+	st.Branch = cfg.Branch
+	st.LastSyncUnix = time.Now().Unix()
+	st.LastError = ""
+	s.git.last[key] = st
+}
+
+// recordAutoErr stores the error on the last-status memo so the UI
+// surfaces it on next /git/status. Caller holds git.mu.
+func (s *Server) recordAutoErr(key string, cfg gitConfig, msg string) {
+	st := s.git.last[key]
+	st.Configured = true
+	st.Provider = cfg.Provider
+	st.RemoteURL = cfg.RemoteURL
+	st.Branch = cfg.Branch
+	st.LastError = msg
+	s.git.last[key] = st
+}

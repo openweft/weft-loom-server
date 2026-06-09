@@ -9,6 +9,7 @@
   import FileExplorer from './lib/components/FileExplorer.svelte';
   import { loadIdentity, type Identity } from './lib/identity';
   import { applyTheme, loadTheme, languageForPath } from './lib/theme';
+  import { pull as gitPull } from './lib/git';
 
   // Restore the previously-picked theme synchronously so the first
   // paint doesn't flash the wrong palette. Identity is local to this
@@ -41,6 +42,21 @@
     language = lang;
     ydoc = undefined;
     awareness = undefined;
+    // V0.3 : git is the source of truth. Silently fire a pull when
+    // a project opens so the working tree reflects whatever
+    // collaborators pushed in a previous session. Unconfigured
+    // projects 400 with "git not configured" — caught + ignored.
+    silentPull(name);
+  }
+
+  async function silentPull(name: string) {
+    if (!name) return;
+    try {
+      await gitPull(name);
+    } catch {
+      // Project may not be git-configured ; that's fine. The
+      // GitPanel surfaces hard errors when the user opens it.
+    }
   }
 
   function onOpenFile(path: string, lang: string) {

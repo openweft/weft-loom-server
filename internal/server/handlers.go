@@ -44,6 +44,11 @@ func (s *Server) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	// V0.3 : git is the source of truth. Every file write resets the
+	// per-project debounce timer ; an idle period of autoPushIdle
+	// seconds triggers a background auto-commit + push. Unconfigured
+	// projects no-op.
+	s.schedulePush(ident, projectName(r))
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -53,6 +58,7 @@ func (s *Server) handleDeleteFile(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	s.schedulePush(ident, projectName(r))
 	w.WriteHeader(http.StatusNoContent)
 }
 
