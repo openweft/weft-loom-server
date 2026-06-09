@@ -113,7 +113,7 @@
         <label class="label">
           <span class="label-text text-xs uppercase opacity-60">Language</span>
         </label>
-        <select class="select select-bordered select-sm" bind:value={lang}>
+        <select class="select select-bordered select-sm w-full" bind:value={lang}>
           {#each LANGS as l}
             <option value={l}>{LANG_LABELS[l] ?? l}</option>
           {/each}
@@ -125,7 +125,7 @@
         <label class="label">
           <span class="label-text text-xs uppercase opacity-60">Template</span>
         </label>
-        <select class="select select-bordered select-sm" bind:value={templateId}>
+        <select class="select select-bordered select-sm w-full" bind:value={templateId}>
           {#each visibleTemplates as t}
             <option value={t.id}>{t.name}</option>
           {/each}
