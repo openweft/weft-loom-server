@@ -21,19 +21,28 @@
   import * as Y from 'yjs';
   import { WebsocketProvider } from 'y-websocket';
   import { yCollab } from 'y-codemirror.next';
+  import type { Awareness } from 'y-protocols/awareness';
+  import type { Identity } from '../identity';
 
   interface Props {
     project: string;
     language: string;
+    // file is the active file path inside the project — empty means
+    // the project's default ytext ("codemirror"). Selecting a
+    // different file rebinds the editor to a per-file ytext within
+    // the SAME provider, so collaborators on different files share
+    // one WS but only see each other's edits when they're on the
+    // same file.
+    file?: string;
+    identity: Identity;
     onStatus?: (
       status: 'connecting' | 'connected' | 'disconnected',
     ) => void;
-    // onYDoc fires once the Yjs document is initialised so the
-    // PreviewPane can attach an observer to the same shared text.
     onYDoc?: (doc: Y.Doc) => void;
+    onAwareness?: (a: Awareness) => void;
   }
 
-  let { project, language, onStatus, onYDoc }: Props = $props();
+  let { project, language, file, identity, onStatus, onYDoc, onAwareness }: Props = $props();
 
   let host: HTMLDivElement | undefined = $state();
   let view: EditorView | undefined;
@@ -73,7 +82,18 @@
     ydoc = new Y.Doc();
     onYDoc?.(ydoc);
     provider = new WebsocketProvider(wsURL(project), '', ydoc);
-    const ytext = ydoc.getText('codemirror');
+    // The y-codemirror.next yCollab extension consumes awareness state
+    // for remote cursor coloring. Setting the local user identity
+    // here makes both this client's name+color visible to every other
+    // peer in the room AND ensures the awareness state has a 'user'
+    // entry the CollaboratorList component can read.
+    provider.awareness.setLocalStateField('user', {
+      name: identity.name,
+      color: identity.color,
+    });
+    onAwareness?.(provider.awareness);
+    const ytextKey = file && file !== '' ? 'file:' + file : 'codemirror';
+    const ytext = ydoc.getText(ytextKey);
 
     const state = EditorState.create({
       doc: ytext.toString(),
