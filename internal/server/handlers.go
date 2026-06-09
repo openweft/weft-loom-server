@@ -62,6 +62,22 @@ func (s *Server) handleDeleteFile(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleCompileArtifact streams the compiled PDF out of the per-job
+// scratch dir. compile.Service.Artifact(id) returns the absolute path
+// kept in memory for ~30 minutes after the job finishes ; the SPA
+// fetches this URL when it wants to display the result inline.
+func (s *Server) handleCompileArtifact(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	path, ok := s.opts.Compiler.Artifact(id)
+	if !ok {
+		http.Error(w, "compile artifact not found or expired", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Content-Disposition", `inline; filename="output.pdf"`)
+	http.ServeFile(w, r, path)
+}
+
 // handleCompileStream serves Server-Sent Events for one compile job :
 // log lines as they arrive, then a "result" event with the artifact
 // metadata (URL / size) on completion.

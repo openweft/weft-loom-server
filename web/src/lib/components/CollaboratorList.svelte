@@ -107,7 +107,10 @@
       </button>
     {/if}
   {/each}
-  {#if peers.length === 0}
+  {#if peers.length === 0 && awareness}
+    <!-- "connecting…" only makes sense when a Yjs provider exists but
+         the WS isn't fully up yet. With the editor not mounted at all,
+         awareness is undefined and the chip area stays empty. -->
     <span class="text-xs opacity-40 italic">connecting…</span>
   {/if}
 </div>

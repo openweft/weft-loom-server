@@ -1,0 +1,135 @@
+// codeblockAutocomplete.ts — CodeMirror 6 autocomplete that fires
+// when the user opens a markdown code fence ("```" at the start of a
+// line) and offers the list of language identifiers that markdown
+// renderers + common editor highlighters recognise.
+
+import { CompletionContext, type CompletionResult } from '@codemirror/autocomplete';
+
+// Curated list of language identifiers that GFM / CommonMark renderers
+// + most syntax highlighters (highlight.js, Shiki, Prism) recognise.
+// Sorted alphabetically for predictable suggestion order.
+const LANGUAGES: Array<{ id: string; label: string; aliases?: string[] }> = [
+  { id: 'abap', label: 'ABAP' },
+  { id: 'ada', label: 'Ada' },
+  { id: 'apex', label: 'Apex' },
+  { id: 'apl', label: 'APL' },
+  { id: 'applescript', label: 'AppleScript' },
+  { id: 'asm', label: 'Assembly', aliases: ['assembly', 'nasm'] },
+  { id: 'awk', label: 'AWK' },
+  { id: 'bash', label: 'Bash', aliases: ['sh', 'shell', 'zsh'] },
+  { id: 'bibtex', label: 'BibTeX' },
+  { id: 'c', label: 'C' },
+  { id: 'clojure', label: 'Clojure', aliases: ['clj'] },
+  { id: 'cmake', label: 'CMake' },
+  { id: 'coffeescript', label: 'CoffeeScript' },
+  { id: 'cpp', label: 'C++', aliases: ['c++'] },
+  { id: 'crystal', label: 'Crystal' },
+  { id: 'csharp', label: 'C#', aliases: ['c#', 'cs'] },
+  { id: 'css', label: 'CSS' },
+  { id: 'cue', label: 'CUE' },
+  { id: 'd', label: 'D' },
+  { id: 'dart', label: 'Dart' },
+  { id: 'diff', label: 'Diff / patch' },
+  { id: 'docker', label: 'Dockerfile', aliases: ['dockerfile'] },
+  { id: 'dot', label: 'Graphviz DOT' },
+  { id: 'elixir', label: 'Elixir' },
+  { id: 'elm', label: 'Elm' },
+  { id: 'erlang', label: 'Erlang' },
+  { id: 'fsharp', label: 'F#' },
+  { id: 'fortran', label: 'Fortran' },
+  { id: 'gdscript', label: 'GDScript (Godot)' },
+  { id: 'gleam', label: 'Gleam' },
+  { id: 'glsl', label: 'GLSL' },
+  { id: 'go', label: 'Go', aliases: ['golang'] },
+  { id: 'graphql', label: 'GraphQL' },
+  { id: 'groovy', label: 'Groovy' },
+  { id: 'haskell', label: 'Haskell', aliases: ['hs'] },
+  { id: 'hcl', label: 'HCL / Terraform', aliases: ['terraform', 'tf'] },
+  { id: 'html', label: 'HTML' },
+  { id: 'http', label: 'HTTP request/response' },
+  { id: 'ini', label: 'INI' },
+  { id: 'java', label: 'Java' },
+  { id: 'javascript', label: 'JavaScript', aliases: ['js'] },
+  { id: 'jq', label: 'jq' },
+  { id: 'json', label: 'JSON' },
+  { id: 'jsonc', label: 'JSON with comments' },
+  { id: 'jsx', label: 'JSX (React)' },
+  { id: 'julia', label: 'Julia' },
+  { id: 'kotlin', label: 'Kotlin' },
+  { id: 'latex', label: 'LaTeX', aliases: ['tex'] },
+  { id: 'less', label: 'Less' },
+  { id: 'lisp', label: 'Lisp' },
+  { id: 'lua', label: 'Lua' },
+  { id: 'makefile', label: 'Makefile', aliases: ['make'] },
+  { id: 'markdown', label: 'Markdown', aliases: ['md'] },
+  { id: 'matlab', label: 'MATLAB' },
+  { id: 'mermaid', label: 'Mermaid diagram' },
+  { id: 'nim', label: 'Nim' },
+  { id: 'nix', label: 'Nix' },
+  { id: 'ocaml', label: 'OCaml' },
+  { id: 'objc', label: 'Objective-C' },
+  { id: 'pascal', label: 'Pascal' },
+  { id: 'perl', label: 'Perl' },
+  { id: 'php', label: 'PHP' },
+  { id: 'plantuml', label: 'PlantUML' },
+  { id: 'powershell', label: 'PowerShell', aliases: ['pwsh', 'ps1'] },
+  { id: 'prolog', label: 'Prolog' },
+  { id: 'protobuf', label: 'Protocol Buffers', aliases: ['proto'] },
+  { id: 'puppet', label: 'Puppet' },
+  { id: 'python', label: 'Python', aliases: ['py'] },
+  { id: 'r', label: 'R' },
+  { id: 'racket', label: 'Racket' },
+  { id: 'raku', label: 'Raku' },
+  { id: 'reasonml', label: 'ReasonML' },
+  { id: 'restructuredtext', label: 'reStructuredText', aliases: ['rst'] },
+  { id: 'ruby', label: 'Ruby', aliases: ['rb'] },
+  { id: 'rust', label: 'Rust', aliases: ['rs'] },
+  { id: 'sass', label: 'Sass' },
+  { id: 'scala', label: 'Scala' },
+  { id: 'scheme', label: 'Scheme' },
+  { id: 'scss', label: 'SCSS' },
+  { id: 'sed', label: 'sed' },
+  { id: 'shell', label: 'Shell', aliases: ['sh'] },
+  { id: 'smalltalk', label: 'Smalltalk' },
+  { id: 'sql', label: 'SQL' },
+  { id: 'svelte', label: 'Svelte' },
+  { id: 'swift', label: 'Swift' },
+  { id: 'systemverilog', label: 'SystemVerilog' },
+  { id: 'tcl', label: 'Tcl' },
+  { id: 'toml', label: 'TOML' },
+  { id: 'typescript', label: 'TypeScript', aliases: ['ts'] },
+  { id: 'tsx', label: 'TSX (React)' },
+  { id: 'twig', label: 'Twig' },
+  { id: 'vala', label: 'Vala' },
+  { id: 'vb', label: 'Visual Basic', aliases: ['vbnet'] },
+  { id: 'verilog', label: 'Verilog' },
+  { id: 'vhdl', label: 'VHDL' },
+  { id: 'vim', label: 'Vimscript' },
+  { id: 'vue', label: 'Vue' },
+  { id: 'wasm', label: 'WebAssembly' },
+  { id: 'xml', label: 'XML' },
+  { id: 'yaml', label: 'YAML', aliases: ['yml'] },
+  { id: 'zig', label: 'Zig' },
+];
+
+export function codeblockLanguageCompletion(
+  ctx: CompletionContext,
+): CompletionResult | null {
+  const line = ctx.state.doc.lineAt(ctx.pos);
+  const upto = line.text.slice(0, ctx.pos - line.from);
+  // Match "```<partial-language>" at the start of the line. Tildes
+  // (~~~) are the alternate fence syntax — also support them.
+  const m = upto.match(/^(```|~~~)(\w*)$/);
+  if (!m) return null;
+  const partial = m[2];
+  return {
+    from: ctx.pos - partial.length,
+    options: LANGUAGES.map((l) => ({
+      label: l.id,
+      detail: l.label,
+      info: l.aliases ? 'aliases: ' + l.aliases.join(', ') : undefined,
+      type: 'class',
+    })),
+    validFor: /^\w*$/,
+  };
+}

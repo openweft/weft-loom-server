@@ -14,6 +14,8 @@
     awareness: Awareness | undefined;
     identity: Identity;
     onCompile: () => void;
+    onExportPDF: () => void;
+    onToggleAI: () => void;
     onSwitch: (name: string, language: string) => void;
     onLanguageChange: (language: string) => void;
     onRename: (identity: Identity) => void;
@@ -26,6 +28,8 @@
     awareness,
     identity,
     onCompile,
+    onExportPDF,
+    onToggleAI,
     onSwitch,
     onLanguageChange,
     onRename,
@@ -60,6 +64,12 @@
       <span class="status status-sm"></span>
       {connectionStatus}
     </div>
+    <button class="btn btn-ghost btn-sm" onclick={onExportPDF} title="Export the preview to PDF">
+      ⤓ PDF
+    </button>
+    <button class="btn btn-ghost btn-sm" onclick={onToggleAI} title="Toggle AI assistant panel">
+      🤖
+    </button>
     <button class="btn btn-primary btn-sm" onclick={onCompile}>
       Compile
     </button>

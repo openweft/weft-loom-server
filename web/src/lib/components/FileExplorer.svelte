@@ -8,8 +8,9 @@
   // disclosure triangles. Each file click rebinds the editor to the
   // per-file Yjs ytext key ; openinng a different file in the same
   // project doesn't reconnect the WS provider.
+  import { untrack } from 'svelte';
   import { listFiles, deleteFile, type File } from '../api';
-  import { languageForPath } from '../theme';
+  import { languageForPath, iconForPath } from '../theme';
   import NewFileDialog from './NewFileDialog.svelte';
   import GitPanel from './GitPanel.svelte';
 
@@ -30,35 +31,50 @@
   // Default = expanded (rooted on initial mount).
   let collapsed = $state<Set<string>>(new Set());
 
-  // refreshSeq guards against overlapping refreshes : if a second
-  // refresh starts while the first is still in-flight, only the
-  // latest one's result is taken. Without this we had loading
-  // stuck at true when $effect + onMount both fired on initial
-  // mount and the second response landed before the first's
-  // finally{} cleared the flag.
   let refreshSeq = 0;
+  // Debug counters tracing exactly which await step locks up
+  let stepBefore = $state(0);
+  let stepAfter = $state(0);
+  let stepJSON = $state(0);
+  let stepCommit = $state(0);
 
   async function refresh() {
     const mySeq = ++refreshSeq;
     loading = true;
     loadError = null;
     try {
-      const next = await listFiles(project);
-      if (mySeq === refreshSeq) files = next;
+      const url = '/api/projects/' + encodeURIComponent(project) + '/files';
+      stepBefore++;
+      const resp = await fetch(url);
+      stepAfter++;
+      if (!resp.ok) {
+        if (mySeq === refreshSeq) loadError = 'HTTP ' + resp.status;
+        return;
+      }
+      const j = await resp.json();
+      stepJSON++;
+      if (mySeq === refreshSeq) files = j.items ?? [];
+      stepCommit++;
     } catch (e) {
-      if (mySeq === refreshSeq) loadError = String(e);
+      if (mySeq === refreshSeq) loadError = 'fetch-err: ' + String(e);
     } finally {
       if (mySeq === refreshSeq) loading = false;
     }
   }
 
-  // Single source of refresh triggers : $effect fires on initial
-  // mount AND on every subsequent project change. The previous
-  // onMount(refresh) duplicated the first call ; the in-flight
-  // guard above masked the race but the cleaner fix is to drop
-  // the duplicate.
+  // Refresh trigger : $effect fires on initial mount AND on every
+  // subsequent project change. The body uses untrack() around the
+  // refresh() call so reactive reads + writes INSIDE refresh don't
+  // become effect dependencies — otherwise the $state debug counters
+  // we increment for tracing (stepBefore++) and the loading/error
+  // writes form a tight loop where the effect re-runs every time
+  // refresh modifies state. Empirically observed seq=1000 within
+  // milliseconds of mount when this guard was missing.
   $effect(() => {
-    if (project) refresh();
+    const p = project;
+    untrack(() => {
+      if (p) refresh();
+    });
   });
 
   // ---- Tree building --------------------------------------------
@@ -185,7 +201,7 @@
   }
 </script>
 
-<aside class="w-56 bg-base-100 border-r border-base-300 flex flex-col overflow-hidden">
+<aside class="w-full h-full bg-base-100 border-r border-base-300 flex flex-col overflow-hidden">
   <header class="flex items-center justify-between px-3 py-2 border-b border-base-300">
     <span class="text-xs font-semibold uppercase opacity-60">Files</span>
     <div class="flex gap-1">
@@ -219,6 +235,17 @@
     </div>
   </header>
   <ul class="menu menu-sm flex-1 overflow-y-auto p-1">
+    <!-- temp debug : surface the FileExplorer's runtime state to the
+         user-visible UI so we can see why the loading state is stuck.
+         Remove once the cause is identified. -->
+    <li class="px-2 py-1 text-[10px] opacity-80 font-mono border-b border-base-200 mb-1 leading-tight">
+      proj={project || '∅'} seq={refreshSeq} ld={loading?1:0}
+      <br/>
+      pre={stepBefore} aft={stepAfter} json={stepJSON} cmt={stepCommit}
+      <br/>
+      n={files.length} {#if loadError}err={loadError}{/if}
+    </li>
+
     {#if loading}
       <li class="px-2 py-1">
         <span class="loading loading-spinner loading-xs"></span>
@@ -245,10 +272,10 @@
           >
             {#if node.dir}
               <span class="font-mono text-xs">
-                {isCollapsed ? '▸' : '▾'} 📁 {node.name}
+                {isCollapsed ? '▸' : '▾'} {iconForPath(node.fullPath, true)} {node.name}
               </span>
             {:else}
-              <span class="font-mono text-xs">📄 {node.name}</span>
+              <span class="font-mono text-xs">{iconForPath(node.fullPath)} {node.name}</span>
             {/if}
             {#if !node.dir}
               <span
@@ -268,49 +295,6 @@
     {/if}
   </ul>
 </aside>
-
-<!-- Legacy recursive snippet — empirically locked Svelte 5 on first
-     paint with nested directories. Kept disabled (#if false) so the
-     diff stays surveyable ; remove on next pass. -->
-{#if false}
-  {#snippet renderNode(node: Node, depth: number)}
-    {@const isCollapsed = collapsed.has(node.fullPath)}
-    <li>
-      <button
-        type="button"
-        class="group flex items-center w-full"
-        style="padding-left: {depth * 12 + 4}px"
-        onclick={() => open(node)}
-        class:menu-active={!node.dir && node.fullPath === currentFile}
-      >
-        {#if node.dir}
-          <span class="font-mono text-xs">
-            {isCollapsed ? '▸' : '▾'} 📁 {node.name}
-          </span>
-        {:else}
-          <span class="font-mono text-xs">📄 {node.name}</span>
-        {/if}
-        {#if !node.dir}
-          <span
-            role="button"
-            tabindex="0"
-            aria-label="Delete {node.fullPath}"
-            class="ml-auto opacity-0 group-hover:opacity-100 hover:text-error text-xs px-1 cursor-pointer"
-            onclick={(ev) => remove(node, ev)}
-            onkeydown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') remove(node, ev); }}
-          >
-            ✕
-          </span>
-        {/if}
-      </button>
-      {#if node.dir && !isCollapsed && node.children.length > 0}
-        <ul>
-          <!-- snippet recursion disabled — flatten path used -->
-        </ul>
-      {/if}
-    </li>
-  {/snippet}
-{/if}
 
 <NewFileDialog bind:open={newOpen} {project} onClose={() => (newOpen = false)} onCreated={onCreated} />
 <GitPanel bind:open={gitOpen} {project} onClose={() => (gitOpen = false)} onSynced={refresh} />

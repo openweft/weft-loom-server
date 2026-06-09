@@ -17,7 +17,104 @@
   line-height: 1.5;
 }
 
-/* Awareness cursor (set by y-codemirror.next on remote users). */
-.ySelection {
-  border-left: 2px solid var(--y-color, theme(colors.primary));
+/* Yjs awareness — remote-user cursors + selections. y-codemirror.next
+   stamps each remote cursor with an inline `--user-color` CSS variable
+   sourced from awareness.user.color (which CollaboratorList also
+   reads). The selectors below make the cursor + the floating name pill
+   reliably visible across both light + dark themes. */
+
+/* Selection highlight under remote-user-selected text. The inline
+   background-color from y-codemirror is RGBA-25 over the user color ;
+   we just give it a tiny left border so the empty-selection caret
+   region stays visible. */
+.cm-editor .ySelection {
+  background-color: rgb(var(--y-color, 99 102 241) / 0.18) !important;
+  border-radius: 1px;
 }
+
+/* The vertical caret bar. */
+.cm-editor .ySelectionCaret {
+  position: relative;
+  border-left: 2px solid;
+  margin-left: -1px;
+  margin-right: -1px;
+  box-sizing: border-box;
+  display: inline;
+}
+
+/* The little dot that sits above the caret. */
+.cm-editor .ySelectionCaretDot {
+  border-radius: 50%;
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  top: -3px;
+  left: -3px;
+  background-color: inherit;
+  border-color: inherit;
+  transition: transform 0.3s ease;
+}
+
+/* The floating "username" pill that appears above the caret. y-codemirror
+   renders this as an absolutely-positioned span with the user color on
+   its background — we just need to make it visible (it ships as
+   display: none in the base stylesheet). */
+.cm-editor .ySelectionInfo {
+  position: absolute;
+  top: -1.5em;
+  left: -2px;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  font-style: normal;
+  line-height: 1.4;
+  user-select: none;
+  color: white;
+  padding: 1px 6px;
+  border-radius: 3px 3px 3px 0;
+  white-space: nowrap;
+  z-index: 10;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+/* Show the username pill on hover/active caret. */
+.cm-editor .ySelectionCaret:hover .ySelectionInfo,
+.cm-editor .ySelectionCaret.cm-ySelectionCaret-active .ySelectionInfo,
+.cm-editor .ySelectionCaret:focus-within .ySelectionInfo {
+  opacity: 1;
+}
+
+/* Always-on pill mode : tip from user feedback that they want to see
+   "who is typing where" at a glance, not on hover. Comment the next
+   block out to revert to hover-only. */
+.cm-editor .ySelectionInfo {
+  opacity: 1;
+}
+
+/* Print export : the navbar's ⤓ PDF button stamps `.weft-printing`
+   onto <body> just before calling window.print(). The rules below
+   hide every chrome element so the print dialog only captures the
+   preview pane content. Removed on afterprint. */
+@media print {
+  body.weft-printing .navbar,
+  body.weft-printing aside,
+  body.weft-printing .cm-editor,
+  body.weft-printing [role="separator"],
+  body.weft-printing .tabs,
+  body.weft-printing details,
+  body.weft-printing dialog {
+    display: none !important;
+  }
+  body.weft-printing .prose,
+  body.weft-printing main,
+  body.weft-printing .h-screen {
+    height: auto !important;
+    overflow: visible !important;
+  }
+  body.weft-printing .rounded-box {
+    page-break-inside: avoid;
+  }
+}
+

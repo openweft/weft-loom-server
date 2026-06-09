@@ -11,6 +11,7 @@
   // with the suggested extension on every template change, but only
   // when the user hasn't typed in the path field yet (so we don't
   // fight them mid-type).
+  import { untrack } from 'svelte';
   import { TEMPLATES, findTemplate, type Template } from '../templates';
   import { writeFile } from '../api';
 
@@ -63,8 +64,11 @@
 
   $effect(() => {
     // Reset templateId when the language changes so the second combo
-    // never points at a hidden entry.
-    if (!visibleTemplates.some((t) => t.id === templateId)) {
+    // never points at a hidden entry. untrack the templateId read so
+    // the effect's only dep is `visibleTemplates` — otherwise the
+    // write below re-fires the effect.
+    const id = untrack(() => templateId);
+    if (!visibleTemplates.some((t) => t.id === id)) {
       templateId = visibleTemplates[0]?.id ?? 'blank';
     }
   });
@@ -74,11 +78,20 @@
   // Path autosuggest : only seed (or re-seed) when the field looks
   // unedited — empty or one of our previous "untitled-…" hints. Any
   // explicit edit by the user wins.
+  //
+  // CRITICAL : read `path` via untrack so the write below doesn't
+  // re-fire this effect with the *new* path, which matches the
+  // 'untitled-…' regex again → infinite loop saturating the event
+  // loop and blocking unrelated fetches (this was the cause of the
+  // FileExplorer "loading…" hang earlier in development).
   $effect(() => {
     if (!tpl) return;
-    if (path === '' || path.match(/^untitled-[a-z0-9]+(\.\w+)?$/)) {
-      path = 'untitled-' + Math.random().toString(36).slice(2, 6) + tpl.suggestedExtension;
-    }
+    const ext = tpl.suggestedExtension;
+    untrack(() => {
+      if (path === '' || path.match(/^untitled-[a-z0-9]+(\.\w+)?$/)) {
+        path = 'untitled-' + Math.random().toString(36).slice(2, 6) + ext;
+      }
+    });
   });
 
   async function create() {

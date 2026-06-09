@@ -87,6 +87,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// pulls it via auth.IdentityFrom. Unauthenticated requests still
 	// reach the mux ; the handlers that need an identity check via the
 	// IdentityFrom ok-flag.
+	if s.opts.Logger != nil {
+		s.opts.Logger.Info("http", "method", r.Method, "path", r.URL.Path, "ua", r.Header.Get("User-Agent"))
+	}
 	ident, ok := s.identify(r)
 	if ok {
 		r = r.WithContext(auth.WithIdentity(r.Context(), ident))
@@ -124,8 +127,21 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/projects/{name}/git/clone", s.requireAuth(s.handleGitClone))
 	s.mux.HandleFunc("POST /api/projects/{name}/git/pull", s.requireAuth(s.handleGitPull))
 	s.mux.HandleFunc("POST /api/projects/{name}/git/push", s.requireAuth(s.handleGitPush))
+	// V0.3 LLM chat surface — stub responses for now ; full wiring
+	// to Ollama / Anthropic / OpenAI lands when the backend config
+	// surface is in place.
+	s.mux.HandleFunc("POST /api/projects/{name}/chat", s.requireAuth(s.handleChat))
 	s.mux.HandleFunc("GET /api/projects/{name}/compile/{id}", s.requireAuth(s.handleCompileStream))
+	s.mux.HandleFunc("GET /api/projects/{name}/compile/{id}/artifact", s.requireAuth(s.handleCompileArtifact))
 	s.mux.HandleFunc("GET /api/projects/{name}/sync", s.handleSync)
+	// y-websocket appends "/{roomName}" to the configured WS URL, even
+	// when the room name is empty — so the actual URL hitting us is
+	// /api/projects/{name}/sync/ (trailing slash) or /sync/{room}.
+	// Registering this catch-all keeps both shapes working ; the room
+	// segment is informational today (we already partition by ytext key
+	// inside the shared per-project Yjs doc) but a future
+	// per-room handler would read it via r.PathValue("room").
+	s.mux.HandleFunc("GET /api/projects/{name}/sync/{room...}", s.handleSync)
 
 	// SPA — fall-through on every other GET. The static FS is rooted
 	// at the dist/ directory the build emits.

@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { listProjects, type Project } from '../api';
   import CloneProjectDialog from './CloneProjectDialog.svelte';
+  import { clickOutside } from '../actions';
 
   interface Props {
     current: string;
@@ -14,6 +15,7 @@
   let loadError = $state<string | null>(null);
   let loading = $state(false);
   let cloneOpen = $state(false);
+  let open = $state(false);
 
   async function refresh() {
     loading = true;
@@ -31,16 +33,26 @@
 
   function selectProject(p: Project) {
     onSwitch(p.name, p.language ?? 'markdown');
+    open = false;
   }
 
   function onCloned(name: string) {
     refresh();
     onSwitch(name, 'markdown');
   }
+
+  function toggle() {
+    open = !open;
+    if (open) refresh();
+  }
 </script>
 
-<details class="dropdown dropdown-end">
-  <summary class="btn btn-ghost btn-sm" onclick={refresh}>
+<div
+  class="dropdown dropdown-end"
+  class:dropdown-open={open}
+  use:clickOutside={() => (open = false)}
+>
+  <button type="button" class="btn btn-ghost btn-sm" onclick={toggle}>
     <span class="font-mono">{current}</span>
     <svg
       xmlns="http://www.w3.org/2000/svg"
@@ -55,49 +67,51 @@
         clip-rule="evenodd"
       />
     </svg>
-  </summary>
-  <ul
-    class="menu dropdown-content bg-base-100 border-base-300 z-1 mt-2 w-64 rounded-box border p-2 shadow"
-  >
-    <li class="menu-title px-2 pb-1 text-xs">Projects</li>
-    {#if loading}
-      <li class="px-2 py-1">
-        <span class="loading loading-spinner loading-xs"></span>
-        loading…
-      </li>
-    {:else if loadError}
-      <li class="px-2 py-1 text-error text-xs">{loadError}</li>
-    {:else if projects.length === 0}
-      <li class="px-2 py-1 text-xs opacity-60">
-        No projects yet. Use the API to create one.
-      </li>
-    {:else}
-      {#each projects as p}
-        <li>
-          <button
-            type="button"
-            onclick={() => selectProject(p)}
-            class:menu-active={p.name === current}
-          >
-            <span class="font-mono">{p.name}</span>
-            {#if p.language}
-              <span class="badge badge-ghost badge-xs ml-auto">{p.language}</span>
-            {/if}
-          </button>
+  </button>
+  {#if open}
+    <ul
+      class="menu dropdown-content bg-base-100 border-base-300 z-10 mt-2 w-64 rounded-box border p-2 shadow"
+    >
+      <li class="menu-title px-2 pb-1 text-xs">Projects</li>
+      {#if loading}
+        <li class="px-2 py-1">
+          <span class="loading loading-spinner loading-xs"></span>
+          loading…
         </li>
-      {/each}
-    {/if}
-    <li class="mt-1 border-t pt-1">
-      <button type="button" onclick={() => (cloneOpen = true)} class="text-xs">
-        <span class="opacity-80">⎇ Clone repo…</span>
-      </button>
-    </li>
-    <li>
-      <button type="button" onclick={refresh} class="text-xs">
-        <span class="opacity-60">⟳ refresh</span>
-      </button>
-    </li>
-  </ul>
-</details>
+      {:else if loadError}
+        <li class="px-2 py-1 text-error text-xs">{loadError}</li>
+      {:else if projects.length === 0}
+        <li class="px-2 py-1 text-xs opacity-60">
+          No projects yet. Clone a repo below to create one.
+        </li>
+      {:else}
+        {#each projects as p}
+          <li>
+            <button
+              type="button"
+              onclick={() => selectProject(p)}
+              class:menu-active={p.name === current}
+            >
+              <span class="font-mono">{p.name}</span>
+              {#if p.language}
+                <span class="badge badge-ghost badge-xs ml-auto">{p.language}</span>
+              {/if}
+            </button>
+          </li>
+        {/each}
+      {/if}
+      <li class="mt-1 border-t pt-1">
+        <button type="button" onclick={() => { cloneOpen = true; open = false; }} class="text-xs">
+          <span class="opacity-80">⎇ Clone repo…</span>
+        </button>
+      </li>
+      <li>
+        <button type="button" onclick={refresh} class="text-xs">
+          <span class="opacity-60">⟳ refresh</span>
+        </button>
+      </li>
+    </ul>
+  {/if}
+</div>
 
 <CloneProjectDialog bind:open={cloneOpen} onClose={() => (cloneOpen = false)} onCreated={onCloned} />

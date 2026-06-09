@@ -300,6 +300,54 @@ int main() {
 }
 `,
   },
+  // ---- YAML / build files ---------------------------------------
+  {
+    id: 'taskfile-yaml',
+    name: 'Taskfile.yaml',
+    language: 'yaml',
+    suggestedExtension: '.yaml',
+    description:
+      'go-task/task build file. Conventional name : Taskfile.yaml at the project root.',
+    content: `version: '3'
+
+vars:
+  APP: weft
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list-all
+    silent: true
+
+  build:
+    desc: Build the binary
+    cmds:
+      - go build -o bin/{{.APP}} ./cmd/{{.APP}}
+
+  test:
+    desc: Run the test suite
+    cmds:
+      - go test ./...
+
+  fmt:
+    desc: Format Go source
+    cmds:
+      - gofmt -w -s .
+
+  lint:
+    desc: Run static analysis
+    deps: [fmt]
+    cmds:
+      - go vet ./...
+
+  clean:
+    desc: Remove build artefacts
+    cmds:
+      - rm -rf bin/
+`,
+  },
+
   {
     id: 'blank',
     name: 'Blank',

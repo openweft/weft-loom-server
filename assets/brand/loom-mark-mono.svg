@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- Monochrome weave: over/under read via knockout gaps in the under-threads -->
+  <!-- stroke=currentColor: inherits CSS `color` when inlined (recolorable). -->
+  <g stroke-linecap="round" fill="none" stroke-width="13" stroke="currentColor">
+    <!-- warp1 (x44): under at y84 -> gap -->
+    <line x1="44" y1="24" x2="44" y2="74"/>
+    <line x1="44" y1="94" x2="44" y2="104"/>
+    <!-- warp2 (x84): under at y44 -> gap -->
+    <line x1="84" y1="24" x2="84" y2="34"/>
+    <line x1="84" y1="54" x2="84" y2="104"/>
+    <!-- weft1 (y44): under at x44 -> gap -->
+    <line x1="24" y1="44" x2="34" y2="44"/>
+    <line x1="54" y1="44" x2="104" y2="44"/>
+    <!-- weft2 (y84): under at x84 -> gap -->
+    <line x1="24" y1="84" x2="74" y2="84"/>
+    <line x1="94" y1="84" x2="104" y2="84"/>
+  </g>
+</svg>
