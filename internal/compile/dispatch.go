@@ -15,20 +15,13 @@ package compile
 // (`nats sub weft.mounts.>` for debug, JetStream LastPerSubject for
 // at-boot delivery).
 //
-// Boot-time delivery guarantee : a plain `nats.Subscribe` only sees
-// messages published AFTER subscription. For boot-time mounts the
-// operator MUST configure JetStream with a LastPerSubject retention
-// stream covering `weft.mounts.*` so the agent's first subscribe
-// replays the most recent state for its VM. The recipe :
-//
-//   nats stream add weft-mounts \
-//     --subjects 'weft.mounts.*' \
-//     --storage file --retention limits --max-msgs-per-subject 1
-//
-// Without it, the loom-server's publish would race the VM boot.
-// A later iteration of weft-microvm-agent's subscriber will switch
-// to a JetStream consumer with DeliverLastPerSubject so this becomes
-// a one-line subject-level guarantee instead of an operator recipe.
+// Boot-time delivery guarantee : the agent's mounts Subscriber
+// auto-ensures a JetStream stream `weft-mounts` with `weft.mounts.*`
+// subjects + LastPerSubject retention on its first connect, so the
+// publish-before-boot path is reliable out of the box — no operator
+// runbook step required. The fall-back to core NATS only kicks in
+// when the broker is JetStream-less (rare ; CI / unit-test brokers
+// mostly).
 
 import (
 	"context"
