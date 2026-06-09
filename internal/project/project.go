@@ -60,6 +60,14 @@ type LocalStore struct {
 	root string
 }
 
+// Root exposes the configured filesystem root for callers that need
+// to materialise per-project paths outside the Store interface — e.g.
+// the V0.3 git surface drives go-git directly against the working
+// tree under <root>/<owner>/<project>. The Store interface stays
+// backend-agnostic ; this is a deliberate LocalStore-specific
+// extension and a future S3 backend will simply not satisfy it.
+func (s *LocalStore) Root() string { return s.root }
+
 // NewLocalStore returns a store rooted at the given absolute path.
 // The directory is created on first write.
 func NewLocalStore(root string) *LocalStore {

@@ -31,6 +31,11 @@ type PostgresStore struct {
 	filesRoot string
 }
 
+// Root mirrors LocalStore.Root : the materialised filesystem root.
+// The V0.3 git surface needs a working tree on disk regardless of
+// whether project metadata is tracked in Postgres or just on the FS.
+func (s *PostgresStore) Root() string { return s.filesRoot }
+
 //go:embed schema.sql
 var schemaSQL string
 
