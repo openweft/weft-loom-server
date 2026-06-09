@@ -28,9 +28,12 @@
     onStatus?: (
       status: 'connecting' | 'connected' | 'disconnected',
     ) => void;
+    // onYDoc fires once the Yjs document is initialised so the
+    // PreviewPane can attach an observer to the same shared text.
+    onYDoc?: (doc: Y.Doc) => void;
   }
 
-  let { project, language, onStatus }: Props = $props();
+  let { project, language, onStatus, onYDoc }: Props = $props();
 
   let host: HTMLDivElement | undefined = $state();
   let view: EditorView | undefined;
@@ -68,6 +71,7 @@
   onMount(() => {
     if (!host) return;
     ydoc = new Y.Doc();
+    onYDoc?.(ydoc);
     provider = new WebsocketProvider(wsURL(project), '', ydoc);
     const ytext = ydoc.getText('codemirror');
 
