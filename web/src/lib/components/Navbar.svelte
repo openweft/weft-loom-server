@@ -4,6 +4,7 @@
   import LanguageSwitcher from './LanguageSwitcher.svelte';
   import ThemeSwitcher from './ThemeSwitcher.svelte';
   import CollaboratorList from './CollaboratorList.svelte';
+  import SyncBadge from './SyncBadge.svelte';
   import type { Identity } from '../identity';
 
   interface Props {
@@ -50,6 +51,7 @@
     <CollaboratorList {awareness} self={identity} {onRename} />
     <div class="divider divider-horizontal mx-0"></div>
     <ProjectSwitcher current={project} {onSwitch} />
+    <SyncBadge {project} />
     <LanguageSwitcher current={language} onChange={onLanguageChange} />
     <div class="divider divider-horizontal mx-0"></div>
     <ThemeSwitcher />

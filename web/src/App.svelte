@@ -30,6 +30,11 @@
   let compileOpen = $state({ open: false });
   let ydoc = $state<Y.Doc | undefined>();
   let awareness = $state<Awareness | undefined>();
+  // artifactURL : the URL the CompileDrawer received from the SSE
+  // 'result' event. Piped into PreviewPane so the compiled PDF
+  // shows inline (browser <embed>, not download). Cleared on project
+  // or file switch so a stale PDF from another file doesn't linger.
+  let artifactURL = $state<string | undefined>(undefined);
   let showPreview = $derived(language === 'markdown' || language === 'latex');
 
   let connectionStatus = $state<'connecting' | 'connected' | 'disconnected'>(
@@ -42,6 +47,7 @@
     language = lang;
     ydoc = undefined;
     awareness = undefined;
+    artifactURL = undefined;
     // V0.3 : git is the source of truth. Silently fire a pull when
     // a project opens so the working tree reflects whatever
     // collaborators pushed in a previous session. Unconfigured
@@ -62,6 +68,7 @@
   function onOpenFile(path: string, lang: string) {
     currentFile = path;
     language = lang;
+    artifactURL = undefined; // drop stale PDF when switching files
   }
 
   function onLanguageChange(lang: string) {
@@ -110,7 +117,7 @@
     </div>
     {#if showPreview}
       <div class="flex-1 overflow-hidden">
-        <PreviewPane {ydoc} {language} file={currentFile} />
+        <PreviewPane {ydoc} {language} file={currentFile} pdfURL={artifactURL} />
       </div>
     {/if}
   </main>
@@ -118,5 +125,6 @@
     bind:open={compileOpen.open}
     {project}
     {language}
+    onArtifact={(url) => (artifactURL = url)}
   />
 </div>

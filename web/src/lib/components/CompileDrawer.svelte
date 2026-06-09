@@ -5,9 +5,13 @@
     open: boolean;
     project: string;
     language: string;
+    // onArtifact fires when the SSE 'result' event lands a compiled
+    // artifact URL. The parent App pipes it into PreviewPane so the
+    // PDF renders inline alongside the editor (no download).
+    onArtifact?: (url: string) => void;
   }
 
-  let { open = $bindable(), project, language }: Props = $props();
+  let { open = $bindable(), project, language, onArtifact }: Props = $props();
 
   interface LogLine {
     kind: 'log' | 'result' | 'error';
@@ -51,7 +55,10 @@
                 : 'compile failed',
             },
           ];
-          if (r.artifact) resultURL = r.artifact;
+          if (r.artifact) {
+            resultURL = r.artifact;
+            onArtifact?.(r.artifact);
+          }
         } catch {
           lines = [...lines, { kind: 'result', text: ev.data }];
         }
