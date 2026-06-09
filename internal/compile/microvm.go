@@ -23,11 +23,13 @@ package compile
 // of pulling weft-microvm's Go module becomes worthwhile.
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // imageForLanguage picks the OCI image weft-microvm pulls for a
@@ -110,25 +112,45 @@ func (s *Service) compileInMicroVM(workDir, scratchDir string, spec JobSpec, mar
 	if sock := os.Getenv("WEFT_AGENT_SOCK"); sock != "" {
 		args = append(args, "--socket", sock)
 	}
-	// Prefer the CubeFS path when configured : both loom-server and
-	// the compile VM see the same shared volume directly via cfs-client
-	// in the initramfs. No hostpath round-trip, no per-replica copies.
+	// CubeFS path : the OPENWEFT-NATIVE design publishes the
+	// pod.ShareMount on the per-VM NATS subject
+	// `weft.mounts.<vmID>` *before* the VM boots. The compile VM's
+	// in-guest weft-microvm-agent subscribes there as part of its
+	// normal Subscriber+ApplyFunc loop (same shape it uses for mesh
+	// / sshkeys / firewall), and applies the mount via
+	// cubefs.Registry.Apply.
 	//
-	// WEFT_LOOM_CUBEFS_MASTERS = "m1:port,m2:port,m3:port"
-	// WEFT_LOOM_CUBEFS_VOLUME  = "loom-projects"
-	// WEFT_LOOM_CUBEFS_SUBPATH = optional prefix inside the volume that
-	//                            maps to "/workspace" inside the VM ;
-	//                            defaults to "/" (volume root).
-	if masters := os.Getenv("WEFT_LOOM_CUBEFS_MASTERS"); masters != "" {
-		volume := os.Getenv("WEFT_LOOM_CUBEFS_VOLUME")
-		if volume == "" {
+	// Why publish rather than pass --cubefs on the CLI : the agent
+	// already exists, it already speaks NATS, and the publish path
+	// also lets us add/remove mounts on a *running* VM (teacher
+	// pushing a share to a class, switching project mid-session,
+	// …). The host therefore needs zero knowledge of the CubeFS
+	// masters / volume credentials.
+	//
+	// Hostpath fallback (-v) kicks in for single-host dev when
+	// WEFT_LOOM_CUBEFS_MASTERS isn't set : the loom server runs as
+	// a host process and the compile VM mounts the same dir
+	// directly via virtio-fs. Identical user-visible contract.
+	useCubeFS := os.Getenv("WEFT_LOOM_CUBEFS_MASTERS") != ""
+	if useCubeFS {
+		if os.Getenv("WEFT_LOOM_CUBEFS_VOLUME") == "" {
 			return "", fmt.Errorf("WEFT_LOOM_CUBEFS_MASTERS set but WEFT_LOOM_CUBEFS_VOLUME empty")
 		}
-		args = append(args, "--cubefs", masters+":"+volume+":/workspace")
+		// Pre-publish the share-mount intent on the per-VM subject.
+		// The weft microvm run below uses a deterministic VM name
+		// (weft-microvm-<refsafe(image)>) so the publish target
+		// matches what the agent inside subscribes to.
+		vmID := vmNameForImage(image)
+		mount := cubefsMountForLoom()
+		emit(Event{Kind: "log", Line: "publish weft.mounts." + vmID + " : cubefs " + mount.CubeFS.Volume + " → /workspace"})
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := publishCubeFSMount(ctx, vmID, mount); err != nil {
+			cancel()
+			return "", fmt.Errorf("nats publish mount intent : %w", err)
+		}
+		cancel()
 	} else {
-		// Hostpath fallback : useful in single-host dev where the loom
-		// server runs as a host process and the project tree is on the
-		// local fs.
+		// Hostpath fallback.
 		args = append(args,
 			"-v", workDir+":/workspace",
 			"-v", scratchDir+":"+vmScratch,
@@ -158,4 +180,28 @@ func (s *Service) compileInMicroVM(workDir, scratchDir string, spec JobSpec, mar
 		return "", fmt.Errorf("microvm finished but no PDF at %s", pdf)
 	}
 	return pdf, nil
+}
+
+// vmNameForImage mirrors weft-microvm's refsafe() : the VM name that
+// `weft microvm run <image>` registers with weft-agent. Loom needs the
+// same identifier so the NATS subject we publish to matches the
+// in-guest agent's subscription. Cheap byte-by-byte rewrite of every
+// non-[a-zA-Z0-9_-] rune to '_' on the OCI ref, with the prefix
+// "weft-microvm-" added the same way the upstream does.
+func vmNameForImage(image string) string {
+	out := make([]byte, 0, len(image)+len("weft-microvm-"))
+	out = append(out, []byte("weft-microvm-")...)
+	for i := 0; i < len(image); i++ {
+		c := image[i]
+		switch {
+		case c >= 'a' && c <= 'z',
+			c >= 'A' && c <= 'Z',
+			c >= '0' && c <= '9',
+			c == '-', c == '_':
+			out = append(out, c)
+		default:
+			out = append(out, '_')
+		}
+	}
+	return string(out)
 }
