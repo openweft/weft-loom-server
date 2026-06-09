@@ -128,6 +128,30 @@
 
   const tree = $derived(buildTree(files));
 
+  // flatRows : walk the tree depth-first into a flat (node, depth)
+  // list that the template can iterate without recursive snippets.
+  // Svelte 5 self-referencing snippets work in principle but were
+  // empirically locking the FileExplorer on first paint when the
+  // tree had nested directories ; flattening sidesteps that path
+  // entirely and gives an O(N) iteration that's easier to reason
+  // about.
+  interface FlatRow {
+    node: Node;
+    depth: number;
+  }
+  function flatten(root: Node): FlatRow[] {
+    const out: FlatRow[] = [];
+    function walk(n: Node, depth: number) {
+      if (n !== root) out.push({ node: n, depth });
+      if (n.dir && !collapsed.has(n.fullPath)) {
+        for (const c of n.children) walk(c, n === root ? 0 : depth + 1);
+      }
+    }
+    walk(root, 0);
+    return out;
+  }
+  const rows = $derived(flatten(tree));
+
   function open(node: Node) {
     if (node.dir) {
       // toggle collapse
@@ -202,57 +226,91 @@
       </li>
     {:else if loadError}
       <li class="px-2 py-1 text-error text-xs">{loadError}</li>
-    {:else if tree.children.length === 0}
+    {:else if rows.length === 0}
       <li class="px-2 py-1 text-xs opacity-60">
         Empty project. Click <span class="font-mono">+</span> to add a file.
       </li>
     {:else}
-      {#each tree.children as node (node.fullPath)}
-        {@render renderNode(node, 0)}
+      {#each rows as row (row.node.fullPath)}
+        {@const node = row.node}
+        {@const depth = row.depth}
+        {@const isCollapsed = collapsed.has(node.fullPath)}
+        <li>
+          <button
+            type="button"
+            class="group flex items-center w-full"
+            style="padding-left: {depth * 12 + 4}px"
+            onclick={() => open(node)}
+            class:menu-active={!node.dir && node.fullPath === currentFile}
+          >
+            {#if node.dir}
+              <span class="font-mono text-xs">
+                {isCollapsed ? '▸' : '▾'} 📁 {node.name}
+              </span>
+            {:else}
+              <span class="font-mono text-xs">📄 {node.name}</span>
+            {/if}
+            {#if !node.dir}
+              <span
+                role="button"
+                tabindex="0"
+                aria-label="Delete {node.fullPath}"
+                class="ml-auto opacity-0 group-hover:opacity-100 hover:text-error text-xs px-1 cursor-pointer"
+                onclick={(ev) => remove(node, ev)}
+                onkeydown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') remove(node, ev); }}
+              >
+                ✕
+              </span>
+            {/if}
+          </button>
+        </li>
       {/each}
     {/if}
   </ul>
 </aside>
 
-{#snippet renderNode(node: Node, depth: number)}
-  {@const isCollapsed = collapsed.has(node.fullPath)}
-  <li>
-    <button
-      type="button"
-      class="group flex items-center w-full"
-      style="padding-left: {depth * 12 + 4}px"
-      onclick={() => open(node)}
-      class:menu-active={!node.dir && node.fullPath === currentFile}
-    >
-      {#if node.dir}
-        <span class="font-mono text-xs">
-          {isCollapsed ? '▸' : '▾'} 📁 {node.name}
-        </span>
-      {:else}
-        <span class="font-mono text-xs">📄 {node.name}</span>
+<!-- Legacy recursive snippet — empirically locked Svelte 5 on first
+     paint with nested directories. Kept disabled (#if false) so the
+     diff stays surveyable ; remove on next pass. -->
+{#if false}
+  {#snippet renderNode(node: Node, depth: number)}
+    {@const isCollapsed = collapsed.has(node.fullPath)}
+    <li>
+      <button
+        type="button"
+        class="group flex items-center w-full"
+        style="padding-left: {depth * 12 + 4}px"
+        onclick={() => open(node)}
+        class:menu-active={!node.dir && node.fullPath === currentFile}
+      >
+        {#if node.dir}
+          <span class="font-mono text-xs">
+            {isCollapsed ? '▸' : '▾'} 📁 {node.name}
+          </span>
+        {:else}
+          <span class="font-mono text-xs">📄 {node.name}</span>
+        {/if}
+        {#if !node.dir}
+          <span
+            role="button"
+            tabindex="0"
+            aria-label="Delete {node.fullPath}"
+            class="ml-auto opacity-0 group-hover:opacity-100 hover:text-error text-xs px-1 cursor-pointer"
+            onclick={(ev) => remove(node, ev)}
+            onkeydown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') remove(node, ev); }}
+          >
+            ✕
+          </span>
+        {/if}
+      </button>
+      {#if node.dir && !isCollapsed && node.children.length > 0}
+        <ul>
+          <!-- snippet recursion disabled — flatten path used -->
+        </ul>
       {/if}
-      {#if !node.dir}
-        <span
-          role="button"
-          tabindex="0"
-          aria-label="Delete {node.fullPath}"
-          class="ml-auto opacity-0 group-hover:opacity-100 hover:text-error text-xs px-1 cursor-pointer"
-          onclick={(ev) => remove(node, ev)}
-          onkeydown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') remove(node, ev); }}
-        >
-          ✕
-        </span>
-      {/if}
-    </button>
-    {#if node.dir && !isCollapsed && node.children.length > 0}
-      <ul>
-        {#each node.children as child (child.fullPath)}
-          {@render renderNode(child, depth + 1)}
-        {/each}
-      </ul>
-    {/if}
-  </li>
-{/snippet}
+    </li>
+  {/snippet}
+{/if}
 
 <NewFileDialog bind:open={newOpen} {project} onClose={() => (newOpen = false)} onCreated={onCreated} />
 <GitPanel bind:open={gitOpen} {project} onClose={() => (gitOpen = false)} onSynced={refresh} />
