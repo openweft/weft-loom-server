@@ -67,7 +67,7 @@ async function makeSeedODT() {
   xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
   xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
   xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0"
-  xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible-processors:1.0"
+  xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"
   xmlns:xlink="http://www.w3.org/1999/xlink"
   xmlns:dc="http://purl.org/dc/elements/1.1/"
   office:version="1.2">
@@ -144,17 +144,24 @@ if (!mounted.body.includes('Hello ODT world')) {
 } else {
   ok('WYSIWYG initial content', '"' + mounted.body + '"');
 }
-// Image-read assertion remains V0.4 work. The svg-namespace
-// declaration on the seed's <office:document-content> root is now
-// in place (without it, DOMParser silently drops the entire
-// <draw:frame> subtree because `svg:width` / `svg:height` are
-// unbound prefixes — that was the missing piece). Even with the
-// namespaces fixed, the puppeteer harness still shows
-// imgSrcPrefix='' here, so there's a second issue we haven't
-// pinned down — likely in how WysiwygEditor.load() handles the
-// async parseODT call after weftLoomOpenFile flips currentFile.
-// Investigation continues ; the underlying parser/writer is
-// scaffolded + spec-compliant.
+// Image-read path : the seed ODT carries Pictures/seed.png + a
+// <draw:image> reference ; parseODT should resolve the href to a
+// data: URL the editor surfaces as an <img>. Two namespace bugs
+// had to be fixed for this to light up :
+//   1. The seed's <office:document-content> root must declare
+//      xmlns:svg (otherwise svg:width / svg:height are unbound
+//      prefixes + DOMParser drops the whole <draw:frame> subtree).
+//   2. The svg namespace URI is
+//      urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0
+//      — NOT …svg-compatible-processors:1.0 (the latter was an
+//      earlier typo on my side).
+if (mounted.imgSrcPrefix.startsWith('data:image/png')) {
+  ok('image read path', 'data: URL surfaced from Pictures/seed.png');
+} else {
+  failL('image read path',
+    'expected <img src="data:image/png..."> ; got src prefix : "'
+    + mounted.imgSrcPrefix + '"');
+}
 
 // 4) drive an edit (text + a 2×2 table insert) + wait for the
 //    debounced save (~600 ms) + extra time for jszip generation.
