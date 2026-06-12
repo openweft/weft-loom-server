@@ -38,6 +38,16 @@ type JobSpec struct {
 	Language  string   `json:"language"`
 	Entry     string   `json:"entry,omitempty"`
 	ExtraArgs []string `json:"extra_args,omitempty"`
+	// CommandOverride : verbatim shell command that REPLACES the
+	// language's default when non-empty. Threaded from the
+	// SettingsPanel UI : the user types `make build && ./out` once
+	// + persists it as a per-language override, and every Run
+	// dispatches that command instead of the built-in one.
+	// Empty string preserves the existing behaviour.
+	CommandOverride string `json:"command,omitempty"`
+	// Identity is populated by Start() from the auth.Identity ; the
+	// workspace dispatch path uses it to resolve the per-user VM.
+	Identity string `json:"-"`
 }
 
 // Event is one streamed line during a compile job.
@@ -55,10 +65,47 @@ type Event struct {
 // artifact paths so the HTTP layer can stream them back.
 type Service struct {
 	store project.Store
+	// Workspaces : when non-nil + the user has a NATS-backed VM,
+	// every compile job dispatches via Containers + ExecSession
+	// instead of the host subprocess path. Same NATS subjects the
+	// shell uses → unified observability + no special treatment
+	// for texlive vs go vs pandoc.
+	Workspaces WorkspaceResolver
 
 	mu        sync.Mutex
 	jobs      map[string]*runningJob
 	artifacts map[string]string // jobID → absolute artifact path
+}
+
+// WorkspaceResolver is the trimmed-down view of workspace.Registry
+// the compile service needs : "give me the user's VM". Kept narrow
+// so unit tests stub it with a one-VM map and the compile package
+// stays decoupled from internal/workspace's full surface.
+type WorkspaceResolver interface {
+	Ensure(ctx context.Context, ident WorkspaceIdentity) (*WorkspaceVM, error)
+}
+
+// WorkspaceIdentity / WorkspaceVM mirror the workspace package's
+// types in a trimmed-down form. Adapter lives in cmd/weft-loom.
+type WorkspaceIdentity struct {
+	Subject string
+}
+
+type WorkspaceVM struct {
+	VMID    string
+	WorkDir string
+	Conn    WorkspaceNATS
+	Health  func() string
+}
+
+// WorkspaceNATS is the publish/subscribe surface compile needs.
+type WorkspaceNATS interface {
+	Publish(subject string, data []byte) error
+	Subscribe(subject string, cb func(subj string, data []byte)) (WorkspaceUnsub, error)
+}
+
+type WorkspaceUnsub interface {
+	Unsubscribe() error
 }
 
 type runningJob struct {
@@ -81,6 +128,7 @@ func (s *Service) Start(_ context.Context, ident auth.Identity, spec JobSpec) (s
 	if spec.Language == "" {
 		return "", errors.New("compile: language required")
 	}
+	spec.Identity = ident.Subject
 	id := newJobID()
 	j := &runningJob{
 		events: make(chan Event, 64),
@@ -136,6 +184,7 @@ func (s *Service) run(ident auth.Identity, id string, spec JobSpec, j *runningJo
 	}
 
 	emit(Event{Kind: "log", Line: fmt.Sprintf("compile job %s starting (%s)", id, spec.Language)})
+	emit(Event{Kind: "log", Line: fmt.Sprintf("⏱  job.start                0ms")})
 
 	// Locate the project's working tree on disk.
 	rooted, ok := s.store.(interface{ Root() string })
@@ -169,6 +218,8 @@ func (s *Service) run(ident auth.Identity, id string, spec JobSpec, j *runningJo
 		return
 	}
 
+	emit(Event{Kind: "log", Line: fmt.Sprintf("⏱  job.scratch.ready    %6dms", time.Since(start).Milliseconds())})
+
 	// Dispatch to the per-language builder.
 	var artifactPath string
 	var err error
@@ -178,7 +229,12 @@ func (s *Service) run(ident auth.Identity, id string, spec JobSpec, j *runningJo
 	case "markdown":
 		artifactPath, err = s.compileMarkdown(workDir, scratchDir, spec, emit)
 	default:
-		err = fmt.Errorf("language %q not supported for in-window PDF compile (use the Run button + manual download for other languages)", spec.Language)
+		// Generic execution path : streams stdout to the log, no PDF
+		// artefact. The per-language command is resolved by
+		// runCommandFor() — Go, Python, Rust, Node, C++ etc. Falls
+		// back to the workspace μVM's pkgx wrappers when the
+		// language has no OCI image published yet.
+		artifactPath, err = s.compileGeneric(workDir, scratchDir, spec, emit)
 	}
 
 	dur := time.Since(start).Milliseconds()
@@ -187,6 +243,11 @@ func (s *Service) run(ident auth.Identity, id string, spec JobSpec, j *runningJo
 		return
 	}
 
+	// Surface the artifact path the artifact endpoint will serve.
+	// Helps diagnose why /artifact 404s : if the path is wrong (e.g.
+	// missing -output-directory adjustment) the operator sees it
+	// right next to the compile log.
+	emit(Event{Kind: "log", Line: fmt.Sprintf("artifact registered : %s", artifactPath)})
 	s.mu.Lock()
 	s.artifacts[id] = artifactPath
 	s.mu.Unlock()
@@ -216,6 +277,18 @@ func (s *Service) compileLatex(workDir, scratchDir string, spec JobSpec, emit fu
 	if _, err := os.Stat(entryAbs); err != nil {
 		return "", fmt.Errorf("entry file %s : %w", entry, err)
 	}
+	// Expand `${expression}` placeholders so pdflatex sees the same
+	// substituted source the live preview does. We only shadow into
+	// scratchDir when the expansion actually changed something, so
+	// the common no-templates path takes zero extra IO.
+	if src, rerr := os.ReadFile(entryAbs); rerr == nil {
+		if expanded := ExpandTemplate(string(src), time.Now()); expanded != string(src) {
+			shadow := filepath.Join(scratchDir, filepath.Base(entry))
+			if werr := os.WriteFile(shadow, []byte(expanded), 0o644); werr == nil {
+				entryAbs = shadow
+			}
+		}
+	}
 	// LaTeX needs two passes for cross-references ; the command is
 	// run twice in either dispatch path.
 	args := []string{
@@ -226,6 +299,29 @@ func (s *Service) compileLatex(workDir, scratchDir string, spec JobSpec, emit fu
 	}
 	args = append(args, spec.ExtraArgs...)
 
+	// V0.4 unified path : when the user has a workspace VM with a
+	// NATS conn, dispatch via the Containers + ExecSession pattern
+	// instead of the legacy `weft microvm run` CLI. Same wire shape
+	// the shell tab uses → unified observability + no special
+	// treatment for texlive vs go vs pandoc.
+	resolveStart := time.Now()
+	vm := s.resolveVMForCompile(spec)
+	emit(Event{Kind: "log", Line: fmt.Sprintf("⏱  resolveVMForCompile  %6dms  vm=%v", time.Since(resolveStart).Milliseconds(), vm != nil)})
+	if vm != nil {
+		cmd := append([]string{"pdflatex"}, args...)
+		for pass := 1; pass <= 2; pass++ {
+			passStart := time.Now()
+			emit(Event{Kind: "log", Line: fmt.Sprintf("--- workspace pass %d ---", pass)})
+			out, err := s.compileInWorkspace(context.Background(), vm, workDir, "latex", cmd, emit)
+			emit(Event{Kind: "log", Line: fmt.Sprintf("⏱  pass.%d.end           %6dms", pass, time.Since(passStart).Milliseconds())})
+			if err != nil {
+				return "", err
+			}
+			if pass == 2 {
+				return out, nil
+			}
+		}
+	}
 	if useMicroVM() {
 		cmd := append([]string{"pdflatex"}, args...)
 		// Two passes inside the VM. Could be wrapped in a single
@@ -280,12 +376,30 @@ func (s *Service) compileMarkdown(workDir, scratchDir string, spec JobSpec, emit
 	if err != nil {
 		return "", fmt.Errorf("read %s : %w", entry, err)
 	}
+	// Expand `${expression}` placeholders before the tool sees the
+	// source — keeps marp / pandoc output in sync with the live
+	// preview. If the expanded text differs from the on-disk source,
+	// write it back into scratchDir under the original filename so
+	// marp-cli's --allow-local-files relative paths still resolve.
+	if expanded := ExpandTemplate(string(src), time.Now()); expanded != string(src) {
+		shadow := filepath.Join(scratchDir, filepath.Base(entry))
+		if werr := os.WriteFile(shadow, []byte(expanded), 0o644); werr == nil {
+			entryAbs = shadow
+		}
+	}
 	isMarp := detectMarp(string(src))
 	outPath := filepath.Join(scratchDir, strings.TrimSuffix(filepath.Base(entry), filepath.Ext(entry))+".pdf")
 
 	if isMarp {
 		args := []string{"--pdf", "--allow-local-files", "-o", outPath, entryAbs}
 		args = append(args, spec.ExtraArgs...)
+		if vm := s.resolveVMForCompile(spec); vm != nil {
+			cmd := append([]string{"marp"}, args...)
+			if _, err := s.compileInWorkspace(context.Background(), vm, workDir, "markdown", cmd, emit); err != nil {
+				return "", err
+			}
+			return outPath, nil
+		}
 		if useMicroVM() {
 			cmd := append([]string{"marp"}, args...)
 			if _, err := s.compileInMicroVM(workDir, scratchDir, spec, true, cmd, emit); err != nil {
@@ -304,6 +418,13 @@ func (s *Service) compileMarkdown(workDir, scratchDir string, spec JobSpec, emit
 	} else {
 		args := []string{"-o", outPath, entryAbs}
 		args = append(args, spec.ExtraArgs...)
+		if vm := s.resolveVMForCompile(spec); vm != nil {
+			cmd := append([]string{"pandoc"}, args...)
+			if _, err := s.compileInWorkspace(context.Background(), vm, workDir, "markdown", cmd, emit); err != nil {
+				return "", err
+			}
+			return outPath, nil
+		}
 		if useMicroVM() {
 			cmd := append([]string{"pandoc"}, args...)
 			if _, err := s.compileInMicroVM(workDir, scratchDir, spec, false, cmd, emit); err != nil {
@@ -324,6 +445,132 @@ func (s *Service) compileMarkdown(workDir, scratchDir string, spec JobSpec, emit
 		return "", fmt.Errorf("compile finished but no PDF at %s", outPath)
 	}
 	return outPath, nil
+}
+
+// compileGeneric runs the language-appropriate "compile or run"
+// command via the workspace μVM. Output is streamed to the log ;
+// no PDF artefact (return empty path). The per-language command is
+// resolved by runCommandFor() — Go / Python / Rust / Node / C++ /
+// Shell etc.
+//
+// When the language's OCI image isn't published yet, the workspace-
+// agent falls back to the host shell (which now ships pkgx
+// wrappers for `python3` `go` `node` `npm`).
+func (s *Service) compileGeneric(workDir, _scratchDir string, spec JobSpec, emit func(Event)) (string, error) {
+	cmd, ok := runCommandFor(spec)
+	if !ok {
+		return "", fmt.Errorf("language %q not wired for compile (no run command registered) — open a terminal (Ctrl+`) to invoke the toolchain manually", spec.Language)
+	}
+
+	resolveStart := time.Now()
+	vm := s.resolveVMForCompile(spec)
+	emit(Event{Kind: "log", Line: fmt.Sprintf("⏱  resolveVMForCompile  %6dms  vm=%v", time.Since(resolveStart).Milliseconds(), vm != nil)})
+	if vm == nil {
+		return "", fmt.Errorf("workspace μVM not available — wait for it to boot then retry")
+	}
+
+	emit(Event{Kind: "log", Line: fmt.Sprintf("--- workspace run (%s) ---", spec.Language)})
+	emit(Event{Kind: "log", Line: "$ " + strings.Join(cmd, " ")})
+	if _, err := s.compileInWorkspace(context.Background(), vm, workDir, spec.Language, cmd, emit); err != nil {
+		return "", err
+	}
+	return "", nil
+}
+
+// runCommandFor maps a language to the command line that builds /
+// runs the project's entry file. Used by compileGeneric.
+//
+// Conventions :
+//   - Go        : `go run <entry>` (or `go run ./...` when entry empty)
+//   - Python    : `python3 <entry>`
+//   - Rust      : `cargo run` if Cargo.toml present, else `rustc <entry> && ./<entry>`
+//   - Node      : `node <entry>`
+//   - C / C++   : `g++ <entry> -o /tmp/a.out && /tmp/a.out`
+//   - Shell     : `sh <entry>`
+//   - Ruby      : `ruby <entry>`
+//   - Perl      : `perl <entry>`
+//
+// Defaults the entry filename when spec.Entry is empty.
+func runCommandFor(spec JobSpec) ([]string, bool) {
+	// CommandOverride wins unconditionally — bypasses the per-
+	// language defaults so the user's "make build && ./out" or
+	// "pkgx +deno deno task" runs verbatim. The override flows
+	// through `sh -c` so shell idioms (`&&`, `|`, env vars) work
+	// inside the workspace μVM.
+	if strings.TrimSpace(spec.CommandOverride) != "" {
+		return []string{"sh", "-c", spec.CommandOverride}, true
+	}
+	entry := spec.Entry
+	switch spec.Language {
+	case "golang", "go":
+		// Two-path : if the project has a go.mod, run `go run ./...`
+		// (module mode, picks up all sub-packages). Otherwise the
+		// project is a one-off script tree, so `go run` the entry file
+		// directly — `./...` would error with "directory prefix .
+		// does not contain main module or its selected dependencies"
+		// on a module-less project. Wrap in `sh -c` so the detection
+		// happens inside the workspace μVM at the project CWD.
+		if entry == "" {
+			entry = "main.go"
+		}
+		return []string{"sh", "-c",
+			"if [ -f go.mod ]; then go run ./...; else go run " + shellQuote(entry) + "; fi",
+		}, true
+	case "python":
+		if entry == "" {
+			entry = "main.py"
+		}
+		return []string{"python3", entry}, true
+	case "rust":
+		// Use cargo when Cargo.toml is present in the project root,
+		// fall back to rustc for one-off scripts. The wrapper script
+		// performs the detection inside the workspace μVM since
+		// loom-server doesn't know the project tree's CWD.
+		if entry == "" {
+			entry = "main.rs"
+		}
+		return []string{"sh", "-c",
+			"if [ -f Cargo.toml ]; then cargo run; " +
+				"else rustc " + shellQuote(entry) + " -o /tmp/a.out && /tmp/a.out; fi",
+		}, true
+	case "node", "javascript", "typescript":
+		if entry == "" {
+			entry = "index.js"
+		}
+		return []string{"node", entry}, true
+	case "cpp", "c++":
+		if entry == "" {
+			entry = "main.cpp"
+		}
+		return []string{"sh", "-c", "g++ " + shellQuote(entry) + " -std=c++20 -o /tmp/a.out && /tmp/a.out"}, true
+	case "c":
+		if entry == "" {
+			entry = "main.c"
+		}
+		return []string{"sh", "-c", "cc " + shellQuote(entry) + " -o /tmp/a.out && /tmp/a.out"}, true
+	case "shell", "bash", "sh":
+		if entry == "" {
+			entry = "main.sh"
+		}
+		return []string{"sh", entry}, true
+	case "ruby":
+		if entry == "" {
+			entry = "main.rb"
+		}
+		return []string{"ruby", entry}, true
+	case "perl":
+		if entry == "" {
+			entry = "main.pl"
+		}
+		return []string{"perl", entry}, true
+	}
+	return nil, false
+}
+
+// shellQuote single-quotes a string for safe interpolation into the
+// `sh -c` payload runCommandFor emits for compile-then-run flows.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 // detectMarp returns true if the YAML front-matter contains `marp: true`.

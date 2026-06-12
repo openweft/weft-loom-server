@@ -16,6 +16,14 @@ type startCompileBody struct {
 	Language  string   `json:"language" doc:"Sandbox image picker (latex / go / cpp / python / rust / javascript). Required."`
 	Entry     string   `json:"entry,omitempty" doc:"Main source file (e.g. main.tex, main.go). Per-language default applies when empty."`
 	ExtraArgs []string `json:"extra_args,omitempty" doc:"Appended to the language's default build command."`
+	// Command : when non-empty, REPLACES the language's default
+	// command. Useful for users with project-specific build scripts
+	// (`make build && ./out`, `pkgx +deno deno task build`, etc.).
+	// Threaded into JobSpec.CommandOverride ; the dispatcher then
+	// runs `sh -c "<command>"` inside the workspace μVM. Single
+	// string, NOT a list, so the user types the same shell command
+	// they'd paste in a terminal.
+	Command string `json:"command,omitempty" doc:"Optional verbatim shell command — overrides the language's default when set. Inside the workspace μVM, the dispatcher runs sh -c <command>."`
 }
 
 type startCompileInput struct {
@@ -46,10 +54,11 @@ func mountCompileAPI(api huma.API, s *Server) {
 		}
 		ident, _ := auth.IdentityFrom(ctx)
 		id, err := s.opts.Compiler.Start(ctx, ident, compile.JobSpec{
-			Project:   in.Project,
-			Language:  in.Body.Language,
-			Entry:     in.Body.Entry,
-			ExtraArgs: in.Body.ExtraArgs,
+			Project:         in.Project,
+			Language:        in.Body.Language,
+			Entry:           in.Body.Entry,
+			ExtraArgs:       in.Body.ExtraArgs,
+			CommandOverride: in.Body.Command,
 		})
 		if err != nil {
 			return nil, huma.Error400BadRequest("compile start", err)
