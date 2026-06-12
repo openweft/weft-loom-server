@@ -28,75 +28,40 @@ export function applyTheme(theme: Theme) {
 }
 
 // iconForPath maps a file extension to a small glyph the FileExplorer
-// uses as a VSCode-style file-type indicator. Kept emoji-based so it
-// renders without a custom icon font.
+// uses as a VSCode-style file-type indicator. The chosen icon theme
+// is read from localStorage at every call ; switching themes via the
+// Settings combo updates icons everywhere on the next render.
+//
+// For the `seti` theme we look up the official jesseweed/seti-ui
+// font's codepoint per extension + return the matching PUA char.
+// The renderer wraps icon spans in `class="seti-icon"` so the seti
+// font kicks in only for those code points (emoji are unaffected
+// because the seti font doesn't claim their Unicode range).
+import { ICON_THEMES, loadIconTheme } from './iconThemes';
+import { SETI_EXT_TO_CODEPOINT } from './setiMappings';
+
 export function iconForPath(path: string, isDir = false): string {
-  if (isDir) return '📁';
+  const themeName = loadIconTheme();
+  const theme = ICON_THEMES[themeName];
+  if (themeName === 'seti') {
+    // Seti font ships its own folder + default glyphs in the PUA.
+    // Folders use codepoint E032 ; unknown extensions fall through
+    // to E023 (the 'default' file glyph) ; both render via the
+    // `seti-icon` font-family wrapping span on the call site.
+    if (isDir) return '';
+    const lower = path.toLowerCase();
+    const dot = lower.lastIndexOf('.');
+    const ext = dot < 0 ? '' : lower.slice(dot + 1);
+    const base = lower.slice(lower.lastIndexOf('/') + 1);
+    const code = SETI_EXT_TO_CODEPOINT[ext] ?? SETI_EXT_TO_CODEPOINT[base] ?? '0023';
+    return String.fromCharCode(parseInt(code, 16));
+  }
+  if (isDir) return theme.dir;
   const lower = path.toLowerCase();
   const dot = lower.lastIndexOf('.');
-  if (dot < 0) return '📄';
+  if (dot < 0) return theme.defaultFile;
   const ext = lower.slice(dot + 1);
-  switch (ext) {
-    case 'md':
-    case 'markdown':
-    case 'mdown':
-      return '📝';
-    case 'tex':
-    case 'sty':
-    case 'cls':
-      return '📐';
-    case 'bib':
-      return '📚';
-    case 'pdf':
-      return '📕';
-    case 'go':
-      return '🐹';
-    case 'py':
-      return '🐍';
-    case 'rs':
-      return '🦀';
-    case 'js':
-    case 'mjs':
-    case 'cjs':
-      return '🟨';
-    case 'ts':
-    case 'tsx':
-    case 'jsx':
-      return '🟦';
-    case 'c':
-    case 'cc':
-    case 'cpp':
-    case 'cxx':
-    case 'h':
-    case 'hpp':
-      return '⚙️';
-    case 'json':
-    case 'yaml':
-    case 'yml':
-    case 'toml':
-    case 'hcl':
-      return '🔧';
-    case 'sh':
-    case 'bash':
-    case 'zsh':
-      return '🐚';
-    case 'css':
-    case 'scss':
-      return '🎨';
-    case 'html':
-    case 'htm':
-      return '🌐';
-    case 'svg':
-    case 'png':
-    case 'jpg':
-    case 'jpeg':
-    case 'gif':
-      return '🖼️';
-    case 'lock':
-      return '🔒';
-    default:
-      return '📄';
-  }
+  return theme.byExt[ext] ?? theme.defaultFile;
 }
 
 // languageForPath maps a file extension to the editor language the
@@ -135,15 +100,57 @@ export function languageForPath(path: string): string {
     case 'mjs':
     case 'cjs':
     case 'jsx':
-    case 'ts':
-    case 'tsx':
       return 'javascript';
+    case 'ts':
+    case 'mts':
+    case 'cts':
+    case 'tsx':
+      return 'typescript';
+    case 'svelte':
+      return 'svelte';
+    case 'rtf':
+      return 'rtf';
     case 'yaml':
     case 'yml':
       return 'yaml';
     case 'toml':
-    case 'hcl':
       return 'toml';
+    case 'hcl':
+    case 'hcl2':
+    case 'tf':
+    case 'tfvars':
+    case 'tfstate':
+    case 'nomad':
+    case 'pkr':       // Packer (HCL2)
+    case 'pkrvars':   // Packer var files
+    case 'tftpl':     // Terraform template files
+      return 'hcl';
+    case 'rb':
+    case 'ruby':
+      return 'ruby';
+    case 'pl':
+    case 'pm':
+    case 'perl':
+      return 'perl';
+    case 'sh':
+    case 'bash':
+    case 'zsh':
+      return 'shell';
+    case 'zig':
+      return 'zig';
+    case 'html':
+    case 'htm':
+    case 'xhtml':
+    case 'xml':
+    case 'svg':
+      return 'html';
+    case 'css':
+      return 'css';
+    case 'scss':
+    case 'sass':
+      return 'scss';
+    case 'json':
+      return 'json';
     default:
       return 'markdown';
   }

@@ -122,6 +122,55 @@ export const MARP_THEMES: MarpTheme[] = [
     description: 'Muted olive-green academic.',
     style: 'background:#f7f7f0;color:#3a4a1f;border-color:#a6b87a',
   },
+  // ---- Institutional themes (openweft) ----
+  // Each ships as its own OCI artifact at
+  // ghcr.io/openweft/weft-loom-theme-<name>:<tag> ; the
+  // weft-loom-markdown image consumes them via multi-stage COPY.
+  // Preview styles below mirror the brand-validated signature so
+  // the in-window preview matches the PDF output of the real
+  // marp-cli render.
+  {
+    id: 'polytechnique',
+    label: 'École polytechnique',
+    origin: 'community',
+    description: 'PANTONE 7694C navy (École polytechnique 2021 charter).',
+    style: 'background:#fff;color:#1f2226;border-color:#01426a',
+  },
+  {
+    id: 'ip-paris',
+    label: 'Institut Polytechnique de Paris',
+    origin: 'community',
+    description: 'Cyan-blue + green + orange triad (ip-paris.fr identity).',
+    style: 'background:#fff;color:#212529;border-color:#008bd2',
+  },
+  {
+    id: 'cnrs',
+    label: 'CNRS',
+    origin: 'community',
+    description: 'Electric blue #0660FF + Chivo / Libre Franklin.',
+    style: 'background:#fff;color:#151723;border-color:#0660ff',
+  },
+  {
+    id: 'dinum',
+    label: 'DINUM (DSFR)',
+    origin: 'community',
+    description: 'République française signature — Marianne blue + red.',
+    style: 'background:#fff;color:#161616;border-color:#000091',
+  },
+  {
+    id: 'paris-saclay',
+    label: 'Université Paris-Saclay',
+    origin: 'community',
+    description: 'Aubergine #62003C (logo SVG fill) + Avenir.',
+    style: 'background:#fff;color:#333;border-color:#62003c',
+  },
+  {
+    id: 'ihes',
+    label: 'IHES',
+    origin: 'community',
+    description: 'Navy #1C528A + Raleway (sober academic).',
+    style: 'background:#fff;color:#2b2b2b;border-color:#1c528a',
+  },
   // ---- Custom (in-repo) ----
   {
     id: 'minimal',
