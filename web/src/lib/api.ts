@@ -88,6 +88,11 @@ export interface CompileSpec {
   language: string;
   entry?: string;
   extra_args?: string[];
+  // command — verbatim shell command that REPLACES the language's
+  // default when set. Populated by the SettingsPanel "Compile
+  // commands" section. Empty string falls back to the built-in
+  // per-language command.
+  command?: string;
 }
 
 export async function startCompile(

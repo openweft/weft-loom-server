@@ -3,7 +3,6 @@
   import ProjectSwitcher from './ProjectSwitcher.svelte';
   import LanguageSwitcher from './LanguageSwitcher.svelte';
   import ThemeSwitcher from './ThemeSwitcher.svelte';
-  import CollaboratorList from './CollaboratorList.svelte';
   import SyncBadge from './SyncBadge.svelte';
   import type { Identity } from '../identity';
 
@@ -11,28 +10,36 @@
     project: string;
     language: string;
     connectionStatus: 'connecting' | 'connected' | 'disconnected';
+    ytextTick: number;
     awareness: Awareness | undefined;
     identity: Identity;
-    onCompile: () => void;
-    onExportPDF: () => void;
     onToggleAI: () => void;
+    onToggleCollab: () => void;
+    onToggleShell: () => void;
+    onToggleChat: () => void;
     onSwitch: (name: string, language: string) => void;
     onLanguageChange: (language: string) => void;
     onRename: (identity: Identity) => void;
+    // Bindable so the MenuBar can pop the dropdown from the
+    // "Switch project…" command without owning state.
+    switcherOpen?: boolean;
   }
 
   let {
     project,
     language,
     connectionStatus,
+    ytextTick,
     awareness,
     identity,
-    onCompile,
-    onExportPDF,
     onToggleAI,
+    onToggleCollab,
+    onToggleShell,
+    onToggleChat,
     onSwitch,
     onLanguageChange,
     onRename,
+    switcherOpen = $bindable(false),
   }: Props = $props();
 
   const statusBadge = $derived(
@@ -44,34 +51,17 @@
   );
 </script>
 
-<div class="navbar bg-base-100 border-base-300 border-b shadow-sm">
-  <div class="flex-1">
-    <span class="btn btn-ghost text-xl normal-case">
-      weft-loom
-      <span class="ml-2 text-xs opacity-60 font-normal">collaborative editor</span>
-    </span>
-  </div>
+<div class="navbar bg-base-100 border-base-300 border-b shadow-sm min-h-0 py-1">
+  <div class="flex-1"></div>
   <div class="flex-none gap-2 flex items-center">
-    <CollaboratorList {awareness} self={identity} {onRename} />
-    <div class="divider divider-horizontal mx-0"></div>
-    <ProjectSwitcher current={project} {onSwitch} />
+    <ProjectSwitcher current={project} {onSwitch} bind:open={switcherOpen} />
     <SyncBadge {project} />
     <LanguageSwitcher current={language} onChange={onLanguageChange} />
+    <!-- Collaborator avatars live in the dedicated
+         CollaboratorsSidebar (right-column accordion) ; surfacing
+         them twice (navbar + sidebar) was redundant and ate
+         horizontal space on narrow viewports. -->
     <div class="divider divider-horizontal mx-0"></div>
     <ThemeSwitcher />
-    <div class="divider divider-horizontal mx-0"></div>
-    <div class="badge {statusBadge} badge-sm gap-1">
-      <span class="status status-sm"></span>
-      {connectionStatus}
-    </div>
-    <button class="btn btn-ghost btn-sm" onclick={onExportPDF} title="Export the preview to PDF">
-      ⤓ PDF
-    </button>
-    <button class="btn btn-ghost btn-sm" onclick={onToggleAI} title="Toggle AI assistant panel">
-      🤖
-    </button>
-    <button class="btn btn-primary btn-sm" onclick={onCompile}>
-      Compile
-    </button>
   </div>
 </div>

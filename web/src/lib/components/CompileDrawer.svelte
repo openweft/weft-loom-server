@@ -1,17 +1,22 @@
 <script lang="ts">
   import { startCompile } from '../api';
+  import { compileCommands } from '../settings.svelte';
 
   interface Props {
     open: boolean;
     project: string;
     language: string;
+    // entry — same rationale as CompileLogPanel : threads the active
+    // file path to the compile dispatcher so non-default file names
+    // (untitled-abcd.go, foo-slides.md) compile correctly.
+    entry?: string;
     // onArtifact fires when the SSE 'result' event lands a compiled
     // artifact URL. The parent App pipes it into PreviewPane so the
     // PDF renders inline alongside the editor (no download).
     onArtifact?: (url: string) => void;
   }
 
-  let { open = $bindable(), project, language, onArtifact }: Props = $props();
+  let { open = $bindable(), project, language, entry = '', onArtifact }: Props = $props();
 
   interface LogLine {
     kind: 'log' | 'result' | 'error';
@@ -27,7 +32,12 @@
     resultURL = null;
     inFlight = true;
     try {
-      const id = await startCompile(project, { language });
+      const customCmd = compileCommands.get(language);
+      const id = await startCompile(project, {
+        language,
+        entry: entry || undefined,
+        command: customCmd || undefined,
+      });
       lines = [...lines, { kind: 'log', text: `job ${id} started` }];
 
       const es = new EventSource(
