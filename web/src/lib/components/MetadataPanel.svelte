@@ -13,6 +13,8 @@
   // OutlinePanel so the two never fight for the same file twice.
 
   import { onMount, onDestroy } from 'svelte';
+  import { parseRTF } from '../rtf';
+  import { parseODT } from '../odt';
 
   interface Props {
     project: string;
@@ -28,7 +30,7 @@
     value: string;
   }
   let entries = $state<Meta[]>([]);
-  let lang = $state<'latex' | 'markdown' | null>(null);
+  let lang = $state<'latex' | 'markdown' | 'rtf' | 'odt' | null>(null);
   let lastSig = '';
   let poll: ReturnType<typeof setInterval> | undefined;
 
@@ -74,11 +76,21 @@
     return out;
   }
 
+  function fromMetaObj(m: { title?: string; author?: string; date?: string }): Meta[] {
+    const out: Meta[] = [];
+    if (m.title)  out.push({ key: 'title',  label: 'Title',  value: m.title });
+    if (m.author) out.push({ key: 'author', label: 'Author', value: m.author });
+    if (m.date)   out.push({ key: 'date',   label: 'Date',   value: m.date });
+    return out;
+  }
+
   async function refresh() {
     const ext = file && file.toLowerCase();
     const nextLang: typeof lang =
       ext && ext.endsWith('.tex') ? 'latex' :
       ext && (ext.endsWith('.md') || ext.endsWith('.markdown') || ext.endsWith('.mdown')) ? 'markdown' :
+      ext && ext.endsWith('.rtf') ? 'rtf' :
+      ext && ext.endsWith('.odt') ? 'odt' :
       null;
     lang = nextLang;
     if (!file || !nextLang) { entries = []; return; }
@@ -91,8 +103,18 @@
       if (!r.ok) return;
       const tag = r.headers.get('etag') ?? '';
       if (tag) lastSig = tag;
+      if (nextLang === 'odt') {
+        // ODT is a zip ; pull as ArrayBuffer + decode with jszip.
+        const buf = await r.arrayBuffer();
+        if (buf.byteLength === 0) { entries = []; return; }
+        const parsed = await parseODT(buf);
+        entries = fromMetaObj(parsed.meta);
+        return;
+      }
       const text = await r.text();
-      entries = nextLang === 'latex' ? parseLatex(text) : parseMarkdown(text);
+      if (nextLang === 'latex')    entries = parseLatex(text);
+      else if (nextLang === 'markdown') entries = parseMarkdown(text);
+      else if (nextLang === 'rtf')      entries = fromMetaObj(parseRTF(text).meta);
     } catch {}
   }
 
@@ -139,7 +161,7 @@
   {#if collapsed}
     <!-- accordion closed -->
   {:else if !file || !lang}
-    <p class="px-3 py-2 opacity-50 italic">Open a .tex or .md file to see metadata.</p>
+    <p class="px-3 py-2 opacity-50 italic">Open a .tex / .md / .rtf / .odt file to see metadata.</p>
   {:else if entries.length === 0}
     <p class="px-3 py-2 opacity-50 italic">No metadata found in the preamble.</p>
   {:else}
