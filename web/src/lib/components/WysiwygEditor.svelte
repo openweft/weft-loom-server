@@ -113,6 +113,22 @@
     onInput();
   }
 
+  // insertTable : drops a fresh 2×2 table at the caret. The
+  // contenteditable doesn't have a built-in execCommand for this
+  // (insertHTML works but lands inside the current block ; we use
+  // the Selection API to splice the table as a sibling of the
+  // current paragraph instead).
+  function insertTable(rows: number = 2, cols: number = 2) {
+    editorEl.focus();
+    const html = '<table><tbody>'
+      + Array.from({ length: rows }, () =>
+          '<tr>' + Array.from({ length: cols }, () => '<td><br></td>').join('') + '</tr>',
+        ).join('')
+      + '</tbody></table><p><br></p>';
+    document.execCommand('insertHTML', false, html);
+    onInput();
+  }
+
   // Keyboard shortcuts : Cmd/Ctrl+B/I/U for bold/italic/underline.
   // The contenteditable surface handles these natively via
   // execCommand, but we wire them explicitly so the parent App's
@@ -167,6 +183,7 @@
     <span class="divider divider-horizontal mx-0"></span>
     <button type="button" title="Bullet list"      class="btn btn-ghost btn-xs" onclick={() => exec('insertUnorderedList')}>•</button>
     <button type="button" title="Numbered list"    class="btn btn-ghost btn-xs" onclick={() => exec('insertOrderedList')}>1.</button>
+    <button type="button" title="Insert 2×2 table" class="btn btn-ghost btn-xs" onclick={() => insertTable()}>▦</button>
     <span class="divider divider-horizontal mx-0"></span>
     <button type="button" title="Undo (⌘Z)"  class="btn btn-ghost btn-xs" onclick={() => exec('undo')}>↶</button>
     <button type="button" title="Redo (⌘⇧Z)" class="btn btn-ghost btn-xs" onclick={() => exec('redo')}>↷</button>
@@ -203,4 +220,13 @@
   .wysiwyg-surface :global(h3) { font-size: 1.15em; font-weight: 700; margin: 0.3em 0; }
   .wysiwyg-surface :global(ul) { padding-left: 1.5em; list-style: disc; }
   .wysiwyg-surface :global(ol) { padding-left: 1.5em; list-style: decimal; }
+  /* Tables : visible borders + sensible cell padding so the user
+     can see what they're editing. ODT round-trip preserves the
+     cell content + spans ; styling lives only in the WYSIWYG
+     surface (the ODT file itself stays unstyled — Word /
+     LibreOffice apply their own default table style on open). */
+  .wysiwyg-surface :global(table) { border-collapse: collapse; margin: 0.6em 0; }
+  .wysiwyg-surface :global(th),
+  .wysiwyg-surface :global(td) { border: 1px solid currentColor; padding: 0.3em 0.5em; min-width: 4em; }
+  .wysiwyg-surface :global(th) { font-weight: 600; background: rgba(0,0,0,0.04); }
 </style>

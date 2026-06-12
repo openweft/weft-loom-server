@@ -130,8 +130,8 @@ if (!mounted.body.includes('Hello ODT world')) {
   ok('WYSIWYG initial content', '"' + mounted.body + '"');
 }
 
-// 4) drive an edit + wait for the debounced save (~600 ms) +
-//    extra time for jszip generation.
+// 4) drive an edit (text + a 2×2 table insert) + wait for the
+//    debounced save (~600 ms) + extra time for jszip generation.
 await page.evaluate(() => {
   const ce = document.querySelector('[contenteditable="true"][role="textbox"]');
   if (!ce) return;
@@ -143,6 +143,11 @@ await page.evaluate(() => {
   sel?.removeAllRanges();
   sel?.addRange(range);
   document.execCommand('insertText', false, ' — edited');
+  // Append a small 2×2 table directly via insertHTML so the test
+  // can assert table round-trip without depending on the toolbar
+  // click. The component's `insertTable()` produces the same shape.
+  document.execCommand('insertHTML', false,
+    '<table><tbody><tr><td>A1</td><td>B1</td></tr><tr><td>A2</td><td>B2</td></tr></tbody></table>');
   ce.dispatchEvent(new InputEvent('input', { bubbles: true }));
 });
 await new Promise((r) => setTimeout(r, 2000));
@@ -174,6 +179,15 @@ if (!after.ok) {
         failL('edit persisted', 'new " — edited" suffix missing in saved bytes');
       } else {
         ok('round-trip', '"Hello ODT world … edited"');
+      }
+      // Table assertion : the writer should emit <table:table> with
+      // 2 rows × 2 cells carrying the A1/B1/A2/B2 anchors.
+      if (xml.includes('<table:table') && xml.includes('A1') && xml.includes('B2')) {
+        ok('table round-trip', '<table:table> with all four cell anchors');
+      } else {
+        failL('table round-trip',
+          'expected <table:table> + A1 + B2 in saved XML, got : '
+          + xml.slice(xml.indexOf('<office:body>') > 0 ? xml.indexOf('<office:body>') : 0, 400));
       }
     } catch (e) {
       failL('parse saved ODT', String(e?.message ?? e));

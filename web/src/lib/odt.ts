@@ -36,6 +36,7 @@ const NS = {
   text:   'urn:oasis:names:tc:opendocument:xmlns:text:1.0',
   style:  'urn:oasis:names:tc:opendocument:xmlns:style:1.0',
   fo:     'urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0',
+  table:  'urn:oasis:names:tc:opendocument:xmlns:table:1.0',
   manifest: 'urn:oasis:names:tc:opendocument:xmlns:manifest:1.0',
   meta:   'urn:oasis:names:tc:opendocument:xmlns:meta:1.0',
   dc:     'http://purl.org/dc/elements/1.1/',
@@ -138,6 +139,39 @@ function emitBlock(node: Element, styles: Map<string, StyleHints>): string {
       }
     }
     return '<ul>' + inner + '</ul>';
+  }
+  if (ln === 'table') {
+    // table:table contains table:table-column (column metadata,
+    // ignored for V0.2) + table:table-row entries. Each row carries
+    // table:table-cell elements ; each cell holds one or more block
+    // children (typically text:p). The first row maps to <thead>
+    // when the cell has the heading style class — but ODF doesn't
+    // formally distinguish header rows, so we keep everything in
+    // <tbody> for now.
+    let html = '<table>';
+    for (const row of Array.from(node.children)) {
+      if (row.localName !== 'table-row') continue;
+      html += '<tr>';
+      for (const cell of Array.from(row.children)) {
+        if (cell.localName !== 'table-cell') continue;
+        // Read row/col span if specified ; default to 1.
+        const cs = Number(cell.getAttributeNS(NS.table, 'number-columns-spanned') ?? '1');
+        const rs = Number(cell.getAttributeNS(NS.table, 'number-rows-spanned') ?? '1');
+        let cellInner = '';
+        for (const child of Array.from(cell.children)) cellInner += emitBlock(child, styles);
+        // Strip the wrapping <p>…</p> if the cell only contains a
+        // single paragraph — keeps the HTML cell terser and Word /
+        // LibreOffice render it the same.
+        const stripped = /^<p>([\s\S]*)<\/p>$/.exec(cellInner.trim());
+        const body = stripped ? stripped[1] : cellInner;
+        let attrs = '';
+        if (cs > 1) attrs += ' colspan="' + cs + '"';
+        if (rs > 1) attrs += ' rowspan="' + rs + '"';
+        html += '<td' + attrs + '>' + body + '</td>';
+      }
+      html += '</tr>';
+    }
+    return html + '</table>';
   }
   // Unknown block : fall through to inline so we don't drop content.
   return emitInline(node, styles);
@@ -280,6 +314,7 @@ function htmlToContentXML(html: string): string {
   xmlns:text="${NS.text}"
   xmlns:style="${NS.style}"
   xmlns:fo="${NS.fo}"
+  xmlns:table="${NS.table}"
   xmlns:xlink="http://www.w3.org/1999/xlink"
   office:version="1.2">
   <office:automatic-styles>
@@ -318,6 +353,42 @@ function emitODTBlock(node: Node, fmt: StyleHints, styleNameFor: (h: StyleHints)
   }
   if (tag === 'br') {
     return '      <text:p/>\n';
+  }
+  if (tag === 'table') {
+    // Walk all rows under <tbody> + <thead> indiscriminately. Most
+    // contenteditable surfaces don't insert <tbody> wrappers, so
+    // we accept either direct-child <tr> or wrapped.
+    const rows: Element[] = [];
+    for (const c of Array.from(el.children)) {
+      const t = c.tagName.toLowerCase();
+      if (t === 'tr') rows.push(c);
+      else if (t === 'tbody' || t === 'thead' || t === 'tfoot') {
+        for (const tr of Array.from(c.children)) {
+          if (tr.tagName.toLowerCase() === 'tr') rows.push(tr);
+        }
+      }
+    }
+    const colCount = rows.reduce((m, r) => Math.max(m, r.children.length), 1);
+    let out = '      <table:table>\n';
+    out += '        <table:table-column table:number-columns-repeated="' + colCount + '"/>\n';
+    for (const tr of rows) {
+      out += '        <table:table-row>\n';
+      for (const tdEl of Array.from(tr.children)) {
+        const t = tdEl.tagName.toLowerCase();
+        if (t !== 'td' && t !== 'th') continue;
+        const cs = Number((tdEl as HTMLElement).getAttribute('colspan') ?? '1');
+        const rs = Number((tdEl as HTMLElement).getAttribute('rowspan') ?? '1');
+        let attrs = '';
+        if (cs > 1) attrs += ' table:number-columns-spanned="' + cs + '"';
+        if (rs > 1) attrs += ' table:number-rows-spanned="' + rs + '"';
+        out += '          <table:table-cell' + attrs + '>'
+            + '<text:p>' + emitODTInline(tdEl, fmt, styleNameFor) + '</text:p>'
+            + '</table:table-cell>\n';
+      }
+      out += '        </table:table-row>\n';
+    }
+    out += '      </table:table>\n';
+    return out;
   }
   // Unknown : descend transparently as a paragraph wrapper.
   return '      <text:p>' + emitODTInline(el, fmt, styleNameFor) + '</text:p>\n';
