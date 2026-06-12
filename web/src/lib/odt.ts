@@ -141,6 +141,11 @@ interface StyleHints {
   strike?: boolean;
   subscript?: boolean;
   superscript?: boolean;
+  // V0.9 : per-span colour overrides. Lowercase #rrggbb format ;
+  // 'transparent' is dropped to undefined (matches ODF's "no
+  // background" semantics).
+  color?: string;
+  highlight?: string;
 }
 
 // Paragraph-level hints surface as inline-style values on the HTML
@@ -182,6 +187,10 @@ function parseContent(xml: string, pictures: Record<string, string>): string {
       if (us && us !== 'none') h.underline = true;
       const ls = tprops.getAttributeNS(NS.style, 'text-line-through-style');
       if (ls && ls !== 'none') h.strike = true;
+      const col = tprops.getAttributeNS(NS.fo, 'color');
+      if (col && col.toLowerCase() !== 'transparent') h.color = col.toLowerCase();
+      const bg = tprops.getAttributeNS(NS.fo, 'background-color');
+      if (bg && bg.toLowerCase() !== 'transparent') h.highlight = bg.toLowerCase();
       const pos = tprops.getAttributeNS(NS.style, 'text-position');
       if (pos) {
         const head = pos.split(/\s+/)[0];
@@ -196,7 +205,7 @@ function parseContent(xml: string, pictures: Record<string, string>): string {
           }
         }
       }
-      if (h.bold || h.italic || h.underline || h.strike || h.subscript || h.superscript) {
+      if (h.bold || h.italic || h.underline || h.strike || h.subscript || h.superscript || h.color || h.highlight) {
         styles.set(name, h);
       }
     }
@@ -324,6 +333,15 @@ function emitInline(node: Node, styles: Map<string, StyleHints>, pictures: Recor
       if (hints?.italic)      inner = '<i>' + inner + '</i>';
       if (hints?.bold)        inner = '<b>' + inner + '</b>';
       if (hints?.strike)      inner = '<s>' + inner + '</s>';
+      // V0.9 : colour + highlight wrap the whole inline subtree as a
+      // single styled span so contenteditable can edit through it
+      // without splintering the formatting.
+      if (hints?.color || hints?.highlight) {
+        const parts: string[] = [];
+        if (hints.color)     parts.push('color: ' + hints.color);
+        if (hints.highlight) parts.push('background-color: ' + hints.highlight);
+        inner = '<span style="' + parts.join('; ') + ';">' + inner + '</span>';
+      }
       out += inner;
     } else if (ln === 'line-break') {
       out += '<br>';
@@ -491,7 +509,9 @@ function htmlToContentXML(html: string, collected: CollectedImage[], preservedAu
   // one <style:style> per combination. Flag encoding uses single
   // letters so the resulting name is stable + short :
   //   b=bold  i=italic  u=underline  s=strike  B=subscript  P=superscript
-  const usedStyles = new Set<string>();
+  // V0.9 adds colour + highlight by appending `_c<hex>` / `_h<hex>`
+  // (hex stripped of '#') ; one auto-style entry per distinct combo.
+  const usedStyles = new Map<string, StyleHints>();
   const styleNameFor = (h: StyleHints): string | null => {
     const flags = (h.bold ? 'b' : '')
                 + (h.italic ? 'i' : '')
@@ -499,9 +519,12 @@ function htmlToContentXML(html: string, collected: CollectedImage[], preservedAu
                 + (h.strike ? 's' : '')
                 + (h.subscript ? 'B' : '')
                 + (h.superscript ? 'P' : '');
-    if (!flags) return null;
-    usedStyles.add(flags);
-    return 'T_' + flags;
+    const colorKey = h.color ? '_c' + h.color.replace(/^#/, '') : '';
+    const highlightKey = h.highlight ? '_h' + h.highlight.replace(/^#/, '') : '';
+    if (!flags && !colorKey && !highlightKey) return null;
+    const name = 'T_' + (flags || 'span') + colorKey + highlightKey;
+    usedStyles.set(name, h);
+    return name;
   };
   // Paragraph alignment : emit one <style:style style:family=
   // "paragraph"> per (alignment, source-style) combo we encounter.
@@ -570,23 +593,18 @@ function htmlToContentXML(html: string, collected: CollectedImage[], preservedAu
     preservedNames.add(m[1]);
   }
   let stylesXML = preservedAutoStyles ? preservedAutoStyles + '\n' : '';
-  for (const k of usedStyles) {
-    const name = 'T_' + k;
+  for (const [name, h] of usedStyles) {
     if (preservedNames.has(name)) continue;
-    const bold = k.includes('b'),
-          italic = k.includes('i'),
-          underline = k.includes('u'),
-          strike = k.includes('s'),
-          subscript = k.includes('B'),
-          superscript = k.includes('P');
     stylesXML += `    <style:style style:name="${name}" style:family="text">`
               + '<style:text-properties'
-              + (bold        ? ' fo:font-weight="bold"' : '')
-              + (italic      ? ' fo:font-style="italic"' : '')
-              + (underline   ? ' style:text-underline-style="solid"' : '')
-              + (strike      ? ' style:text-line-through-style="solid"' : '')
-              + (subscript   ? ' style:text-position="sub 58%"' : '')
-              + (superscript ? ' style:text-position="super 58%"' : '')
+              + (h.bold        ? ' fo:font-weight="bold"' : '')
+              + (h.italic      ? ' fo:font-style="italic"' : '')
+              + (h.underline   ? ' style:text-underline-style="solid"' : '')
+              + (h.strike      ? ' style:text-line-through-style="solid"' : '')
+              + (h.subscript   ? ' style:text-position="sub 58%"' : '')
+              + (h.superscript ? ' style:text-position="super 58%"' : '')
+              + (h.color       ? ' fo:color="' + escapeAttr(h.color) + '"' : '')
+              + (h.highlight   ? ' fo:background-color="' + escapeAttr(h.highlight) + '"' : '')
               + '/></style:style>\n';
   }
   for (const triple of usedAlignStyles) {
@@ -791,6 +809,20 @@ function emitODTInline(node: Node, fmt: StyleHints, ctx: WriteCtx): string {
     else if (tag === 'u') next.underline = true;
     else if (tag === 's' || tag === 'strike' || tag === 'del') next.strike = true;
     else if (tag === 'sub') next.subscript = true;
+    else if (tag === 'mark') next.highlight = next.highlight || '#ffff00';
+    if (tag === 'span' || tag === 'font') {
+      // V0.9 : pick colour + highlight out of inline style="…" /
+      // legacy <font color=…>. Either may also appear nested under
+      // semantic tags above (bold, italic, etc.) ; we set `next` to
+      // accumulate.
+      const inline = el.getAttribute('style') ?? '';
+      const cm = /(?:^|;)\s*color\s*:\s*([^;]+)/i.exec(inline);
+      if (cm) next.color = cm[1].trim().toLowerCase();
+      const bm = /(?:^|;)\s*background(?:-color)?\s*:\s*([^;]+)/i.exec(inline);
+      if (bm) next.highlight = bm[1].trim().toLowerCase();
+      const legacy = el.getAttribute('color');
+      if (!cm && legacy) next.color = legacy.toLowerCase();
+    }
     else if (tag === 'br') { out += '<text:line-break/>'; continue; }
     else if (tag === 'a') {
       const href = (el as HTMLAnchorElement).getAttribute('href') ?? '';

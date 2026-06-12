@@ -86,6 +86,12 @@ async function makeSeedODT() {
     <style:style style:name="T_s" style:family="text">
       <style:text-properties style:text-line-through-style="solid"/>
     </style:style>
+    <style:style style:name="T_red" style:family="text">
+      <style:text-properties fo:color="#ff0000"/>
+    </style:style>
+    <style:style style:name="T_yellowbg" style:family="text">
+      <style:text-properties fo:background-color="#ffff00"/>
+    </style:style>
     <text:list-style style:name="L_ol_seed">
       <text:list-level-style-number text:level="1" style:num-format="1" style:num-suffix="."/>
     </text:list-style>
@@ -93,7 +99,7 @@ async function makeSeedODT() {
   <office:body>
     <office:text>
       <text:p text:style-name="Quotation">Hello ODT world.<text:note text:id="ftn1" text:note-class="footnote"><text:note-citation>1</text:note-citation><text:note-body><text:p>Seed <text:span text:style-name="T_b">bold</text:span> body.</text:p><text:p>Second paragraph.</text:p></text:note-body></text:note></text:p>
-      <text:p text:style-name="P_align_center">Centred line with <text:span text:style-name="T_s">strike</text:span>.</text:p>
+      <text:p text:style-name="P_align_center">Centred line with <text:span text:style-name="T_s">strike</text:span>, <text:span text:style-name="T_red">red text</text:span> + <text:span text:style-name="T_yellowbg">yellow bg</text:span>.</text:p>
       <text:list text:style-name="L_ol_seed">
         <text:list-item><text:p>first</text:p></text:list-item>
         <text:list-item><text:p>second</text:p></text:list-item>
@@ -155,6 +161,10 @@ const mounted = await page.evaluate(() => {
   const hasOl = !!ce?.querySelector('ol');
   const olItems = Array.from(ce?.querySelectorAll('ol > li') ?? []).map(li => li.textContent ?? '');
   const strikeEl = ce?.querySelector('s');
+  const colored = Array.from(ce?.querySelectorAll('span') ?? [])
+    .find(s => (s.getAttribute('style') ?? '').includes('color: #ff0000'));
+  const highlighted = Array.from(ce?.querySelectorAll('span') ?? [])
+    .find(s => (s.getAttribute('style') ?? '').includes('background-color: #ffff00'));
   return {
     hasWysiwyg: !!ce,
     hasCodeMirror: !!cm,
@@ -169,6 +179,8 @@ const mounted = await page.evaluate(() => {
     hasOl,
     olItems,
     strikeText: strikeEl?.textContent ?? '',
+    coloredText: colored?.textContent ?? '',
+    highlightedText: highlighted?.textContent ?? '',
   };
 });
 if (!mounted.hasWysiwyg) {
@@ -247,6 +259,18 @@ if (mounted.strikeText === 'strike') {
   failL('strikethrough read',
     'expected <s>strike</s> got "' + mounted.strikeText + '"');
 }
+if (mounted.coloredText === 'red text') {
+  ok('font colour read', '<span style="color: #ff0000;">red text</span>');
+} else {
+  failL('font colour read',
+    'expected red-text span got "' + mounted.coloredText + '"');
+}
+if (mounted.highlightedText === 'yellow bg') {
+  ok('highlight read', '<span style="background-color: #ffff00;">yellow bg</span>');
+} else {
+  failL('highlight read',
+    'expected yellow-bg span got "' + mounted.highlightedText + '"');
+}
 
 // 4) drive an edit (text + a 2×2 table insert) + wait for the
 //    debounced save (~600 ms) + extra time for jszip generation.
@@ -283,7 +307,8 @@ await page.evaluate(() => {
   };
   append('<p>E=mc<sup>2</sup>, H<sub>2</sub>O, <s>old</s> idea.</p>'
     + '<p style="text-align: right;">right-aligned line</p>'
-    + '<ol><li>editor first</li><li>editor second</li></ol>');
+    + '<ol><li>editor first</li><li>editor second</li></ol>'
+    + '<p>Editor <span style="color: #00aa00;">green</span> + <span style="background-color: #ff66cc;">pink bg</span>.</p>');
   ce.dispatchEvent(new InputEvent('input', { bubbles: true }));
 });
 await new Promise((r) => setTimeout(r, 2000));
@@ -395,6 +420,20 @@ if (!after.ok) {
       } else {
         failL('ordered list write',
           'editor-added <ol> did not produce text:list with numbered list-style');
+      }
+      // V0.9 : font colour + highlight should land as fo:color +
+      // fo:background-color on per-span <style:style> entries.
+      if (xml.includes('fo:color="#00aa00"')) {
+        ok('font colour write', 'fo:color="#00aa00" emitted for green span');
+      } else {
+        failL('font colour write',
+          'expected fo:color="#00aa00" in saved XML, missing');
+      }
+      if (xml.includes('fo:background-color="#ff66cc"')) {
+        ok('highlight write', 'fo:background-color="#ff66cc" emitted for pink-bg span');
+      } else {
+        failL('highlight write',
+          'expected fo:background-color="#ff66cc" in saved XML, missing');
       }
       // Image-write-back of new-data:-URL <img> tags through the
       // contenteditable is V0.4 work — the puppeteer harness can't

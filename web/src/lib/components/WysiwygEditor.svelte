@@ -205,6 +205,24 @@
     onInput();
   }
 
+  // setColor / setHighlight : applies a per-span colour or
+  // background-colour. Round-trips through ODT's fo:color /
+  // fo:background-color in the V0.9 writer.
+  function setColor(hex: string) {
+    editorEl.focus();
+    document.execCommand('foreColor', false, hex);
+    onInput();
+  }
+  function setHighlight(hex: string) {
+    editorEl.focus();
+    // Chrome supports 'hiliteColor' ; Firefox uses 'backColor' for
+    // the same effect on selections. Try both for portability.
+    if (!document.execCommand('hiliteColor', false, hex)) {
+      document.execCommand('backColor', false, hex);
+    }
+    onInput();
+  }
+
   function escapeAttr(s: string): string {
     return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
   }
@@ -293,6 +311,17 @@
     <button type="button" title="Insert 2×2 table" class="btn btn-ghost btn-xs" onclick={() => insertTable()}>▦</button>
     <button type="button" title="Insert link"      class="btn btn-ghost btn-xs" onclick={() => insertLink()}>🔗</button>
     <button type="button" title="Insert footnote"  class="btn btn-ghost btn-xs" onclick={() => insertFootnote()}>†</button>
+    <span class="divider divider-horizontal mx-0"></span>
+    <label title="Text colour" class="btn btn-ghost btn-xs px-1 inline-flex items-center gap-1">
+      <span class="font-bold">A</span>
+      <input type="color" value="#000000" class="w-4 h-4 p-0 border-0 bg-transparent cursor-pointer"
+             onchange={(e) => setColor((e.currentTarget as HTMLInputElement).value)} />
+    </label>
+    <label title="Highlight" class="btn btn-ghost btn-xs px-1 inline-flex items-center gap-1">
+      <span>▮</span>
+      <input type="color" value="#ffff00" class="w-4 h-4 p-0 border-0 bg-transparent cursor-pointer"
+             onchange={(e) => setHighlight((e.currentTarget as HTMLInputElement).value)} />
+    </label>
     <span class="divider divider-horizontal mx-0"></span>
     <button type="button" title="Undo (⌘Z)"  class="btn btn-ghost btn-xs" onclick={() => exec('undo')}>↶</button>
     <button type="button" title="Redo (⌘⇧Z)" class="btn btn-ghost btn-xs" onclick={() => exec('redo')}>↷</button>
