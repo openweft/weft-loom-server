@@ -77,10 +77,13 @@ async function makeSeedODT() {
     <style:style style:name="P_userCustom" style:family="paragraph">
       <style:paragraph-properties fo:margin-left="2cm" fo:color="#ff00ff"/>
     </style:style>
+    <style:style style:name="T_b" style:family="text">
+      <style:text-properties fo:font-weight="bold"/>
+    </style:style>
   </office:automatic-styles>
   <office:body>
     <office:text>
-      <text:p text:style-name="Quotation">Hello ODT world.<text:note text:id="ftn1" text:note-class="footnote"><text:note-citation>1</text:note-citation><text:note-body><text:p>Seed footnote body.</text:p></text:note-body></text:note></text:p>
+      <text:p text:style-name="Quotation">Hello ODT world.<text:note text:id="ftn1" text:note-class="footnote"><text:note-citation>1</text:note-citation><text:note-body><text:p>Seed <text:span text:style-name="T_b">bold</text:span> body.</text:p><text:p>Second paragraph.</text:p></text:note-body></text:note></text:p>
       <text:p><draw:frame draw:name="seed" text:anchor-type="as-char" svg:width="1in" svg:height="1in"><draw:image xlink:href="Pictures/seed.png" xlink:type="simple" xlink:show="embed" xlink:actuate="onLoad"/></draw:frame></text:p>
     </office:text>
   </office:body>
@@ -179,13 +182,16 @@ if (mounted.imgSrcPrefix.startsWith('data:image/png')) {
 // with a citation of "1" and a body of "Seed footnote body." ; parseODT
 // should surface it as <sup class="footnote" data-id="ftn1"
 // data-body="Seed footnote body.">1</sup> inside the contenteditable.
+// V0.6 widened the body from plain text to HTML so inline
+// formatting (here : <b>bold</b>) and multiple paragraphs survive.
+const expectedBody = 'Seed <b>bold</b> body.\nSecond paragraph.';
 if (mounted.footnoteCitation === '1'
- && mounted.footnoteBody === 'Seed footnote body.'
+ && mounted.footnoteBody === expectedBody
  && mounted.footnoteId === 'ftn1') {
-  ok('footnote read path', '<sup class="footnote"> with id+body+citation');
+  ok('footnote read path', 'rich-body <sup class="footnote"> with id+HTML+citation');
 } else {
   failL('footnote read path',
-    'expected ftn1/"1"/"Seed footnote body." got id="' + mounted.footnoteId
+    'expected ftn1/"1"/"' + expectedBody + '" got id="' + mounted.footnoteId
     + '" cite="' + mounted.footnoteCitation
     + '" body="' + mounted.footnoteBody + '"');
 }
@@ -220,7 +226,7 @@ await page.evaluate(() => {
   // Append a fresh footnote so the writer path is exercised
   // independently of the seed's <text:note> being preserved.
   document.execCommand('insertHTML', false,
-    '<sup class="footnote" data-id="ftn2" data-body="Editor-added body.">2</sup>');
+    '<sup class="footnote" data-id="ftn2" data-body="Editor-added <i>italic</i> body.">2</sup>');
   ce.dispatchEvent(new InputEvent('input', { bubbles: true }));
 });
 await new Promise((r) => setTimeout(r, 2000));
@@ -270,13 +276,25 @@ if (!after.ok) {
       // </text:note>. Seed's ftn1 should also survive the round-trip
       // since we re-emit notes we read.
       if (xml.includes('text:note-class="footnote"')
-       && xml.includes('Editor-added body.')
-       && xml.includes('Seed footnote body.')) {
+       && xml.includes('Editor-added')
+       && xml.includes('Second paragraph.')) {
         ok('footnote round-trip', 'seed ftn1 + editor-added ftn2 preserved');
       } else {
         failL('footnote round-trip',
           'expected text:note-class="footnote" + both bodies, got snippet : '
           + xml.slice(Math.max(0, xml.indexOf('text:note')), xml.indexOf('text:note') + 300));
+      }
+      // V0.6 widened the body to HTML : assert <b>bold</b> from the
+      // seed AND <i>italic</i> from the editor-added note both
+      // re-emerge as ODF <text:span> with the proper bold/italic
+      // text-properties (writer auto-emits T_b / T_i).
+      if (xml.includes('font-weight="bold"')
+       && xml.includes('font-style="italic"')) {
+        ok('footnote rich-body round-trip', 'inline bold + italic spans in note-body');
+      } else {
+        failL('footnote rich-body round-trip',
+          'expected fo:font-weight=bold + fo:font-style=italic in note-body, got : '
+          + xml.slice(Math.max(0, xml.indexOf('text:note-body')), xml.indexOf('</text:note-body>')));
       }
       // Paragraph-style round-trip : the seed's text:style-name=
       // "Quotation" attribute should re-emerge in the saved XML.

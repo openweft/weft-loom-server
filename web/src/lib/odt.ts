@@ -268,16 +268,21 @@ function emitInline(node: Node, styles: Map<string, StyleHints>, pictures: Recor
       const cls = el.getAttributeNS(NS.text, 'note-class') ?? 'footnote';
       const cite = el.getElementsByTagNameNS(NS.text, 'note-citation')[0]?.textContent ?? '';
       const bodyEl = el.getElementsByTagNameNS(NS.text, 'note-body')[0];
-      let bodyText = '';
+      // Each <text:p> inside the body walks through emitInline so we
+      // preserve inline bold/italic/underline (and links / breaks /
+      // tab runs) — multi-paragraph bodies join on '\n'. The result
+      // is HTML, attribute-encoded into data-body so contenteditable
+      // doesn't render it.
+      let bodyHTML = '';
       if (bodyEl) {
         for (const p of Array.from(bodyEl.getElementsByTagNameNS(NS.text, 'p'))) {
-          if (bodyText) bodyText += '\n';
-          bodyText += p.textContent ?? '';
+          if (bodyHTML) bodyHTML += '\n';
+          bodyHTML += emitInline(p, styles, pictures);
         }
       }
       out += '<sup class="footnote ' + escapeAttr(cls)
           + '" data-id="' + escapeAttr(id)
-          + '" data-body="' + escapeAttr(bodyText)
+          + '" data-body="' + escapeAttr(bodyHTML)
           + '">' + escapeHTML(cite) + '</sup>';
     } else if (ln === 'frame') {
       // draw:frame wraps draw:image (and other media). Find the
@@ -634,7 +639,24 @@ function emitODTInline(node: Node, fmt: StyleHints, styleNameFor: (h: StyleHints
       const cls = ((el.getAttribute('class') ?? '').split(/\s+/).find(c => c !== 'footnote') ?? 'footnote');
       const cite = el.textContent ?? '';
       const body = el.getAttribute('data-body') ?? '';
-      const bodyParas = body.split('\n').map(p => '<text:p>' + escapeHTML(p) + '</text:p>').join('');
+      // data-body is HTML (V0.6 widened from plain text). Each line
+      // is a paragraph ; parse with DOMParser + recurse through
+      // emitODTInline so inline bold/italic/underline/links survive.
+      const bodyParas = body.split('\n').map(lineHTML => {
+        const tmp = (() => {
+          try {
+            return new DOMParser().parseFromString(
+              '<!doctype html><html><body>' + lineHTML + '</body></html>',
+              'text/html',
+            ).body;
+          } catch {
+            const d = document.createElement('div');
+            d.innerHTML = lineHTML;
+            return d;
+          }
+        })();
+        return '<text:p>' + emitODTInline(tmp, fmt, styleNameFor, imageRefFor, noteIdFor) + '</text:p>';
+      }).join('');
       out += '<text:note text:id="' + escapeAttr(id)
           + '" text:note-class="' + escapeAttr(cls) + '">'
           + '<text:note-citation>' + escapeHTML(cite) + '</text:note-citation>'
