@@ -14,6 +14,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # go.mod has `replace` directives pointing at sibling
+      # workspace dirs (../weft-microvm-init, ../weft-microvm-agent)
+      # — they exist locally but not in CI. Clone them shallowly
+      # at the expected relative path so `go vet` + `go build` + the
+      # web-check's openapi dump can resolve the imports.
+      - name: fetch sibling repos referenced by go.mod replace
+        run: |
+          cd ..
+          git clone --depth=1 https://github.com/openweft/weft-microvm-init.git
+          git clone --depth=1 https://github.com/openweft/weft-microvm-agent.git
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -29,6 +39,16 @@ jobs:
         goarch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v4
+      # go.mod has `replace` directives pointing at sibling
+      # workspace dirs (../weft-microvm-init, ../weft-microvm-agent)
+      # — they exist locally but not in CI. Clone them shallowly
+      # at the expected relative path so `go vet` + `go build` + the
+      # web-check's openapi dump can resolve the imports.
+      - name: fetch sibling repos referenced by go.mod replace
+        run: |
+          cd ..
+          git clone --depth=1 https://github.com/openweft/weft-microvm-init.git
+          git clone --depth=1 https://github.com/openweft/weft-microvm-agent.git
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -44,6 +64,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # go.mod has `replace` directives pointing at sibling
+      # workspace dirs (../weft-microvm-init, ../weft-microvm-agent)
+      # — they exist locally but not in CI. Clone them shallowly
+      # at the expected relative path so `go vet` + `go build` + the
+      # web-check's openapi dump can resolve the imports.
+      - name: fetch sibling repos referenced by go.mod replace
+        run: |
+          cd ..
+          git clone --depth=1 https://github.com/openweft/weft-microvm-init.git
+          git clone --depth=1 https://github.com/openweft/weft-microvm-agent.git
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod

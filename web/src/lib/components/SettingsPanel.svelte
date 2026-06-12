@@ -13,6 +13,33 @@
 
   import { settings, vscodeThemes, compileCommands, type VSCodeTheme } from '../settings.svelte';
 
+  // VSCode-style category navigation : a left nav column scrolls
+  // between top-level groups (Editor / Appearance / Compile /
+  // Language) instead of one long page. Each category is rendered
+  // only when its tab is active to keep the DOM small + the search
+  // story simple (V0.2 : add a top-of-panel filter input).
+  type Category = 'editor' | 'appearance' | 'compile' | 'language';
+  const CATEGORIES: Array<{ id: Category; label: string; icon: string }> = [
+    { id: 'editor',     label: 'Editor',     icon: '✎' },
+    { id: 'appearance', label: 'Appearance', icon: '🎨' },
+    { id: 'compile',    label: 'Compile',    icon: '⚡' },
+    { id: 'language',   label: 'Language',   icon: '🌐' },
+  ];
+  // Persist the last-active category so reopening the panel lands
+  // where the user left off.
+  const CAT_KEY = 'weft-loom-settings-category';
+  function loadCategory(): Category {
+    try {
+      const v = localStorage.getItem(CAT_KEY);
+      if (v && CATEGORIES.find((c) => c.id === v)) return v as Category;
+    } catch { /* ignore */ }
+    return 'editor';
+  }
+  let category = $state<Category>(loadCategory());
+  $effect(() => {
+    try { localStorage.setItem(CAT_KEY, category); } catch { /* ignore */ }
+  });
+
   // Compile-command catalogue — the rows users can override. Order
   // matches the lang-suite test matrix : LaTeX + Markdown first
   // (PDF artifact languages), then the scripting + system langs.
@@ -187,7 +214,36 @@
       <button class="ml-auto btn btn-ghost btn-sm" onclick={() => { open = false; onClose(); }} aria-label="Close">✕</button>
     </h3>
 
-    <div class="p-5 overflow-y-auto max-h-[70vh]">
+    <div class="flex max-h-[70vh] min-h-[50vh]">
+    <!-- Left category nav. Sticky inside the modal-box height so it
+         stays visible while the right pane scrolls. Mirrors VSCode's
+         Settings sidebar idiom (categories on the left, content on
+         the right) without trying to clone the search / scope toggle
+         on top — those land in V0.2. -->
+    <nav class="w-44 shrink-0 border-r border-base-300 bg-base-200 overflow-y-auto py-2">
+      <ul class="menu menu-sm gap-0.5 p-0">
+        {#each CATEGORIES as c (c.id)}
+          <li>
+            <button
+              type="button"
+              class:active={category === c.id}
+              class:font-semibold={category === c.id}
+              class="px-3 py-1.5 rounded-none flex items-center gap-2 text-sm"
+              onclick={() => (category = c.id)}
+            >
+              <span class="opacity-70">{c.icon}</span>
+              <span>{c.label}</span>
+            </button>
+          </li>
+        {/each}
+      </ul>
+    </nav>
+
+    <!-- Right content pane : only the active category renders so the
+         settings tree stays small + the in-DOM event listeners are
+         lazy. -->
+    <div class="flex-1 p-5 overflow-y-auto">
+    {#if category === 'editor'}
     <!-- Editor section -->
     <section class="mb-4">
       <h4 class="font-semibold text-sm mb-2">Editor</h4>
@@ -295,6 +351,8 @@
       </div>
     </section>
 
+    {:else if category === 'appearance'}
+
     <!-- daisyUI theme -->
     <section class="mb-4">
       <h4 class="font-semibold text-sm mb-2">UI theme</h4>
@@ -386,6 +444,8 @@
       {/if}
     </section>
 
+    {:else if category === 'compile'}
+
     <!-- Compile commands : per-language verbatim override. Empty
          input falls back to the server's built-in command shown as
          placeholder. The override is sent on every Run via
@@ -430,6 +490,8 @@
       {/if}
     </section>
 
+    {:else if category === 'language'}
+
     <!-- Locale -->
     <section>
       <h4 class="font-semibold text-sm mb-2">Language · {localeNames[i18n.current]}</h4>
@@ -448,6 +510,8 @@
       </div>
     </section>
 
+    {/if}
+    </div>
     </div>
 
     <div class="px-5 py-2 border-t border-base-300 bg-base-200/60 flex items-center justify-end gap-2">
