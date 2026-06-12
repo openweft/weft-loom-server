@@ -289,10 +289,21 @@ function emitBlock(node: Element, ctx: ParseCtx): string {
     let inner = '';
     for (const li of Array.from(node.children)) {
       if (li.localName === 'list-item') {
-        // Each list-item contains one or more block children (typically
-        // a single text:p). Emit them as <li>'s.
+        // V0.11 : a list-item carries one or more block children :
+        //   - text:p / text:h → inline content of the <li>
+        //   - text:list       → nested <ul>/<ol> as a child of <li>
+        // Anything else falls through emitBlock so we don't drop
+        // unfamiliar block markers.
         let txt = '';
-        for (const inner2 of Array.from(li.children)) txt += emitInline(inner2, ctx.styles, ctx.pictures);
+        for (const child of Array.from(li.children)) {
+          if (child.localName === 'p' || child.localName === 'h') {
+            txt += emitInline(child, ctx.styles, ctx.pictures);
+          } else if (child.localName === 'list') {
+            txt += emitBlock(child, ctx);
+          } else {
+            txt += emitBlock(child, ctx);
+          }
+        }
         inner += '<li>' + txt + '</li>';
       }
     }
@@ -792,9 +803,30 @@ function emitODTBlock(node: Node, fmt: StyleHints, ctx: WriteCtx): string {
     const listStyleName = kind === 'ol' ? 'L_ol' : 'L_ul';
     let inner = '';
     for (const li of Array.from(el.children)) {
-      if (li.tagName.toLowerCase() === 'li') {
-        inner += '        <text:list-item><text:p>' + emitODTInline(li, fmt, ctx) + '</text:p></text:list-item>\n';
+      if (li.tagName.toLowerCase() !== 'li') continue;
+      // V0.11 : split the <li>'s children into a text-prefix (the
+      // <li>'s direct text + inline content) + any nested <ul>/<ol>
+      // which become inner <text:list> blocks under this list-item.
+      const items: Element[] = [];
+      const inlineFrag = document.createDocumentFragment();
+      for (const child of Array.from(li.childNodes)) {
+        if (child.nodeType === 1) {
+          const ct = (child as Element).tagName.toLowerCase();
+          if (ct === 'ul' || ct === 'ol') {
+            items.push(child as Element);
+            continue;
+          }
+        }
+        inlineFrag.appendChild(child.cloneNode(true));
       }
+      const inlineXML = emitODTInline(inlineFrag as unknown as Element, fmt, ctx);
+      let nestedXML = '';
+      for (const n of items) {
+        nestedXML += emitODTBlock(n, fmt, ctx);
+      }
+      inner += '        <text:list-item><text:p>' + inlineXML + '</text:p>'
+            + (nestedXML ? '\n' + nestedXML + '        ' : '')
+            + '</text:list-item>\n';
     }
     return '      <text:list text:style-name="' + listStyleName + '">\n' + inner + '      </text:list>\n';
   }

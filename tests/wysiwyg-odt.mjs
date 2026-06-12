@@ -106,7 +106,13 @@ async function makeSeedODT() {
       <text:p>Bookmark : <text:bookmark text:name="seedBM"/>anchor.<office:annotation xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"><dc:creator>alice</dc:creator><dc:date>2026-06-12T10:00:00Z</dc:date><text:p>Seed comment body.</text:p></office:annotation></text:p>
       <text:p text:style-name="P_pagebreak"/>
       <text:list text:style-name="L_ol_seed">
-        <text:list-item><text:p>first</text:p></text:list-item>
+        <text:list-item>
+          <text:p>first</text:p>
+          <text:list text:style-name="L_ol_seed">
+            <text:list-item><text:p>nested-1</text:p></text:list-item>
+            <text:list-item><text:p>nested-2</text:p></text:list-item>
+          </text:list>
+        </text:list-item>
         <text:list-item><text:p>second</text:p></text:list-item>
       </text:list>
       <text:p><draw:frame draw:name="seed" text:anchor-type="as-char" svg:width="1in" svg:height="1in"><draw:image xlink:href="Pictures/seed.png" xlink:type="simple" xlink:show="embed" xlink:actuate="onLoad"/></draw:frame></text:p>
@@ -163,8 +169,18 @@ const mounted = await page.evaluate(() => {
   const styledP = ce?.querySelector('p[data-odt-style]');
   const centred = Array.from(ce?.querySelectorAll('p') ?? [])
     .find(p => (p.getAttribute('style') ?? '').includes('text-align: center'));
-  const hasOl = !!ce?.querySelector('ol');
-  const olItems = Array.from(ce?.querySelectorAll('ol > li') ?? []).map(li => li.textContent ?? '');
+  const topOl = ce?.querySelector('ol');
+  const hasOl = !!topOl;
+  const olItems = Array.from(topOl?.querySelectorAll(':scope > li') ?? [])
+    // Strip the nested ol's text-content from the first item so the
+    // assertion can match the leading text cleanly.
+    .map(li => Array.from(li.childNodes)
+      .filter(n => n.nodeType === 3 || (n.nodeType === 1 && (n).tagName.toLowerCase() !== 'ol' && (n).tagName.toLowerCase() !== 'ul'))
+      .map(n => n.textContent ?? '').join('').trim());
+  // V0.11 nested-list probe : first <li> should carry an inner
+  // <ol> with two items.
+  const nestedOl = ce?.querySelector('ol > li > ol');
+  const nestedItems = Array.from(nestedOl?.querySelectorAll(':scope > li') ?? []).map(li => li.textContent ?? '');
   const strikeEl = ce?.querySelector('s');
   const colored = Array.from(ce?.querySelectorAll('span') ?? [])
     .find(s => (s.getAttribute('style') ?? '').includes('color: #ff0000'));
@@ -186,6 +202,7 @@ const mounted = await page.evaluate(() => {
     centredText: centred?.textContent ?? '',
     hasOl,
     olItems,
+    nestedOlItems: nestedItems,
     strikeText: strikeEl?.textContent ?? '',
     coloredText: colored?.textContent ?? '',
     highlightedText: highlighted?.textContent ?? '',
@@ -258,12 +275,21 @@ if (mounted.centredText.includes('Centred line')) {
   failL('paragraph alignment read',
     'expected centred <p> with "Centred line" got "' + mounted.centredText + '"');
 }
-if (mounted.hasOl && mounted.olItems[0] === 'first' && mounted.olItems[1] === 'second') {
-  ok('ordered list read', '<ol> with two <li> in correct order');
+if (mounted.hasOl
+ && mounted.olItems[0] === 'first'
+ && mounted.olItems[1] === 'second') {
+  ok('ordered list read', '<ol> with two top-level <li>');
 } else {
   failL('ordered list read',
     'expected <ol><li>first</li><li>second</li></ol> got hasOl=' + mounted.hasOl
     + ' items=' + JSON.stringify(mounted.olItems));
+}
+if (mounted.nestedOlItems[0] === 'nested-1' && mounted.nestedOlItems[1] === 'nested-2') {
+  ok('nested list read', 'inner <ol><li>nested-1</li><li>nested-2</li></ol>');
+} else {
+  failL('nested list read',
+    'expected nested-1 + nested-2 inside the first <li>, got '
+    + JSON.stringify(mounted.nestedOlItems));
 }
 if (mounted.strikeText === 'strike') {
   ok('strikethrough read', '<s>strike</s> surfaced from T_s span');
@@ -343,7 +369,8 @@ await page.evaluate(() => {
     + '<p><a class="odt-bookmark" data-name="editorBM" data-role="point"></a>at bm.'
     + '<span class="odt-annotation" data-creator="bob" data-date="2026-06-12T11:00:00Z"'
     + ' data-body="Editor-added comment.">💬</span></p>'
-    + '<hr class="page-break">');
+    + '<hr class="page-break">'
+    + '<ul><li>outer<ul><li>inner-A</li><li>inner-B</li></ul></li><li>after</li></ul>');
   ce.dispatchEvent(new InputEvent('input', { bubbles: true }));
 });
 await new Promise((r) => setTimeout(r, 2000));
@@ -492,6 +519,19 @@ if (!after.ok) {
       } else {
         failL('page break write',
           'expected P_pagebreak paragraph + break-before, missing');
+      }
+      // V0.11 nested-list write : an inner <ul> nested in a <li> of
+      // the outer list should produce a <text:list> inside the
+      // outer <text:list-item> with both inner-A + inner-B items.
+      const listSnippet = xml.slice(xml.indexOf('outer'), xml.indexOf('after'));
+      if (listSnippet.includes('<text:list')
+       && listSnippet.includes('inner-A')
+       && listSnippet.includes('inner-B')) {
+        ok('nested list write', '<text:list> inside <text:list-item> with both inner items');
+      } else {
+        failL('nested list write',
+          'expected nested text:list with inner-A + inner-B between outer + after, got : '
+          + listSnippet.slice(0, 400));
       }
       // Image-write-back of new-data:-URL <img> tags through the
       // contenteditable is V0.4 work — the puppeteer harness can't
