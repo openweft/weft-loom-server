@@ -71,7 +71,15 @@
         // BodyInit accepts BufferSource ; wrap to a Blob so fetch
         // sets the proper Content-Length without copying the buffer
         // through a string round-trip.
-        body = new Blob([bytes], { type: 'application/vnd.oasis.opendocument.text' });
+        // Wrap as Blob. The cast routes around a TS narrowing
+        // complaint : Uint8Array's generic buffer type
+        // (ArrayBufferLike | SharedArrayBuffer) doesn't satisfy
+        // BlobPart's stricter ArrayBuffer-only requirement. Runtime
+        // shape is fine — Blob accepts any TypedArray.
+        body = new Blob(
+          [bytes as unknown as BlobPart],
+          { type: 'application/vnd.oasis.opendocument.text' },
+        );
       } else {
         body = writeRTF(editorEl.innerHTML);
       }
