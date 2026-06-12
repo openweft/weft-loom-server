@@ -408,6 +408,7 @@ function htmlToContentXML(html: string, collected: CollectedImage[]): string {
   xmlns:table="${NS.table}"
   xmlns:draw="${NS.draw}"
   xmlns:xlink="${NS.xlink}"
+  xmlns:svg="${NS.svg}"
   office:version="1.2">
   <office:automatic-styles>
 ${stylesXML}  </office:automatic-styles>

@@ -69,6 +69,7 @@ async function makeSeedODT() {
   xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0"
   xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible-processors:1.0"
   xmlns:xlink="http://www.w3.org/1999/xlink"
+  xmlns:dc="http://purl.org/dc/elements/1.1/"
   office:version="1.2">
   <office:body>
     <office:text>
@@ -143,13 +144,17 @@ if (!mounted.body.includes('Hello ODT world')) {
 } else {
   ok('WYSIWYG initial content', '"' + mounted.body + '"');
 }
-// Image-read assertion is V0.4 work — the <draw:frame> → <img>
-// resolution is scaffolded in lib/odt.ts but the puppeteer harness
-// doesn't reproduce it reliably here yet (cause under investigation,
-// see V0.4 follow-up). The writer side ALWAYS packages Pictures/
-// entries when the editor's innerHTML carries <img> children — so
-// when the V0.4 test wiring lands, the full round-trip should pass
-// without code changes to odt.ts.
+// Image-read assertion remains V0.4 work. The svg-namespace
+// declaration on the seed's <office:document-content> root is now
+// in place (without it, DOMParser silently drops the entire
+// <draw:frame> subtree because `svg:width` / `svg:height` are
+// unbound prefixes — that was the missing piece). Even with the
+// namespaces fixed, the puppeteer harness still shows
+// imgSrcPrefix='' here, so there's a second issue we haven't
+// pinned down — likely in how WysiwygEditor.load() handles the
+// async parseODT call after weftLoomOpenFile flips currentFile.
+// Investigation continues ; the underlying parser/writer is
+// scaffolded + spec-compliant.
 
 // 4) drive an edit (text + a 2×2 table insert) + wait for the
 //    debounced save (~600 ms) + extra time for jszip generation.
