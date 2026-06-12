@@ -92,6 +92,9 @@ async function makeSeedODT() {
     <style:style style:name="T_yellowbg" style:family="text">
       <style:text-properties fo:background-color="#ffff00"/>
     </style:style>
+    <style:style style:name="P_pagebreak" style:family="paragraph">
+      <style:paragraph-properties fo:break-before="page"/>
+    </style:style>
     <text:list-style style:name="L_ol_seed">
       <text:list-level-style-number text:level="1" style:num-format="1" style:num-suffix="."/>
     </text:list-style>
@@ -100,6 +103,8 @@ async function makeSeedODT() {
     <office:text>
       <text:p text:style-name="Quotation">Hello ODT world.<text:note text:id="ftn1" text:note-class="footnote"><text:note-citation>1</text:note-citation><text:note-body><text:p>Seed <text:span text:style-name="T_b">bold</text:span> body.</text:p><text:p>Second paragraph.</text:p></text:note-body></text:note></text:p>
       <text:p text:style-name="P_align_center">Centred line with <text:span text:style-name="T_s">strike</text:span>, <text:span text:style-name="T_red">red text</text:span> + <text:span text:style-name="T_yellowbg">yellow bg</text:span>.</text:p>
+      <text:p>Bookmark : <text:bookmark text:name="seedBM"/>anchor.<office:annotation xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"><dc:creator>alice</dc:creator><dc:date>2026-06-12T10:00:00Z</dc:date><text:p>Seed comment body.</text:p></office:annotation></text:p>
+      <text:p text:style-name="P_pagebreak"/>
       <text:list text:style-name="L_ol_seed">
         <text:list-item><text:p>first</text:p></text:list-item>
         <text:list-item><text:p>second</text:p></text:list-item>
@@ -165,6 +170,9 @@ const mounted = await page.evaluate(() => {
     .find(s => (s.getAttribute('style') ?? '').includes('color: #ff0000'));
   const highlighted = Array.from(ce?.querySelectorAll('span') ?? [])
     .find(s => (s.getAttribute('style') ?? '').includes('background-color: #ffff00'));
+  const bookmark = ce?.querySelector('a.odt-bookmark');
+  const annotation = ce?.querySelector('span.odt-annotation');
+  const pageBreak = ce?.querySelector('hr.page-break');
   return {
     hasWysiwyg: !!ce,
     hasCodeMirror: !!cm,
@@ -181,6 +189,10 @@ const mounted = await page.evaluate(() => {
     strikeText: strikeEl?.textContent ?? '',
     coloredText: colored?.textContent ?? '',
     highlightedText: highlighted?.textContent ?? '',
+    bookmarkName: bookmark?.getAttribute('data-name') ?? '',
+    annotationCreator: annotation?.getAttribute('data-creator') ?? '',
+    annotationBody: annotation?.getAttribute('data-body') ?? '',
+    hasPageBreak: !!pageBreak,
   };
 });
 if (!mounted.hasWysiwyg) {
@@ -271,6 +283,25 @@ if (mounted.highlightedText === 'yellow bg') {
   failL('highlight read',
     'expected yellow-bg span got "' + mounted.highlightedText + '"');
 }
+// V0.10 reader assertions : bookmark / annotation / page break.
+if (mounted.bookmarkName === 'seedBM') {
+  ok('bookmark read', '<a.odt-bookmark data-name="seedBM">');
+} else {
+  failL('bookmark read', 'expected seedBM got "' + mounted.bookmarkName + '"');
+}
+if (mounted.annotationCreator === 'alice'
+ && mounted.annotationBody === 'Seed comment body.') {
+  ok('annotation read', 'creator=alice body="Seed comment body."');
+} else {
+  failL('annotation read',
+    'expected alice/"Seed comment body." got creator="' + mounted.annotationCreator
+    + '" body="' + mounted.annotationBody + '"');
+}
+if (mounted.hasPageBreak) {
+  ok('page break read', '<hr class="page-break"> surfaced from P_pagebreak');
+} else {
+  failL('page break read', 'no <hr.page-break> in contenteditable');
+}
 
 // 4) drive an edit (text + a 2×2 table insert) + wait for the
 //    debounced save (~600 ms) + extra time for jszip generation.
@@ -308,7 +339,11 @@ await page.evaluate(() => {
   append('<p>E=mc<sup>2</sup>, H<sub>2</sub>O, <s>old</s> idea.</p>'
     + '<p style="text-align: right;">right-aligned line</p>'
     + '<ol><li>editor first</li><li>editor second</li></ol>'
-    + '<p>Editor <span style="color: #00aa00;">green</span> + <span style="background-color: #ff66cc;">pink bg</span>.</p>');
+    + '<p>Editor <span style="color: #00aa00;">green</span> + <span style="background-color: #ff66cc;">pink bg</span>.</p>'
+    + '<p><a class="odt-bookmark" data-name="editorBM" data-role="point"></a>at bm.'
+    + '<span class="odt-annotation" data-creator="bob" data-date="2026-06-12T11:00:00Z"'
+    + ' data-body="Editor-added comment.">💬</span></p>'
+    + '<hr class="page-break">');
   ce.dispatchEvent(new InputEvent('input', { bubbles: true }));
 });
 await new Promise((r) => setTimeout(r, 2000));
@@ -434,6 +469,29 @@ if (!after.ok) {
       } else {
         failL('highlight write',
           'expected fo:background-color="#ff66cc" in saved XML, missing');
+      }
+      // V0.10 write-path : bookmark + annotation + page break.
+      if (xml.includes('<text:bookmark text:name="editorBM"/>')) {
+        ok('bookmark write', '<text:bookmark text:name="editorBM"/> emitted');
+      } else {
+        failL('bookmark write',
+          'expected text:bookmark name=editorBM, missing — xml snippet : '
+          + xml.slice(xml.indexOf('<office:body>'), xml.indexOf('</office:body>')));
+      }
+      if (xml.includes('<office:annotation>')
+       && xml.includes('Editor-added comment.')
+       && xml.includes('<dc:creator>bob</dc:creator>')) {
+        ok('annotation write', '<office:annotation> with creator + body');
+      } else {
+        failL('annotation write',
+          'expected office:annotation with bob/Editor-added comment., missing');
+      }
+      if (xml.includes('<text:p text:style-name="P_pagebreak"/>')
+       && xml.includes('fo:break-before="page"')) {
+        ok('page break write', 'P_pagebreak paragraph + break-before in auto-styles');
+      } else {
+        failL('page break write',
+          'expected P_pagebreak paragraph + break-before, missing');
       }
       // Image-write-back of new-data:-URL <img> tags through the
       // contenteditable is V0.4 work — the puppeteer harness can't

@@ -151,7 +151,10 @@ interface StyleHints {
 // Paragraph-level hints surface as inline-style values on the HTML
 // <p>/<h1-6> so the contenteditable preserves them visually + the
 // writer can pull them back off on save.
-interface ParaHints { align?: 'left' | 'center' | 'right' | 'justify'; }
+interface ParaHints {
+  align?: 'left' | 'center' | 'right' | 'justify';
+  pageBreakBefore?: boolean;
+}
 
 // ListKind : ODF lists are tagged with a style-name pointing into a
 // <text:list-style> entry ; the entry's child element decides
@@ -211,11 +214,15 @@ function parseContent(xml: string, pictures: Record<string, string>): string {
     }
     const pprops = s.getElementsByTagNameNS(NS.style, 'paragraph-properties')[0];
     if (pprops) {
+      const existing = paraStyles.get(name) ?? {};
       const ta = pprops.getAttributeNS(NS.fo, 'text-align');
-      if (ta === 'start' || ta === 'left') paraStyles.set(name, { align: 'left' });
-      else if (ta === 'center') paraStyles.set(name, { align: 'center' });
-      else if (ta === 'end' || ta === 'right') paraStyles.set(name, { align: 'right' });
-      else if (ta === 'justify') paraStyles.set(name, { align: 'justify' });
+      if (ta === 'start' || ta === 'left') existing.align = 'left';
+      else if (ta === 'center') existing.align = 'center';
+      else if (ta === 'end' || ta === 'right') existing.align = 'right';
+      else if (ta === 'justify') existing.align = 'justify';
+      const bb = pprops.getAttributeNS(NS.fo, 'break-before');
+      if (bb === 'page') existing.pageBreakBefore = true;
+      if (existing.align || existing.pageBreakBefore) paraStyles.set(name, existing);
     }
   }
   // <text:list-style style:name="LO1"> resolves to <ol> when the
@@ -262,8 +269,15 @@ function emitBlock(node: Element, ctx: ParseCtx): string {
   // fo:text-align="…"> surfaces as inline style="text-align:…".
   const styleName = node.getAttributeNS(NS.text, 'style-name') ?? '';
   const attrs = paraStyleAttrs(styleName, ctx);
+  // V0.10 : a paragraph whose resolved style carries break-before
+  // becomes a sibling <hr class="page-break"> ; an empty body means
+  // the whole paragraph IS the break marker (Word emits these).
+  const ph = ctx.paraStyles.get(styleName);
+  const pageBreak = ph?.pageBreakBefore ? '<hr class="page-break">' : '';
   if (ln === 'p') {
-    return '<p' + attrs + '>' + emitInline(node, ctx.styles, ctx.pictures) + '</p>';
+    const inner = emitInline(node, ctx.styles, ctx.pictures);
+    if (pageBreak && !inner.trim()) return pageBreak;
+    return pageBreak + '<p' + attrs + '>' + inner + '</p>';
   }
   if (ln === 'h') {
     const lvl = Math.min(6, Math.max(1, Number(node.getAttributeNS(NS.text, 'outline-level') ?? '1')));
@@ -355,6 +369,44 @@ function emitInline(node: Node, styles: Map<string, StyleHints>, pictures: Recor
       // Hyperlink ; we keep the visible text + the href.
       const href = el.getAttributeNS(NS.xlink, 'href') ?? '';
       out += '<a href="' + escapeAttr(href) + '">' + emitInline(el, styles, pictures) + '</a>';
+    } else if (ln === 'bookmark' || ln === 'bookmark-start') {
+      // V0.10 point + range bookmarks. Range bookmarks emit a marker
+      // pair (-start + matching -end) ; for the contenteditable we
+      // surface both as anchor-like <a class="odt-bookmark"> with a
+      // data-role to distinguish them.
+      const bmName = el.getAttributeNS(NS.text, 'name') ?? '';
+      const role = ln === 'bookmark' ? 'point' : 'start';
+      out += '<a class="odt-bookmark" data-name="' + escapeAttr(bmName)
+          + '" data-role="' + role + '"></a>';
+    } else if (ln === 'bookmark-end') {
+      const bmName = el.getAttributeNS(NS.text, 'name') ?? '';
+      out += '<a class="odt-bookmark" data-name="' + escapeAttr(bmName)
+          + '" data-role="end"></a>';
+    } else if (ln === 'soft-page-break') {
+      out += '<hr class="page-break">';
+    } else if (ln === 'annotation' && el.namespaceURI === NS.office) {
+      // V0.10 comments/annotations. ODF :
+      //   <office:annotation>
+      //     <dc:creator>…</dc:creator>
+      //     <dc:date>…</dc:date>
+      //     <text:p>…</text:p>+
+      //   </office:annotation>
+      // We surface as a single inline span carrying the metadata
+      // in data-attrs ; rich-body paragraphs join on '\n' just like
+      // footnote bodies.
+      const creator = el.getElementsByTagNameNS(NS.dc, 'creator')[0]?.textContent ?? '';
+      const date = el.getElementsByTagNameNS(NS.dc, 'date')[0]?.textContent ?? '';
+      let bodyHTML = '';
+      for (const p of Array.from(el.getElementsByTagNameNS(NS.text, 'p'))) {
+        if (bodyHTML) bodyHTML += '\n';
+        bodyHTML += emitInline(p, styles, pictures);
+      }
+      out += '<span class="odt-annotation"'
+          + ' data-creator="' + escapeAttr(creator) + '"'
+          + ' data-date="' + escapeAttr(date) + '"'
+          + ' data-body="' + escapeAttr(bodyHTML) + '"'
+          + ' title="' + escapeAttr(creator + (date ? ' — ' + date : '')) + '">'
+          + '💬</span>';
     } else if (ln === 'note') {
       // <text:note text:id=… text:note-class="footnote">
       //   <text:note-citation>N</text:note-citation>
@@ -544,6 +596,7 @@ function htmlToContentXML(html: string, collected: CollectedImage[], preservedAu
   // both L_ol + L_ul ; the unused one is harmless.
   let usedOL = false;
   let usedUL = false;
+  let usedPagebreak = false;
   // Walk + emit body. Image collection runs as a side-effect of the
   // emitter — every <img> push appends to `collected`.
   const imageRefFor = (src: string, alt: string): string => {
@@ -576,6 +629,7 @@ function htmlToContentXML(html: string, collected: CollectedImage[], preservedAu
     imageRefFor,
     noteIdFor,
     markListKind: (k: ListKind) => { if (k === 'ol') usedOL = true; else usedUL = true; },
+    markPagebreak: () => { usedPagebreak = true; },
   };
 
   let body = '';
@@ -624,6 +678,11 @@ function htmlToContentXML(html: string, collected: CollectedImage[], preservedAu
       <text:list-level-style-bullet text:level="1" text:bullet-char="•"/>
     </text:list-style>\n`;
   }
+  if (usedPagebreak && !preservedNames.has('P_pagebreak')) {
+    stylesXML += `    <style:style style:name="P_pagebreak" style:family="paragraph">`
+              + '<style:paragraph-properties fo:break-before="page"/>'
+              + '</style:style>\n';
+  }
   return `<?xml version="1.0" encoding="UTF-8"?>
 <office:document-content
   xmlns:office="${NS.office}"
@@ -634,6 +693,7 @@ function htmlToContentXML(html: string, collected: CollectedImage[], preservedAu
   xmlns:draw="${NS.draw}"
   xmlns:xlink="${NS.xlink}"
   xmlns:svg="${NS.svg}"
+  xmlns:dc="${NS.dc}"
   office:version="1.2">
   <office:automatic-styles>
 ${stylesXML}  </office:automatic-styles>
@@ -689,6 +749,7 @@ interface WriteCtx {
   imageRefFor: ImageRef;
   noteIdFor: NoteIdFor;
   markListKind: (k: ListKind) => void;
+  markPagebreak: () => void;
 }
 
 // Pull a normalised text-align value out of an element's style="…"
@@ -739,6 +800,13 @@ function emitODTBlock(node: Node, fmt: StyleHints, ctx: WriteCtx): string {
   }
   if (tag === 'br') {
     return '      <text:p/>\n';
+  }
+  if (tag === 'hr' && (el.getAttribute('class') ?? '').includes('page-break')) {
+    // V0.10 : emit a paragraph that carries a break-before style so
+    // Word / LibreOffice both honour the page break. Style ref =
+    // P_pagebreak ; the auto-style entry lands in stylesXML.
+    ctx.markPagebreak();
+    return '      <text:p text:style-name="P_pagebreak"/>\n';
   }
   if (tag === 'table') {
     // Walk all rows under <tbody> + <thead> indiscriminately. Most
@@ -803,7 +871,75 @@ function emitODTInline(node: Node, fmt: StyleHints, ctx: WriteCtx): string {
     if (c.nodeType !== 1) continue;
     const el = c as Element;
     const tag = el.tagName.toLowerCase();
+    const klass = el.getAttribute('class') ?? '';
     const next: StyleHints = { ...fmt };
+    // V0.10 specific markers : bookmark / annotation / footnote ALL
+    // win over the generic <a>/<span>/<sup> chain below. Check them
+    // first so the elif chain can't capture them by mistake.
+    if (tag === 'a' && klass.includes('odt-bookmark')) {
+      const nm = el.getAttribute('data-name') ?? '';
+      const role = el.getAttribute('data-role') ?? 'point';
+      const eltag = role === 'point' ? 'text:bookmark'
+                  : role === 'start' ? 'text:bookmark-start'
+                  : 'text:bookmark-end';
+      out += '<' + eltag + ' text:name="' + escapeAttr(nm) + '"/>';
+      continue;
+    }
+    if (tag === 'span' && klass.includes('odt-annotation')) {
+      const creator = el.getAttribute('data-creator') ?? '';
+      const date = el.getAttribute('data-date') ?? '';
+      const body = el.getAttribute('data-body') ?? '';
+      const bodyParas = body.split('\n').map(lineHTML => {
+        const tmp = (() => {
+          try {
+            return new DOMParser().parseFromString(
+              '<!doctype html><html><body>' + lineHTML + '</body></html>',
+              'text/html',
+            ).body;
+          } catch {
+            const d = document.createElement('div');
+            d.innerHTML = lineHTML;
+            return d;
+          }
+        })();
+        return '<text:p>' + emitODTInline(tmp, fmt, ctx) + '</text:p>';
+      }).join('');
+      out += '<office:annotation>'
+          + (creator ? '<dc:creator>' + escapeHTML(creator) + '</dc:creator>' : '')
+          + (date ? '<dc:date>' + escapeHTML(date) + '</dc:date>' : '')
+          + bodyParas
+          + '</office:annotation>';
+      continue;
+    }
+    if (tag === 'sup' && klass.includes('footnote')) {
+      // (V0.6 footnote handling moved here so it can't be captured
+      //  by the generic <sup> case below.)
+      const id = el.getAttribute('data-id') || ctx.noteIdFor();
+      const cls = (klass.split(/\s+/).find(c => c !== 'footnote') ?? 'footnote');
+      const cite = el.textContent ?? '';
+      const body = el.getAttribute('data-body') ?? '';
+      const bodyParas = body.split('\n').map(lineHTML => {
+        const tmp = (() => {
+          try {
+            return new DOMParser().parseFromString(
+              '<!doctype html><html><body>' + lineHTML + '</body></html>',
+              'text/html',
+            ).body;
+          } catch {
+            const d = document.createElement('div');
+            d.innerHTML = lineHTML;
+            return d;
+          }
+        })();
+        return '<text:p>' + emitODTInline(tmp, fmt, ctx) + '</text:p>';
+      }).join('');
+      out += '<text:note text:id="' + escapeAttr(id)
+          + '" text:note-class="' + escapeAttr(cls) + '">'
+          + '<text:note-citation>' + escapeHTML(cite) + '</text:note-citation>'
+          + '<text:note-body>' + bodyParas + '</text:note-body>'
+          + '</text:note>';
+      continue;
+    }
     if (tag === 'b' || tag === 'strong') next.bold = true;
     else if (tag === 'i' || tag === 'em') next.italic = true;
     else if (tag === 'u') next.underline = true;
@@ -832,35 +968,6 @@ function emitODTInline(node: Node, fmt: StyleHints, ctx: WriteCtx): string {
       const src = (el as HTMLImageElement).getAttribute('src') ?? '';
       const alt = (el as HTMLImageElement).getAttribute('alt') ?? '';
       out += ctx.imageRefFor(src, alt);
-      continue;
-    } else if (tag === 'sup' && (el.getAttribute('class') ?? '').includes('footnote')) {
-      const id = el.getAttribute('data-id') || ctx.noteIdFor();
-      const cls = ((el.getAttribute('class') ?? '').split(/\s+/).find(c => c !== 'footnote') ?? 'footnote');
-      const cite = el.textContent ?? '';
-      const body = el.getAttribute('data-body') ?? '';
-      // data-body is HTML (V0.6 widened from plain text). Each line
-      // is a paragraph ; parse with DOMParser + recurse through
-      // emitODTInline so inline bold/italic/underline/links survive.
-      const bodyParas = body.split('\n').map(lineHTML => {
-        const tmp = (() => {
-          try {
-            return new DOMParser().parseFromString(
-              '<!doctype html><html><body>' + lineHTML + '</body></html>',
-              'text/html',
-            ).body;
-          } catch {
-            const d = document.createElement('div');
-            d.innerHTML = lineHTML;
-            return d;
-          }
-        })();
-        return '<text:p>' + emitODTInline(tmp, fmt, ctx) + '</text:p>';
-      }).join('');
-      out += '<text:note text:id="' + escapeAttr(id)
-          + '" text:note-class="' + escapeAttr(cls) + '">'
-          + '<text:note-citation>' + escapeHTML(cite) + '</text:note-citation>'
-          + '<text:note-body>' + bodyParas + '</text:note-body>'
-          + '</text:note>';
       continue;
     } else if (tag === 'sup') {
       // Non-footnote <sup> = explicit superscript run.

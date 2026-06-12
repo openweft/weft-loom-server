@@ -223,6 +223,63 @@
     onInput();
   }
 
+  // insertPageBreak : drops <hr class="page-break"> at the caret.
+  // Round-trips to ODF's <text:p text:style-name="P_pagebreak"/>
+  // (paragraph with fo:break-before="page" in auto-styles).
+  function insertPageBreak() {
+    editorEl.focus();
+    const hr = document.createElement('hr');
+    hr.className = 'page-break';
+    const sel = window.getSelection();
+    let range: Range;
+    if (sel && sel.rangeCount > 0 && editorEl.contains(sel.getRangeAt(0).startContainer)) {
+      range = sel.getRangeAt(0);
+      range.deleteContents();
+    } else {
+      range = document.createRange();
+      range.selectNodeContents(editorEl);
+      range.collapse(false);
+    }
+    range.insertNode(hr);
+    range.setStartAfter(hr);
+    range.collapse(true);
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+    onInput();
+  }
+
+  // insertComment : drops an <office:annotation>-shaped <span> at
+  // the caret. Body is plain text in V0.10 ; rich-body lands later
+  // alongside the footnote rich-body pattern.
+  function insertComment() {
+    const body = prompt('Comment :');
+    if (!body) return;
+    editorEl.focus();
+    const span = document.createElement('span');
+    span.className = 'odt-annotation';
+    span.setAttribute('data-creator', 'me');
+    span.setAttribute('data-date', new Date().toISOString());
+    span.setAttribute('data-body', body);
+    span.setAttribute('title', 'me — ' + body);
+    span.textContent = '💬';
+    const sel = window.getSelection();
+    let range: Range;
+    if (sel && sel.rangeCount > 0 && editorEl.contains(sel.getRangeAt(0).startContainer)) {
+      range = sel.getRangeAt(0);
+      range.deleteContents();
+    } else {
+      range = document.createRange();
+      range.selectNodeContents(editorEl);
+      range.collapse(false);
+    }
+    range.insertNode(span);
+    range.setStartAfter(span);
+    range.collapse(true);
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+    onInput();
+  }
+
   function escapeAttr(s: string): string {
     return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
   }
@@ -309,8 +366,10 @@
     <button type="button" title="Bullet list"      class="btn btn-ghost btn-xs" onclick={() => exec('insertUnorderedList')}>•</button>
     <button type="button" title="Numbered list"    class="btn btn-ghost btn-xs" onclick={() => exec('insertOrderedList')}>1.</button>
     <button type="button" title="Insert 2×2 table" class="btn btn-ghost btn-xs" onclick={() => insertTable()}>▦</button>
-    <button type="button" title="Insert link"      class="btn btn-ghost btn-xs" onclick={() => insertLink()}>🔗</button>
-    <button type="button" title="Insert footnote"  class="btn btn-ghost btn-xs" onclick={() => insertFootnote()}>†</button>
+    <button type="button" title="Insert link"        class="btn btn-ghost btn-xs" onclick={() => insertLink()}>🔗</button>
+    <button type="button" title="Insert footnote"    class="btn btn-ghost btn-xs" onclick={() => insertFootnote()}>†</button>
+    <button type="button" title="Insert comment"     class="btn btn-ghost btn-xs" onclick={() => insertComment()}>💬</button>
+    <button type="button" title="Insert page break"  class="btn btn-ghost btn-xs" onclick={() => insertPageBreak()}>⤓</button>
     <span class="divider divider-horizontal mx-0"></span>
     <label title="Text colour" class="btn btn-ghost btn-xs px-1 inline-flex items-center gap-1">
       <span class="font-bold">A</span>
