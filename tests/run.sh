@@ -112,8 +112,18 @@ node tests/wysiwyg-odt.mjs
 WYSIWYG_ODT=$?
 
 echo
+echo "----- WYSIWYG ODT toolbar suite -----"
+# Regression guard for the V0.8 toolbar wiring : insert link,
+# insert footnote, align right, strike, super, sub buttons all
+# need to produce the right DOM in the contenteditable. Catches
+# any silent rewire where a button stops calling the handler or
+# Chrome's execCommand sanitiser breaks one of the paths.
+node tests/wysiwyg-odt-toolbar.mjs
+WYSIWYG_ODT_TB=$?
+
+echo
 echo "==============================================="
-if [ $UI -eq 0 ] && [ $LANG -eq 0 ] && [ $PREVIEW -eq 0 ] && [ $UIENTRY -eq 0 ] && [ $THEMEP -eq 0 ] && [ $WYSIWYG -eq 0 ] && [ $WYSIWYG_ODT -eq 0 ]; then
+if [ $UI -eq 0 ] && [ $LANG -eq 0 ] && [ $PREVIEW -eq 0 ] && [ $UIENTRY -eq 0 ] && [ $THEMEP -eq 0 ] && [ $WYSIWYG -eq 0 ] && [ $WYSIWYG_ODT -eq 0 ] && [ $WYSIWYG_ODT_TB -eq 0 ]; then
   echo "  \033[32mALL PASS\033[0m"
   exit 0
 fi
@@ -124,5 +134,6 @@ fi
 [ $THEMEP     -eq 0 ] && echo "  theme-preview      : \033[32mPASS\033[0m" || echo "  theme-preview      : \033[31mFAIL\033[0m"
 [ $WYSIWYG    -eq 0 ] && echo "  wysiwyg-rtf        : \033[32mPASS\033[0m" || echo "  wysiwyg-rtf        : \033[31mFAIL\033[0m"
 [ $WYSIWYG_ODT -eq 0 ] && echo "  wysiwyg-odt        : \033[32mPASS\033[0m" || echo "  wysiwyg-odt        : \033[31mFAIL\033[0m"
+[ $WYSIWYG_ODT_TB -eq 0 ] && echo "  wysiwyg-odt-toolbar: \033[32mPASS\033[0m" || echo "  wysiwyg-odt-toolbar: \033[31mFAIL\033[0m"
 echo "==============================================="
 exit 1

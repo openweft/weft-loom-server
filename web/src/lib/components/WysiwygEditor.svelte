@@ -122,6 +122,96 @@
     onInput();
   }
 
+  // insertLink : wraps the current selection in an <a href="…">. If
+  // nothing is selected, inserts a fresh link with the URL as visible
+  // text + leaves the cursor inside the new <a> so the user can
+  // continue typing.
+  function insertLink() {
+    const url = prompt('URL :');
+    if (!url) return;
+    editorEl.focus();
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && editorEl.contains(sel.getRangeAt(0).startContainer)) {
+      document.execCommand('createLink', false, url);
+    } else {
+      // Restore caret to the end of the contenteditable if the prompt
+      // dropped the selection.
+      if (sel) {
+        const range = document.createRange();
+        if (sel.rangeCount === 0 || !editorEl.contains(sel.getRangeAt(0).startContainer)) {
+          range.selectNodeContents(editorEl);
+          range.collapse(false);
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+      }
+      document.execCommand('insertHTML', false,
+        '<a href="' + escapeAttr(url) + '">' + escapeHTML(url) + '</a>');
+    }
+    onInput();
+  }
+
+  // insertFootnote : drops a <sup class="footnote"> citation at the
+  // caret + lets the user fill in the body via prompt(). The
+  // citation number auto-increments from the count of existing
+  // sup.footnote elements ; data-id mirrors the citation so the
+  // writer round-trips a stable ftnN identifier.
+  //
+  // The selection is restored to the end of the contenteditable
+  // before the insertHTML so the call doesn't no-op when the prompt
+  // dialog dropped the original range.
+  function insertFootnote() {
+    const body = prompt('Footnote body :');
+    if (!body) return;
+    const existing = editorEl.querySelectorAll('sup.footnote').length;
+    const idx = existing + 1;
+    editorEl.focus();
+    // Build the <sup> in JS rather than insertHTML — Chrome's
+    // execCommand('insertHTML') silently rewrites <sup> as
+    // <span style="vertical-align: super"> (sanitiser thinks it's
+    // a stylistic alias), which destroys the round-trip path.
+    const sup = document.createElement('sup');
+    sup.className = 'footnote';
+    sup.setAttribute('data-id', 'ftn' + idx);
+    sup.setAttribute('data-body', body);
+    sup.textContent = String(idx);
+    const sel = window.getSelection();
+    let range: Range;
+    if (sel && sel.rangeCount > 0 && editorEl.contains(sel.getRangeAt(0).startContainer)) {
+      range = sel.getRangeAt(0);
+      range.deleteContents();
+    } else {
+      range = document.createRange();
+      range.selectNodeContents(editorEl);
+      range.collapse(false);
+    }
+    range.insertNode(sup);
+    // Place the caret immediately after the inserted node so the
+    // user can keep typing.
+    range.setStartAfter(sup);
+    range.collapse(true);
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+    onInput();
+  }
+
+  // setAlign : applies the named alignment to the currently selected
+  // block(s). Inline-style on the paragraph survives the ODT round-
+  // trip via the V0.7 pickAlign path in the writer.
+  function setAlign(dir: 'left' | 'center' | 'right' | 'justify') {
+    editorEl.focus();
+    const cmd = 'justify' + dir.charAt(0).toUpperCase() + dir.slice(1);
+    document.execCommand(cmd);
+    onInput();
+  }
+
+  function escapeAttr(s: string): string {
+    return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+  }
+  function escapeHTML(s: string): string {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
   // insertTable : drops a fresh 2×2 table at the caret. The
   // contenteditable doesn't have a built-in execCommand for this
   // (insertHTML works but lands inside the current block ; we use
@@ -186,13 +276,23 @@
       <option value="h3">Heading 3</option>
     </select>
     <span class="divider divider-horizontal mx-0"></span>
-    <button type="button" title="Bold (⌘B)"      class="btn btn-ghost btn-xs font-bold"     onclick={() => exec('bold')}>B</button>
-    <button type="button" title="Italic (⌘I)"    class="btn btn-ghost btn-xs italic"        onclick={() => exec('italic')}>I</button>
-    <button type="button" title="Underline (⌘U)" class="btn btn-ghost btn-xs underline"     onclick={() => exec('underline')}>U</button>
+    <button type="button" title="Bold (⌘B)"        class="btn btn-ghost btn-xs font-bold"        onclick={() => exec('bold')}>B</button>
+    <button type="button" title="Italic (⌘I)"      class="btn btn-ghost btn-xs italic"           onclick={() => exec('italic')}>I</button>
+    <button type="button" title="Underline (⌘U)"   class="btn btn-ghost btn-xs underline"        onclick={() => exec('underline')}>U</button>
+    <button type="button" title="Strikethrough"    class="btn btn-ghost btn-xs line-through"     onclick={() => exec('strikeThrough')}>S</button>
+    <button type="button" title="Superscript"      class="btn btn-ghost btn-xs"                   onclick={() => exec('superscript')}>X²</button>
+    <button type="button" title="Subscript"        class="btn btn-ghost btn-xs"                   onclick={() => exec('subscript')}>X₂</button>
+    <span class="divider divider-horizontal mx-0"></span>
+    <button type="button" title="Align left"       class="btn btn-ghost btn-xs"                   onclick={() => setAlign('left')}>⇤</button>
+    <button type="button" title="Align centre"     class="btn btn-ghost btn-xs"                   onclick={() => setAlign('center')}>≡</button>
+    <button type="button" title="Align right"      class="btn btn-ghost btn-xs"                   onclick={() => setAlign('right')}>⇥</button>
+    <button type="button" title="Justify"          class="btn btn-ghost btn-xs"                   onclick={() => setAlign('justify')}>☰</button>
     <span class="divider divider-horizontal mx-0"></span>
     <button type="button" title="Bullet list"      class="btn btn-ghost btn-xs" onclick={() => exec('insertUnorderedList')}>•</button>
     <button type="button" title="Numbered list"    class="btn btn-ghost btn-xs" onclick={() => exec('insertOrderedList')}>1.</button>
     <button type="button" title="Insert 2×2 table" class="btn btn-ghost btn-xs" onclick={() => insertTable()}>▦</button>
+    <button type="button" title="Insert link"      class="btn btn-ghost btn-xs" onclick={() => insertLink()}>🔗</button>
+    <button type="button" title="Insert footnote"  class="btn btn-ghost btn-xs" onclick={() => insertFootnote()}>†</button>
     <span class="divider divider-horizontal mx-0"></span>
     <button type="button" title="Undo (⌘Z)"  class="btn btn-ghost btn-xs" onclick={() => exec('undo')}>↶</button>
     <button type="button" title="Redo (⌘⇧Z)" class="btn btn-ghost btn-xs" onclick={() => exec('redo')}>↷</button>
