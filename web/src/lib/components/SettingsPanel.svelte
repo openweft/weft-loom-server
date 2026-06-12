@@ -108,22 +108,6 @@
     settings.set('theme', t);
   }
 
-  // Local copies for binding ; sync back to the store on change so
-  // every editor component picks them up without two-way binding
-  // gymnastics with the class-state singleton.
-  function bindFont<K extends 'size' | 'lineHeight'>(key: K) {
-    return {
-      get: () => settings.current.font[key],
-      set: (v: number) => settings.setFont({ [key]: v } as Partial<typeof settings.current.font>),
-    };
-  }
-  function bind<K extends 'tabSize' | 'insertSpaces' | 'lineNumbers' | 'wordWrap' | 'bracketMatching' | 'autocomplete' | 'minimap'>(key: K) {
-    return {
-      get: () => settings.current[key],
-      set: (v: typeof settings.current[K]) => settings.set(key, v),
-    };
-  }
-
   // VSCode theme import : <input type=file> + FileReader → JSON parse.
   // Tolerates the two common VSCode theme shapes : the bare theme
   // object OR the `{name, themes:[…]}` extension wrapper.

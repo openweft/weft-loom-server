@@ -19,7 +19,6 @@
     currentFile: string;
     fileContent: () => string;
     open: boolean;
-    onClose: () => void;
     // embedded == true when AIChatPanel sits inside a parent that
     // owns the column width + side border (Chat-under-AI stack).
     // Drop the self-managed drag handle + border to integrate
@@ -34,7 +33,7 @@
     onToggleCollapsed?: () => void;
   }
 
-  let { project, currentFile, fileContent, open = $bindable(), onClose, embedded = false, collapsed = false, onToggleCollapsed }: Props = $props();
+  let { project, currentFile, fileContent, open = $bindable(), embedded = false, collapsed = false, onToggleCollapsed }: Props = $props();
 
   interface Message {
     role: 'user' | 'assistant' | 'system';

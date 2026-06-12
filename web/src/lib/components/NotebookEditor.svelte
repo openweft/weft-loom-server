@@ -346,8 +346,8 @@
     <!-- Bottom "add cell" CTA so the last cell can grow the notebook
          without scrolling back up to a per-cell + button. -->
     <div class="flex gap-2 justify-center py-2 opacity-70 hover:opacity-100">
-      <button class="btn btn-xs" onclick={() => addCell(nb.cells.length - 1, 'code')}>+ code cell</button>
-      <button class="btn btn-xs" onclick={() => addCell(nb.cells.length - 1, 'markdown')}>+ markdown cell</button>
+      <button class="btn btn-xs" onclick={() => addCell(nb!.cells.length - 1, 'code')}>+ code cell</button>
+      <button class="btn btn-xs" onclick={() => addCell(nb!.cells.length - 1, 'markdown')}>+ markdown cell</button>
     </div>
   {/if}
 </div>

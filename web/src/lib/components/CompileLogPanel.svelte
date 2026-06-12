@@ -54,8 +54,6 @@
   const compilable = $derived(true);
   let resultURL = $state<string | null>(null);
   let activeTab = $state<'log' | 'errors'>('log');
-  let height = $state<number>(220);
-  let dragging = $state(false);
 
   // Parsed diagnostics extracted from the streaming compile log.
   // pdflatex / latexmk / pandoc all sprinkle file + line info in
@@ -176,11 +174,8 @@
 
   // Persist panel height + open state across reloads.
   onMount(() => {
-    const h = localStorage.getItem('weft-loom-logpanel-height');
-    if (h) {
-      const n = Number(h);
-      if (!Number.isNaN(n) && n >= 100 && n <= 600) height = n;
-    }
+    // Panel height is now owned by BottomPanel ; the in-component
+    // resize state was removed, so the localStorage read is dead.
   });
 
   function push(line: LogLine) {
@@ -295,34 +290,11 @@
     resultURL = null;
   }
 
-  // Resize handle on top of the panel : drag up/down to grow/shrink.
-  function startDrag(ev: MouseEvent) {
-    ev.preventDefault();
-    dragging = true;
-    const startY = ev.clientY;
-    const startH = height;
-    function move(e: MouseEvent) {
-      if (!dragging) return;
-      const delta = startY - e.clientY;
-      const next = Math.max(100, Math.min(600, startH + delta));
-      height = next;
-    }
-    function up() {
-      dragging = false;
-      document.removeEventListener('mousemove', move);
-      document.removeEventListener('mouseup', up);
-      try {
-        localStorage.setItem('weft-loom-logpanel-height', String(height));
-      } catch {
-        /* localStorage full / denied */
-      }
-    }
-    document.addEventListener('mousemove', move);
-    document.addEventListener('mouseup', up);
-  }
+  // Resize handle is now owned by BottomPanel ; the in-panel drag
+  // handler that lived here is removed to avoid dead code.
 
   onDestroy(() => {
-    dragging = false;
+    // No teardown needed ; the in-panel drag state moved out.
   });
 
   function fmtTime(ts: number): string {

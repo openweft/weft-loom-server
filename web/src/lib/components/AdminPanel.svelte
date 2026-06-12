@@ -8,8 +8,6 @@
   // job history. For now a single "Images" pane keeps the surface
   // tiny + actionable.
 
-  import { onMount } from 'svelte';
-
   interface OciStatus {
     language: string;
     image: string;

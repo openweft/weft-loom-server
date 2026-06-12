@@ -2,7 +2,7 @@
   import { onMount, onDestroy, untrack } from 'svelte';
   import { logEvent } from '../logbus';
   import { Compartment, EditorState } from '@codemirror/state';
-  import { EditorView, keymap, lineNumbers } from '@codemirror/view';
+  import { EditorView, keymap } from '@codemirror/view';
   import { authorshipExtension } from '../authorship';
   import {
     defaultKeymap,
@@ -46,7 +46,7 @@
   // @codemirror/legacy-modes (no weft-loom deps). Zig still falls
   // back to rust for now until a real Zig pack lands.
   import { hcl as hclStream } from '../codemirrorHCL';
-  import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
+  import { closeBrackets } from '@codemirror/autocomplete';
   import { latexRichText, richTextCompartment, applyLatexCommand, type LatexCommand } from '../latexRichText';
   import { settings, vscodeThemes } from '../settings.svelte';
   import { buildVSCodeThemeExtension, vscodeThemeCompartment } from '../vscodeThemeApply.svelte';
@@ -56,13 +56,12 @@
   import { citeCompletion } from '../citeAutocomplete';
   import { citeHover } from '../citeHover';
   import { bib } from '../bibStore.svelte';
-  import { search, searchKeymap, openSearchPanel } from '@codemirror/search';
+  import { search, searchKeymap } from '@codemirror/search';
   import { EditorState as ES, type Extension } from '@codemirror/state';
   import { lineNumbers as lineNumbersExt } from '@codemirror/view';
 
   import * as Y from 'yjs';
   import { WebsocketProvider } from 'y-websocket';
-  import { yCollab } from 'y-codemirror.next';
   import { yjsBinding } from '../ybinding';
   import type { Awareness } from 'y-protocols/awareness';
   import type { Identity } from '../identity';

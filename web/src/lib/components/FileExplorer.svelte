@@ -9,10 +9,10 @@
   // per-file Yjs ytext key ; openinng a different file in the same
   // project doesn't reconnect the WS provider.
   import { onMount, onDestroy, untrack } from 'svelte';
-  import { listFiles, deleteFile, type File } from '../api';
+  import { deleteFile, type File } from '../api';
   import ContextMenu, { type ContextEntry } from './ContextMenu.svelte';
   import { languageForPath, iconForPath } from '../theme';
-  import { getStatus, type FileChange } from '../git';
+  import { getStatus } from '../git';
   import NewFileDialog from './NewFileDialog.svelte';
   import GitPanel from './GitPanel.svelte';
 
@@ -443,7 +443,7 @@
                    unaffected (their emoji are outside the seti
                    font's claimed code points). -->
               <span class="font-mono text-xs truncate min-w-0 flex-1">
-                {isCollapsed ? '▸' : '▾'} <span class="seti-icon">{iconBump, iconForPath(node.fullPath, true)}</span> {node.name}
+                {isCollapsed ? '▸' : '▾'} <span class="seti-icon" data-bump={iconBump}>{iconForPath(node.fullPath, true)}</span> {node.name}
               </span>
               {#if node.isGitRepo}
                   <!-- codicon `git-branch` — small mono glyph next
@@ -455,10 +455,11 @@
                   width="11"
                   height="11"
                   fill="currentColor"
-                  aria-hidden="true"
-                  title="Git repository"
+                  role="img"
+                  aria-label="Git repository"
                   class="opacity-50 shrink-0 mr-1"
                 >
+                  <title>Git repository</title>
                   <path fill-rule="evenodd" clip-rule="evenodd" d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V5.5l-.005.083A3.001 3.001 0 0 1 9.5 8.5h-3c-.83 0-1.555.337-2.094.882V11.628a2.251 2.251 0 1 1-1.5 0V4.372a2.25 2.25 0 1 1 1.5 0v3.378A4.49 4.49 0 0 1 6.5 7h3a1.5 1.5 0 0 0 1.5-1.5v-.128A2.251 2.251 0 0 1 9.5 3.25zM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5zm8.25-8.75a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5z"/>
                 </svg>
               {/if}
@@ -468,7 +469,7 @@
                    + nowrap to ellipsis-cut long names. `min-w-0 flex-1`
                    lets it shrink inside the flex parent. -->
               <span class="font-mono text-xs truncate min-w-0 flex-1 {badge?.cls ?? ''}">
-                <span class="seti-icon">{iconBump, iconForPath(node.fullPath)}</span> {node.name}
+                <span class="seti-icon" data-bump={iconBump}>{iconForPath(node.fullPath)}</span> {node.name}
               </span>
               {#if badge}
                 <span

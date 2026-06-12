@@ -120,7 +120,7 @@ export function providerLabel(p: GitProvider): string {
 //   "https://github.com/openweft/weft-loom-server.git"
 // to the corresponding "View on …" web URL. Best-effort : empty when
 // the URL pattern doesn't match the provider.
-export function webURL(p: GitProvider, remoteURL: string): string {
+export function webURL(_provider: GitProvider, remoteURL: string): string {
   let url = remoteURL.replace(/\.git$/, '');
   if (url.startsWith('git@')) {
     // git@github.com:owner/repo → https://github.com/owner/repo

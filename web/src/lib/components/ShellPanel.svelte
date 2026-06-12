@@ -17,18 +17,15 @@
   interface Props {
     project: string;
     open: boolean;
-    onCloseRequest: () => void;
   }
 
-  let { project, open = $bindable(), onCloseRequest }: Props = $props();
+  let { project, open = $bindable() }: Props = $props();
 
   let host: HTMLDivElement | undefined = $state();
   let term: Terminal | undefined;
   let fit: FitAddon | undefined;
   let ws: WebSocket | undefined;
   let connected = $state(false);
-  let height = $state<number>(280);
-  let dragging = $state(false);
 
   function sendInput(data: string) {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -135,11 +132,6 @@
     });
     resizeObserver.observe(host);
 
-    const stored = localStorage.getItem('weft-loom-shell-height');
-    if (stored) {
-      const n = Number(stored);
-      if (!Number.isNaN(n) && n >= 120 && n <= 800) height = n;
-    }
   });
 
   onDestroy(() => {
@@ -148,26 +140,8 @@
     try { resizeObserver?.disconnect(); } catch {}
   });
 
-  // Drag handle on top of the panel — same UX as the CompileLogPanel.
-  function startDrag(ev: MouseEvent) {
-    ev.preventDefault();
-    dragging = true;
-    const startY = ev.clientY;
-    const startH = height;
-    function move(e: MouseEvent) {
-      const next = Math.max(120, Math.min(800, startH + (startY - e.clientY)));
-      height = next;
-    }
-    function up() {
-      dragging = false;
-      document.removeEventListener('mousemove', move);
-      document.removeEventListener('mouseup', up);
-      try { localStorage.setItem('weft-loom-shell-height', String(height)); } catch {}
-      requestAnimationFrame(() => { try { fit?.fit(); } catch {} });
-    }
-    document.addEventListener('mousemove', move);
-    document.addEventListener('mouseup', up);
-  }
+  // Height + in-panel drag handle used to live here ; both are now
+  // owned by BottomPanel, so the local copies were dead code.
 
   function clear() {
     try { term?.clear(); } catch {}

@@ -21,7 +21,6 @@
   // — fine for the file sizes weft-loom targets.
 
   import { onMount, onDestroy } from 'svelte';
-  import { i18n } from '../i18n.svelte';
 
   interface Props {
     project: string;

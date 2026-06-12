@@ -229,25 +229,6 @@ class TableWidget extends WidgetType {
   }
 }
 
-// HeadingNumberWidget — prefixes a section heading with its
-// auto-computed number ("1.", "1.1.", …) so the rich-text view
-// reads like a typeset LaTeX article. Inline non-replacing widget :
-// the caret can step right past it (side: -1) without the widget
-// eating the cursor.
-class HeadingNumberWidget extends WidgetType {
-  constructor(readonly label: string, readonly level: number) { super(); }
-  override eq(other: HeadingNumberWidget) {
-    return other.label === this.label && other.level === this.level;
-  }
-  toDOM(): HTMLElement {
-    const span = document.createElement('span');
-    span.className = 'cm-rich-section-num cm-rich-h' + this.level;
-    span.textContent = this.label + ' ';
-    return span;
-  }
-  override ignoreEvent() { return true; }
-}
-
 // FootnoteWidget — collapses `\footnote{body}` to a small `[1]` style
 // marker. The body lives in the title tooltip so the user can read
 // it on hover ; clicking moves the caret into the source for edits.
@@ -289,11 +270,10 @@ const shadow = Decoration.mark({ class: 'cm-rich-shadow' });
 
 function buildDecorations(view: EditorView): DecorationSet {
   const builder = new RangeSetBuilder<Decoration>();
-  // Section counters — one slot per nesting level (chapter / section /
-  // subsection / subsubsection / paragraph). Reset on every full
-  // rebuild so the numbers are stable across edits ; a top-level
-  // section bump zeroes every subordinate level.
-  const sectionCounters = [0, 0, 0, 0, 0];
+  // (Section-counter state used to live here ; the
+  // HeadingNumberWidget that consumed it was removed when the
+  // rich-text view stopped auto-numbering headings.)
+
   // The selection's caret position lets us avoid hiding the source
   // currently being edited : math/heading commands that overlap the
   // caret render as raw text so the user can step the cursor through

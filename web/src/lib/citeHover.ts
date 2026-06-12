@@ -10,10 +10,9 @@ import { hoverTooltip, type Tooltip } from '@codemirror/view';
 import { bib } from './bibStore.svelte';
 import { formatEntry } from './bibtex';
 
-export const citeHover = hoverTooltip((view, pos, side): Tooltip | null => {
+export const citeHover = hoverTooltip((view, pos): Tooltip | null => {
   const line = view.state.doc.lineAt(pos);
   const text = line.text;
-  const colPos = pos - line.from;
 
   // Cite : walk left from pos to find `\cite{` or `\cite[opt]{` etc.
   const citeRe = /\\(?:cite|citep|citet|citeauthor|citeyear)(?:\[[^\]]*\])?\{([^{}]+)\}/g;

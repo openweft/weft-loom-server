@@ -164,7 +164,7 @@
   {:else}
     <div class="overflow-auto">
       <ul class="text-xs">
-        {#each rows as row, i (row.entry.sha)}
+        {#each rows as row (row.entry.sha)}
           {@const e = row.entry}
           <li class="flex items-center hover:bg-base-200 px-1" style="height: {ROW_H}px">
             <!-- Lane graphic : one SVG per row, painted with the

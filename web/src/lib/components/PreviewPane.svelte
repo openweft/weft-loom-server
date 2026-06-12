@@ -16,14 +16,13 @@
   // No download of artefacts — this is the **inline** preview the
   // user asked for : edits land on the left, rendering changes on the
   // right within ~100ms.
-  import { onMount, onDestroy } from 'svelte';
+  import { onDestroy } from 'svelte';
   import * as Y from 'yjs';
   import { marked } from 'marked';
   import markedKatex from 'marked-katex-extension';
   import { markedHighlight } from 'marked-highlight';
   import { gfmHeadingId } from 'marked-gfm-heading-id';
   import DOMPurify from 'dompurify';
-  import katex from 'katex';
   import 'katex/dist/katex.css';
   // GitHub Markdown CSS gives the rendered HTML the same visual
   // signature as github.com (headings, tables, blockquotes, code,
@@ -216,125 +215,6 @@
       ADD_TAGS: ['math', 'mrow', 'mi', 'mo', 'mn', 'mfrac', 'msup', 'msub'],
       ADD_ATTR: ['id', 'class', 'type', 'checked', 'disabled'],
     });
-  }
-
-  // renderLatex : a minimal LaTeX → HTML transformer for the inline
-  // preview. NOT a full compile — \begin{tabular}, \cite, \ref, and
-  // a few hundred other constructs aren't handled and stay visible as
-  // raw text. The full-document PDF preview (PDF.js embed) lands when
-  // the V0.3 compile RPC ships.
-  //
-  // What this DOES handle out of the box :
-  //   - $math$ / $$display math$$   → KaTeX
-  //   - \section{...}, \subsection, \subsubsection → h1 / h2 / h3
-  //   - \textbf{...}, \emph{...}, \textit{...}, \texttt{...}
-  //   - \begin{itemize}/\end{itemize} + \item → <ul>
-  //   - \begin{enumerate}/\end{enumerate} + \item → <ol>
-  //   - \begin{quote}/\end{quote} → <blockquote>
-  //   - paragraph splits on blank lines, single-line wraps
-  //   - skips \documentclass, \usepackage, \title, \author, \maketitle,
-  //     \begin{document}, \end{document} preamble so a fresh LaTeX
-  //     stub renders just the body.
-  function renderLatex(src: string): string {
-    // 0. Expand `${expression}` placeholders so authors can use
-    // template literals for slowly-aging metadata (year, build date)
-    // in LaTeX preamble too. Escape with `$${literal}`.
-    src = expandTemplate(src, { file: file || '', project: project || '' });
-    // 1. Drop preamble + document wrappers so the user sees their
-    // content, not a "\documentclass{article}" line in the preview.
-    src = src.replace(/^[\s\S]*?\\begin\{document\}/m, '');
-    src = src.replace(/\\end\{document\}[\s\S]*$/m, '');
-    src = src.replace(/\\(maketitle|title|author|date|institute|subtitle)\{[^}]*\}/g, '');
-    src = src.replace(/\\(documentclass|usepackage|usetheme|usecolortheme)(\[[^\]]*\])?\{[^}]*\}/g, '');
-    // Beamer-only commands that don't translate cleanly to HTML : drop
-    // the wrapper but keep any inner content visible as plain text.
-    src = src.replace(/\\frame\{([^}]*)\}/g, '$1');
-    src = src.replace(/\\tableofcontents\b/g, '<em class="opacity-60">[Table of contents]</em>');
-    src = src.replace(/\\(centering|Huge|huge|large|Large|small|footnotesize|tiny|normalsize)\b/g, '');
-
-    const mathPlaceholders: string[] = [];
-    const stash = (html: string) => {
-      const key = ' M' + mathPlaceholders.length + ' ';
-      mathPlaceholders.push(html);
-      return key;
-    };
-
-    // 2. Stash math before any other regex munges it.
-    src = src.replace(/\$\$([\s\S]+?)\$\$/g, (_m, math) => {
-      try {
-        return stash(katex.renderToString(math, { displayMode: true, throwOnError: false, output: 'html' }));
-      } catch {
-        return stash('<pre class="text-error">' + escapeHTML(math) + '</pre>');
-      }
-    });
-    src = src.replace(/\$([^$\n]+?)\$/g, (_m, math) => {
-      try {
-        return stash(katex.renderToString(math, { displayMode: false, throwOnError: false, output: 'html' }));
-      } catch {
-        return stash('<code class="text-error">' + escapeHTML(math) + '</code>');
-      }
-    });
-
-    // 3. HTML-escape now — every '\section{X}' becomes '\section{X}'.
-    // We translate backslash macros below ; KaTeX placeholders survive.
-    src = escapeHTML(src);
-
-    // 4. Beamer frames : each \begin{frame}{Title} ... \end{frame}
-    // becomes a slide-like section card with the title as h2. Run
-    // BEFORE list rewriting so itemize inside a frame still works.
-    src = src.replace(/\\begin\{frame\}(?:\[[^\]]*\])?(?:\{([^}]*)\}|\s)?([\s\S]*?)\\end\{frame\}/g,
-      (_m, title, body) => {
-        const t = title ? '<h2>' + title + '</h2>' : '';
-        return '<div class="border border-base-300 rounded-box p-3 my-3 bg-base-200/40">' + t + body + '</div>';
-      });
-
-    // 4b. Lists. Process \begin/end pairs first so the \item rewriter
-    // below knows the surrounding context.
-    src = src.replace(/\\begin\{itemize\}([\s\S]*?)\\end\{itemize\}/g, (_m, body) => {
-      const items = body
-        .split(/\\item\s+/)
-        .filter((s: string) => s.trim() !== '')
-        .map((s: string) => '<li>' + s.trim() + '</li>');
-      return '<ul>' + items.join('') + '</ul>';
-    });
-    src = src.replace(/\\begin\{enumerate\}([\s\S]*?)\\end\{enumerate\}/g, (_m, body) => {
-      const items = body
-        .split(/\\item\s+/)
-        .filter((s: string) => s.trim() !== '')
-        .map((s: string) => '<li>' + s.trim() + '</li>');
-      return '<ol>' + items.join('') + '</ol>';
-    });
-    src = src.replace(/\\begin\{quote\}([\s\S]*?)\\end\{quote\}/g, (_m, body) => {
-      return '<blockquote>' + body.trim() + '</blockquote>';
-    });
-
-    // 5. Sectioning. h1 = section, h2 = subsection, h3 = subsubsection.
-    // The document title (if any) renders before the first section.
-    src = src.replace(/\\subsubsection\{([^}]+)\}/g, '<h3>$1</h3>');
-    src = src.replace(/\\subsection\{([^}]+)\}/g, '<h2>$1</h2>');
-    src = src.replace(/\\section\{([^}]+)\}/g, '<h1>$1</h1>');
-
-    // 6. Inline text styling.
-    src = src.replace(/\\textbf\{([^}]+)\}/g, '<strong>$1</strong>');
-    src = src.replace(/\\emph\{([^}]+)\}/g, '<em>$1</em>');
-    src = src.replace(/\\textit\{([^}]+)\}/g, '<em>$1</em>');
-    src = src.replace(/\\texttt\{([^}]+)\}/g, '<code>$1</code>');
-
-    // 7. Paragraph splits : LaTeX prose is delimited by blank lines.
-    const paras = src
-      .split(/\n\s*\n/)
-      .map((p) => p.trim())
-      .filter((p) => p !== '');
-    let html = paras
-      .map((p) => {
-        if (p.startsWith('<')) return p; // already an HTML block
-        return '<p>' + p.replace(/\n/g, ' ') + '</p>';
-      })
-      .join('\n');
-
-    // 8. Pop math placeholders back in.
-    html = html.replace(/ M(\d+) /g, (_m, idx) => mathPlaceholders[Number(idx)]);
-    return html;
   }
 
   function render(src: string) {

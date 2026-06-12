@@ -52,7 +52,7 @@
   // paths come from the package's `src/icons/*.svg` files. Each
   // entry pairs the path with its native viewBox so we can mix
   // 16×16 + 24×24 codicons without distortion.
-  const items = $derived([
+  const items = $derived<Array<{ id: SidebarView; title: string; viewBox: string; path: string }>>([
     {
       id: 'scm',
       title: i18n.t('activity.scm') + ' (Cmd+Shift+G)',

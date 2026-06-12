@@ -48,9 +48,11 @@ function withAlpha(c: string, alpha: number): string {
 // marks. Skips deleted items (Yjs keeps tombstones in the chain).
 function readAuthorship(ytext: Y.Text): Array<{ from: number; to: number; clientID: number }> {
   const out: Array<{ from: number; to: number; clientID: number }> = [];
-  // @ts-expect-error : _start is an internal field. y-codemirror.next
-  // uses the same one ; stable across the Yjs 13.x line we ship.
-  let item: any = ytext._start;
+  // _start is an internal Yjs field. y-codemirror.next uses the
+  // same one ; stable across the Yjs 13.x line we ship. The cast
+  // through `any` (rather than @ts-expect-error) keeps the
+  // directive from going stale if Yjs's types ever expose this.
+  let item: any = (ytext as any)._start;
   let offset = 0;
   while (item) {
     if (!item.deleted) {

@@ -49,7 +49,10 @@
     return () => window.removeEventListener('weft-loom-icon-theme-change', h);
   });
   // Shell glyph follows the active file-icon theme (sh extension).
-  const shellIcon = $derived((iconBump, iconForPath('foo.sh')));
+  // The iconBump >= 0 read introduces the reactive dependency
+  // without using the comma operator (whose unused-LHS warning
+  // svelte-check now flags).
+  const shellIcon = $derived(iconBump >= 0 ? iconForPath('foo.sh') : '');
 
   interface Session {
     id: number;
@@ -118,7 +121,6 @@
         <ShellPanel
           {project}
           bind:open={session.open}
-          onCloseRequest={() => closeTerminal(session.id)}
         />
       </div>
     {/each}

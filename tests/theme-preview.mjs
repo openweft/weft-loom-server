@@ -58,7 +58,10 @@ for (const t of THEMES) {
     failL(t.id + ' : open', 'window.weftLoomOpenFile missing');
     continue;
   }
-  await new Promise((r) => setTimeout(r, 1500));
+  // Give the ydoc enough time to sync via WS + the preview's
+  // debounced render (100ms) ; 1500ms used to be enough but the
+  // post-cleanup Editor mount path takes a touch longer.
+  await new Promise((r) => setTimeout(r, 3000));
 
   // Read the first slide card's computed style — the wrapper carries
   // a `style="...;border-color:#…"` inline attribute we set in
@@ -80,7 +83,15 @@ for (const t of THEMES) {
     };
   });
   if (!got.count) {
-    failL(t.id + ' : preview card', 'no slide card rendered (empty preview)');
+    const debug = await page.evaluate(() => ({
+      bodyText: (document.body.innerText || '').slice(0, 300),
+      currentFileVisible: !!document.querySelector('[contenteditable], .cm-editor'),
+      asides: document.querySelectorAll('aside').length,
+      mdBodyCount: document.querySelectorAll('.markdown-body').length,
+      mdBodyText: (document.querySelector('.markdown-body')?.innerText || '').slice(0, 100),
+      asideHTML: Array.from(document.querySelectorAll('aside.bg-base-100')).map(a => a.innerHTML.slice(0, 100)),
+    }));
+    failL(t.id + ' : preview card', 'debug=' + JSON.stringify(debug));
     continue;
   }
   if (!got.textPreview.includes('Brand check')) {

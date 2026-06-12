@@ -19,7 +19,6 @@
     awareness: Awareness | undefined;
     identity: Identity;
     open: boolean;
-    onCloseRequest: () => void;
     // embedded == true when ChatRoom sits inside another container
     // (left-sidebar under Collaborators) : drop the standalone drag
     // handle + `border-l` so it integrates seamlessly with the host
@@ -32,7 +31,7 @@
     onToggleCollapsed?: () => void;
   }
 
-  let { ydoc, awareness, identity, open = $bindable(), onCloseRequest, embedded = false, collapsed = false, onToggleCollapsed }: Props = $props();
+  let { ydoc, awareness, identity, open = $bindable(), embedded = false, collapsed = false, onToggleCollapsed }: Props = $props();
 
   interface Message {
     id: string;
@@ -47,7 +46,6 @@
   let messages = $state<Message[]>([]);
   let draft = $state('');
   let scroll: HTMLDivElement | undefined = $state();
-  let unreadCount = $state(0);
 
   // Resizable panel width — drag the left edge to grow / shrink.
   // Persisted via localStorage so user's choice survives reloads.
@@ -89,12 +87,9 @@
     }
     messages = ymsgs.toArray();
     if (open) {
-      unreadCount = 0;
       requestAnimationFrame(() => {
         if (scroll) scroll.scrollTop = scroll.scrollHeight;
       });
-    } else {
-      unreadCount = messages.length;
     }
   }
 

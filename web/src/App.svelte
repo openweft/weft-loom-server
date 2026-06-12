@@ -29,8 +29,8 @@
   import { setProjectHint, logEvent } from './lib/logbus';
   import Editor from './lib/components/Editor.svelte';
   import WysiwygEditor from './lib/components/WysiwygEditor.svelte';
-  import Resizer from './lib/components/Resizer.svelte';
   import TabBar from './lib/components/TabBar.svelte';
+  import NewFileDialog from './lib/components/NewFileDialog.svelte';
   import AIChatPanel from './lib/components/AIChatPanel.svelte';
   import CollaboratorsSidebar from './lib/components/CollaboratorsSidebar.svelte';
   // ShellPanel / CompileLogPanel are mounted inside BottomPanel
@@ -167,6 +167,9 @@
   let gitConfigOpen = $state<boolean>(false);
   let settingsOpen = $state<boolean>(false);
   let quickOpenOpen = $state<boolean>(false);
+  // The "New File…" command-palette entry opens the NewFileDialog ;
+  // declared alongside the other modal-open flags.
+  let newFileOpen = $state<boolean>(false);
   // Project-switcher dropdown open state — bound through Navbar to
   // ProjectSwitcher so MenuBar's "Switch project…" item pops it.
   let projectSwitcherOpen = $state<boolean>(false);
@@ -269,25 +272,9 @@
       return 280;
     })(),
   );
-  let chatSplitDragging = $state<boolean>(false);
-  function startChatSplitDrag(ev: MouseEvent) {
-    ev.preventDefault();
-    chatSplitDragging = true;
-    const startY = ev.clientY;
-    const startH = chatPaneHeight;
-    function move(e: MouseEvent) {
-      const next = Math.max(100, Math.min(800, startH + (startY - e.clientY)));
-      chatPaneHeight = next;
-    }
-    function up() {
-      chatSplitDragging = false;
-      document.removeEventListener('mousemove', move);
-      document.removeEventListener('mouseup', up);
-      try { localStorage.setItem('weft-loom-chat-pane-height', String(chatPaneHeight)); } catch {}
-    }
-    document.addEventListener('mousemove', move);
-    document.addEventListener('mouseup', up);
-  }
+  // chatSplitDragging + startChatSplitDrag used to drive a vertical
+  // split between ChatRoom + AIChatPanel ; both panels now own their
+  // own height management so the splitter is dead code.
 
   function toggleOutline() {
     outlineCollapsed = !outlineCollapsed;
@@ -827,17 +814,8 @@
   <Navbar
     {project}
     {language}
-    {connectionStatus}
-    {awareness}
-    {identity}
-    {ytextTick}
-    onToggleAI={toggleAI}
-    onToggleCollab={toggleCollab}
-    onToggleShell={() => openBottomTab('shell')}
-    onToggleChat={toggleChat}
     {onSwitch}
     {onLanguageChange}
-    {onRename}
     bind:switcherOpen={projectSwitcherOpen}
   />
   <main class="flex flex-1 overflow-hidden">
@@ -1108,7 +1086,6 @@
             {project}
             {currentFile}
             fileContent={getFileContent}
-            onClose={() => (aiCollapsed = true)}
             embedded={true}
             collapsed={aiCollapsed}
             onToggleCollapsed={() => (aiCollapsed = !aiCollapsed)}
@@ -1127,7 +1104,6 @@
             {identity}
             bind:open={chatOpen}
             embedded={true}
-            onCloseRequest={() => (chatCollapsed = true)}
             collapsed={chatCollapsed}
             onToggleCollapsed={() => (chatCollapsed = !chatCollapsed)}
           />
@@ -1149,6 +1125,12 @@
     onSynced={refreshExplorer}
   />
   <SettingsPanel bind:open={settingsOpen} onClose={() => (settingsOpen = false)} />
+  <NewFileDialog
+    bind:open={newFileOpen}
+    {project}
+    onClose={() => (newFileOpen = false)}
+    onCreated={(path, lang) => { newFileOpen = false; onOpenFile(path, lang); }}
+  />
   <QuickOpen
     bind:open={quickOpenOpen}
     {project}

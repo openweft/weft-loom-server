@@ -1,16 +1,10 @@
-<script lang="ts">
-  // ContextMenu — VSCode-style right-click popover. The host component
-  // suppresses the browser's native context menu via `oncontextmenu` +
-  // calls `open(x, y, items)` on this component to render our menu at
-  // the cursor position.
-  //
-  // Items are flat (no nested submenus yet — V0.9 once we need them
-  // for File Explorer's New > File/Folder/Project). Each item carries
-  // a label, optional shortcut hint, and an action ; a `divider`
-  // entry renders as a 1 px separator.
-
-  import { onMount, onDestroy } from 'svelte';
-
+<script module lang="ts">
+  // Public types live in <script module> so consumers can do
+  //   import type { ContextEntry } from './ContextMenu.svelte';
+  // Svelte 5's instance <script> can't carry `export interface` /
+  // `export type` — those modifiers belong to the module-scope
+  // block, which compiles to a plain ES module the consumers can
+  // pull type imports from.
   export interface ContextItem {
     kind: 'item';
     label: string;
@@ -23,6 +17,20 @@
     kind: 'divider';
   }
   export type ContextEntry = ContextItem | ContextDivider;
+</script>
+
+<script lang="ts">
+  // ContextMenu — VSCode-style right-click popover. The host component
+  // suppresses the browser's native context menu via `oncontextmenu` +
+  // calls `open(x, y, items)` on this component to render our menu at
+  // the cursor position.
+  //
+  // Items are flat (no nested submenus yet — V0.9 once we need them
+  // for File Explorer's New > File/Folder/Project). Each item carries
+  // a label, optional shortcut hint, and an action ; a `divider`
+  // entry renders as a 1 px separator.
+
+  import { onMount, onDestroy } from 'svelte';
 
   let visible = $state(false);
   let x = $state(0);

@@ -7,7 +7,6 @@
   // proximity bonuses) — good enough for project sizes we target
   // without pulling fuse.js or vscode-fuzzy.
 
-  import { onMount } from 'svelte';
   import { listFiles, type File } from '../api';
   import { iconForPath } from '../theme';
 

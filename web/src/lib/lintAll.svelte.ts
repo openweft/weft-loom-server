@@ -24,7 +24,6 @@ import { type Extension, Compartment } from '@codemirror/state';
 import type { EditorView } from '@codemirror/view';
 import { compileDiagnostics } from './compileDiagnostics.svelte';
 import { bib } from './bibStore.svelte';
-import { formatEntry } from './bibtex';
 
 // JSON — `JSON.parse` carries enough info (message + position) for
 // useful diagnostics. The `at position N` suffix in the error
