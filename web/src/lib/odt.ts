@@ -159,6 +159,9 @@ interface StyleHints {
 interface ParaHints {
   align?: 'left' | 'center' | 'right' | 'justify';
   pageBreakBefore?: boolean;
+  lineHeight?: string;
+  marginLeft?: string;
+  textIndent?: string;
 }
 
 // ListKind : ODF lists are tagged with a style-name pointing into a
@@ -232,7 +235,16 @@ function parseContent(xml: string, pictures: Record<string, string>): string {
       else if (ta === 'justify') existing.align = 'justify';
       const bb = pprops.getAttributeNS(NS.fo, 'break-before');
       if (bb === 'page') existing.pageBreakBefore = true;
-      if (existing.align || existing.pageBreakBefore) paraStyles.set(name, existing);
+      const lh = pprops.getAttributeNS(NS.fo, 'line-height');
+      if (lh) existing.lineHeight = lh;
+      const ml = pprops.getAttributeNS(NS.fo, 'margin-left');
+      if (ml) existing.marginLeft = ml;
+      const ti = pprops.getAttributeNS(NS.fo, 'text-indent');
+      if (ti) existing.textIndent = ti;
+      if (existing.align || existing.pageBreakBefore || existing.lineHeight
+       || existing.marginLeft || existing.textIndent) {
+        paraStyles.set(name, existing);
+      }
     }
   }
   // <text:list-style style:name="LO1"> resolves to <ol> when the
@@ -266,7 +278,12 @@ interface ParseCtx {
 function paraStyleAttrs(styleName: string, ctx: ParseCtx): string {
   let attrs = styleName ? ' data-odt-style="' + escapeAttr(styleName) + '"' : '';
   const ph = ctx.paraStyles.get(styleName);
-  if (ph?.align) attrs += ' style="text-align: ' + ph.align + ';"';
+  const parts: string[] = [];
+  if (ph?.align)       parts.push('text-align: ' + ph.align);
+  if (ph?.lineHeight)  parts.push('line-height: ' + ph.lineHeight);
+  if (ph?.marginLeft)  parts.push('margin-left: ' + ph.marginLeft);
+  if (ph?.textIndent)  parts.push('text-indent: ' + ph.textIndent);
+  if (parts.length) attrs += ' style="' + parts.join('; ') + ';"';
   return attrs;
 }
 
@@ -603,17 +620,25 @@ function htmlToContentXML(html: string, collected: CollectedImage[], preservedAu
     usedStyles.set(name, h);
     return name;
   };
-  // Paragraph alignment : emit one <style:style style:family=
-  // "paragraph"> per (alignment, source-style) combo we encounter.
-  // The style ref attaches to <text:p text:style-name="…">. To keep
-  // things simple : `P_align_<dir>` for naked alignments without a
-  // source style name ; `<src>_align_<dir>` when chained on top.
-  const usedAlignStyles = new Set<string>();
-  const paraStyleNameFor = (existingStyle: string, align: string | null): string | null => {
-    if (!align) return existingStyle || null;
+  // Paragraph-properties auto-style emit (V0.14 widens from just
+  // text-align to align + line-height + margin-left + text-indent).
+  // Each distinct (existingStyle × ph) combination produces one
+  // <style:style style:family="paragraph"> ; the style ref attaches
+  // to <text:p text:style-name="…">.
+  const usedParaStyles = new Map<string, { ph: ParaHints; existing: string }>();
+  const paraStyleNameFor = (existingStyle: string, ph: ParaHints): string | null => {
+    const hasAny = ph.align || ph.lineHeight || ph.marginLeft || ph.textIndent;
+    if (!hasAny) return existingStyle || null;
+    // Synthesize a deterministic name from the props so identical
+    // combos share a definition.
+    const parts: string[] = [];
+    if (ph.align)      parts.push('a' + ph.align);
+    if (ph.lineHeight) parts.push('l' + ph.lineHeight.replace(/\W+/g, ''));
+    if (ph.marginLeft) parts.push('m' + ph.marginLeft.replace(/\W+/g, ''));
+    if (ph.textIndent) parts.push('t' + ph.textIndent.replace(/\W+/g, ''));
     const base = existingStyle || 'P';
-    const name = base + '_align_' + align;
-    usedAlignStyles.add(name + '|' + align + '|' + existingStyle);
+    const name = base + '_' + parts.join('_');
+    usedParaStyles.set(name, { ph, existing: existingStyle });
     return name;
   };
   // Ordered-list style : ODF wants <text:list-style> in automatic-
@@ -688,12 +713,15 @@ function htmlToContentXML(html: string, collected: CollectedImage[], preservedAu
               + (h.fontSize    ? ' fo:font-size="' + escapeAttr(h.fontSize) + '"' : '')
               + '/></style:style>\n';
   }
-  for (const triple of usedAlignStyles) {
-    const [name, align /*, base*/] = triple.split('|');
+  for (const [name, { ph }] of usedParaStyles) {
     if (preservedNames.has(name)) continue;
     stylesXML += `    <style:style style:name="${name}" style:family="paragraph">`
-              + '<style:paragraph-properties fo:text-align="' + align + '"/>'
-              + '</style:style>\n';
+              + '<style:paragraph-properties'
+              + (ph.align       ? ' fo:text-align="' + ph.align + '"' : '')
+              + (ph.lineHeight  ? ' fo:line-height="' + escapeAttr(ph.lineHeight) + '"' : '')
+              + (ph.marginLeft  ? ' fo:margin-left="' + escapeAttr(ph.marginLeft) + '"' : '')
+              + (ph.textIndent  ? ' fo:text-indent="' + escapeAttr(ph.textIndent) + '"' : '')
+              + '/></style:style>\n';
   }
   if (usedOL && !preservedNames.has('L_ol')) {
     stylesXML += `    <text:list-style style:name="L_ol">
@@ -772,7 +800,7 @@ type NoteIdFor = () => string;
 
 interface WriteCtx {
   styleNameFor: (h: StyleHints) => string | null;
-  paraStyleNameFor: (existingStyle: string, align: string | null) => string | null;
+  paraStyleNameFor: (existingStyle: string, ph: ParaHints) => string | null;
   imageRefFor: ImageRef;
   noteIdFor: NoteIdFor;
   markListKind: (k: ListKind) => void;
@@ -790,6 +818,25 @@ function pickAlign(el: Element): string | null {
   return null;
 }
 
+// pickParaProps : V0.14 generalisation of pickAlign. Returns the
+// full set of paragraph-level inline-style props the writer can
+// translate to fo:line-height / fo:margin-left / fo:text-indent.
+function pickParaProps(el: Element): ParaHints {
+  const out: ParaHints = {};
+  const align = pickAlign(el);
+  if (align === 'left' || align === 'center' || align === 'right' || align === 'justify') {
+    out.align = align;
+  }
+  const inline = el.getAttribute('style') ?? '';
+  const lh = /(?:^|;)\s*line-height\s*:\s*([^;]+)/i.exec(inline);
+  if (lh) out.lineHeight = lh[1].trim();
+  const ml = /(?:^|;)\s*margin-left\s*:\s*([^;]+)/i.exec(inline);
+  if (ml) out.marginLeft = ml[1].trim();
+  const ti = /(?:^|;)\s*text-indent\s*:\s*([^;]+)/i.exec(inline);
+  if (ti) out.textIndent = ti[1].trim();
+  return out;
+}
+
 function emitODTBlock(node: Node, fmt: StyleHints, ctx: WriteCtx): string {
   if (node.nodeType === 3) {
     return wrapInline(node.textContent ?? '', fmt, ctx.styleNameFor) ;
@@ -802,8 +849,8 @@ function emitODTBlock(node: Node, fmt: StyleHints, ctx: WriteCtx): string {
   // are absent we omit the attribute entirely.
   const odtBlockStyleAttr = (): string => {
     const odtStyle = el.getAttribute('data-odt-style') ?? '';
-    const align = pickAlign(el);
-    const name = ctx.paraStyleNameFor(odtStyle, align);
+    const ph = pickParaProps(el);
+    const name = ctx.paraStyleNameFor(odtStyle, ph);
     return name ? ' text:style-name="' + escapeAttr(name) + '"' : '';
   };
   if (tag === 'p' || tag === 'div') {

@@ -98,6 +98,9 @@ async function makeSeedODT() {
     <style:style style:name="P_pagebreak" style:family="paragraph">
       <style:paragraph-properties fo:break-before="page"/>
     </style:style>
+    <style:style style:name="P_dense" style:family="paragraph">
+      <style:paragraph-properties fo:line-height="120%" fo:margin-left="2cm" fo:text-indent="1cm"/>
+    </style:style>
     <text:list-style style:name="L_ol_seed">
       <text:list-level-style-number text:level="1" style:num-format="1" style:num-suffix="."/>
     </text:list-style>
@@ -107,6 +110,7 @@ async function makeSeedODT() {
       <text:p text:style-name="Quotation">Hello ODT world.<text:note text:id="ftn1" text:note-class="footnote"><text:note-citation>1</text:note-citation><text:note-body><text:p>Seed <text:span text:style-name="T_b">bold</text:span> body.</text:p><text:p>Second paragraph.</text:p></text:note-body></text:note></text:p>
       <text:p text:style-name="P_align_center">Centred line with <text:span text:style-name="T_s">strike</text:span>, <text:span text:style-name="T_red">red text</text:span> + <text:span text:style-name="T_yellowbg">yellow bg</text:span> + <text:span text:style-name="T_courier">monospace14</text:span>.</text:p>
       <text:p>Bookmark : <text:bookmark text:name="seedBM"/>anchor.<office:annotation xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"><dc:creator>alice</dc:creator><dc:date>2026-06-12T10:00:00Z</dc:date><text:p>Seed comment body.</text:p></office:annotation></text:p>
+      <text:p text:style-name="P_dense">dense paragraph</text:p>
       <text:p text:style-name="P_pagebreak"/>
       <text:list text:style-name="L_ol_seed">
         <text:list-item>
@@ -194,6 +198,8 @@ const mounted = await page.evaluate(() => {
   const bookmark = ce?.querySelector('a.odt-bookmark');
   const annotation = ce?.querySelector('span.odt-annotation');
   const pageBreak = ce?.querySelector('hr.page-break');
+  const denseP = Array.from(ce?.querySelectorAll('p') ?? [])
+    .find(p => (p.getAttribute('style') ?? '').includes('line-height: 120%'));
   return {
     hasWysiwyg: !!ce,
     hasCodeMirror: !!cm,
@@ -217,6 +223,7 @@ const mounted = await page.evaluate(() => {
     annotationCreator: annotation?.getAttribute('data-creator') ?? '',
     annotationBody: annotation?.getAttribute('data-body') ?? '',
     hasPageBreak: !!pageBreak,
+    denseStyle: denseP?.getAttribute('style') ?? '',
   };
 });
 if (!mounted.hasWysiwyg) {
@@ -344,6 +351,18 @@ if (mounted.hasPageBreak) {
 } else {
   failL('page break read', 'no <hr.page-break> in contenteditable');
 }
+// V0.14 reader assertions : line-height + margin-left + text-indent
+// all surface as inline style on the <p>.
+if (mounted.denseStyle.includes('line-height: 120%')
+ && mounted.denseStyle.includes('margin-left: 2cm')
+ && mounted.denseStyle.includes('text-indent: 1cm')) {
+  ok('paragraph dense props read',
+    'line-height + margin-left + text-indent inline on <p>');
+} else {
+  failL('paragraph dense props read',
+    'expected line-height 120%/margin-left 2cm/text-indent 1cm got style="'
+    + mounted.denseStyle + '"');
+}
 
 // 4) drive an edit (text + a 2×2 table insert) + wait for the
 //    debounced save (~600 ms) + extra time for jszip generation.
@@ -392,7 +411,11 @@ await page.evaluate(() => {
     // doesn't collapse the whitespace before we see it.
     + '<p>col1\tcol2   three-spaces</p>'
     // V0.13 : font face + size from editor-injected inline style.
-    + '<p>Editor <span style="font-family: Georgia; font-size: 18pt;">georgia18</span>.</p>');
+    + '<p>Editor <span style="font-family: Georgia; font-size: 18pt;">georgia18</span>.</p>'
+    // V0.14 : line-height + indent from editor-injected inline style
+    // must round-trip as fo:line-height / fo:margin-left /
+    // fo:text-indent on a per-paragraph auto-style.
+    + '<p style="line-height: 200%; margin-left: 3cm; text-indent: 0.5cm;">spacious paragraph</p>');
   ce.dispatchEvent(new InputEvent('input', { bubbles: true }));
 });
 await new Promise((r) => setTimeout(r, 2000));
@@ -541,6 +564,18 @@ if (!after.ok) {
       } else {
         failL('page break write',
           'expected P_pagebreak paragraph + break-before, missing');
+      }
+      // V0.14 line-height + indent write : editor-injected dense
+      // paragraph should land as fo:line-height + fo:margin-left +
+      // fo:text-indent on its auto-style entry.
+      if (xml.includes('fo:line-height="200%"')
+       && xml.includes('fo:margin-left="3cm"')
+       && xml.includes('fo:text-indent="0.5cm"')) {
+        ok('paragraph spacing write',
+          'line-height 200% / margin-left 3cm / text-indent 0.5cm emitted');
+      } else {
+        failL('paragraph spacing write',
+          'expected line-height 200% + margin-left 3cm + text-indent 0.5cm, missing');
       }
       // V0.13 font face + size write : editor-injected Georgia 18pt
       // should land as fo:font-family + fo:font-size in auto-styles.
