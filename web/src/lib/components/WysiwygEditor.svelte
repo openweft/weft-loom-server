@@ -426,4 +426,57 @@
   .wysiwyg-surface :global(th),
   .wysiwyg-surface :global(td) { border: 1px solid currentColor; padding: 0.3em 0.5em; min-width: 4em; }
   .wysiwyg-surface :global(th) { font-weight: 600; background: rgba(0,0,0,0.04); }
+  /* V0.12 : V0.10 markers need to be visible to the user even though
+     they have no semantic text content. */
+  .wysiwyg-surface :global(hr.page-break) {
+    border: none;
+    border-top: 2px dashed currentColor;
+    margin: 1em 0;
+    opacity: 0.5;
+    position: relative;
+  }
+  .wysiwyg-surface :global(hr.page-break::after) {
+    content: 'page break';
+    position: absolute;
+    top: -0.7em;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--fallback-b1, oklch(var(--b1)/1));
+    padding: 0 0.5em;
+    font-size: 0.7em;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  .wysiwyg-surface :global(a.odt-bookmark) {
+    display: inline-block;
+    width: 0.8em;
+    height: 0.8em;
+    background: rgba(255, 200, 0, 0.4);
+    border: 1px solid rgba(180, 130, 0, 0.6);
+    border-radius: 2px;
+    margin: 0 1px;
+    vertical-align: middle;
+  }
+  .wysiwyg-surface :global(a.odt-bookmark::before) {
+    content: attr(data-name);
+    position: absolute;
+    background: rgba(255, 240, 200, 0.95);
+    border: 1px solid rgba(180, 130, 0, 0.7);
+    padding: 0 0.4em;
+    border-radius: 2px;
+    font-size: 0.7em;
+    transform: translateY(-1.6em);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s;
+    white-space: nowrap;
+  }
+  .wysiwyg-surface :global(a.odt-bookmark:hover::before) { opacity: 1; }
+  .wysiwyg-surface :global(span.odt-annotation) {
+    background: rgba(255, 230, 100, 0.3);
+    border: 1px solid rgba(180, 140, 0, 0.5);
+    border-radius: 3px;
+    padding: 0 0.2em;
+    cursor: help;
+  }
 </style>

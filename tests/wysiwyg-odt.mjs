@@ -370,7 +370,11 @@ await page.evaluate(() => {
     + '<span class="odt-annotation" data-creator="bob" data-date="2026-06-12T11:00:00Z"'
     + ' data-body="Editor-added comment.">💬</span></p>'
     + '<hr class="page-break">'
-    + '<ul><li>outer<ul><li>inner-A</li><li>inner-B</li></ul></li><li>after</li></ul>');
+    + '<ul><li>outer<ul><li>inner-A</li><li>inner-B</li></ul></li><li>after</li></ul>'
+    // V0.12 : tabs + multi-space runs must survive as <text:tab/> +
+    // <text:s c="N"/> on save. Insert via direct DOM so contenteditable
+    // doesn't collapse the whitespace before we see it.
+    + '<p>col1\tcol2   three-spaces</p>');
   ce.dispatchEvent(new InputEvent('input', { bubbles: true }));
 });
 await new Promise((r) => setTimeout(r, 2000));
@@ -519,6 +523,20 @@ if (!after.ok) {
       } else {
         failL('page break write',
           'expected P_pagebreak paragraph + break-before, missing');
+      }
+      // V0.12 tab + multi-space write : the tab + " " run from the
+      // editor-injected paragraph should land as <text:tab/> + a
+      // <text:s c=2/> compressed-space marker in the saved XML.
+      if (xml.includes('<text:tab/>')) {
+        ok('tab write', '<text:tab/> emitted for "\\t"');
+      } else {
+        failL('tab write', 'expected <text:tab/> from editor "\\t" run, missing');
+      }
+      if (/<text:s c="[2-9]"\/>/.test(xml)) {
+        ok('multi-space write', '<text:s c="N"/> emitted for " " run');
+      } else {
+        failL('multi-space write',
+          'expected <text:s c="N"/> from editor "   " run, missing');
       }
       // V0.11 nested-list write : an inner <ul> nested in a <li> of
       // the outer list should produce a <text:list> inside the

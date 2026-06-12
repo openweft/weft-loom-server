@@ -1012,8 +1012,21 @@ function emitODTInline(node: Node, fmt: StyleHints, ctx: WriteCtx): string {
 
 function wrapInline(text: string, fmt: StyleHints, styleNameFor: (h: StyleHints) => string | null): string {
   if (!text) return '';
-  const esc = escapeHTML(text);
+  // V0.12 : tabs + multi-space runs need ODF-specific elements
+  // (<text:tab/> + <text:s c="N"/>) so Word + LibreOffice render
+  // them. A literal '\t' or '   ' would otherwise survive the XML
+  // round-trip but render collapsed to single spaces.
+  const esc = encodeWhitespace(escapeHTML(text));
   const name = styleNameFor(fmt);
   if (!name) return esc;
   return '<text:span text:style-name="' + name + '">' + esc + '</text:span>';
+}
+
+function encodeWhitespace(text: string): string {
+  // Replace \t with <text:tab/>, then runs of 2+ spaces with
+  // <text:s c="N-1"/> (the first space stays as a literal space,
+  // the rest are compressed).
+  return text
+    .replace(/\t/g, '<text:tab/>')
+    .replace(/ {2,}/g, m => ' <text:s c="' + (m.length - 1) + '"/>');
 }
