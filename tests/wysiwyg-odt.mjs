@@ -92,6 +92,9 @@ async function makeSeedODT() {
     <style:style style:name="T_yellowbg" style:family="text">
       <style:text-properties fo:background-color="#ffff00"/>
     </style:style>
+    <style:style style:name="T_courier" style:family="text">
+      <style:text-properties fo:font-family="Courier New" fo:font-size="14pt"/>
+    </style:style>
     <style:style style:name="P_pagebreak" style:family="paragraph">
       <style:paragraph-properties fo:break-before="page"/>
     </style:style>
@@ -102,7 +105,7 @@ async function makeSeedODT() {
   <office:body>
     <office:text>
       <text:p text:style-name="Quotation">Hello ODT world.<text:note text:id="ftn1" text:note-class="footnote"><text:note-citation>1</text:note-citation><text:note-body><text:p>Seed <text:span text:style-name="T_b">bold</text:span> body.</text:p><text:p>Second paragraph.</text:p></text:note-body></text:note></text:p>
-      <text:p text:style-name="P_align_center">Centred line with <text:span text:style-name="T_s">strike</text:span>, <text:span text:style-name="T_red">red text</text:span> + <text:span text:style-name="T_yellowbg">yellow bg</text:span>.</text:p>
+      <text:p text:style-name="P_align_center">Centred line with <text:span text:style-name="T_s">strike</text:span>, <text:span text:style-name="T_red">red text</text:span> + <text:span text:style-name="T_yellowbg">yellow bg</text:span> + <text:span text:style-name="T_courier">monospace14</text:span>.</text:p>
       <text:p>Bookmark : <text:bookmark text:name="seedBM"/>anchor.<office:annotation xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"><dc:creator>alice</dc:creator><dc:date>2026-06-12T10:00:00Z</dc:date><text:p>Seed comment body.</text:p></office:annotation></text:p>
       <text:p text:style-name="P_pagebreak"/>
       <text:list text:style-name="L_ol_seed">
@@ -186,6 +189,8 @@ const mounted = await page.evaluate(() => {
     .find(s => (s.getAttribute('style') ?? '').includes('color: #ff0000'));
   const highlighted = Array.from(ce?.querySelectorAll('span') ?? [])
     .find(s => (s.getAttribute('style') ?? '').includes('background-color: #ffff00'));
+  const fonted = Array.from(ce?.querySelectorAll('span') ?? [])
+    .find(s => (s.getAttribute('style') ?? '').includes('font-family: Courier New'));
   const bookmark = ce?.querySelector('a.odt-bookmark');
   const annotation = ce?.querySelector('span.odt-annotation');
   const pageBreak = ce?.querySelector('hr.page-break');
@@ -206,6 +211,8 @@ const mounted = await page.evaluate(() => {
     strikeText: strikeEl?.textContent ?? '',
     coloredText: colored?.textContent ?? '',
     highlightedText: highlighted?.textContent ?? '',
+    fontedText: fonted?.textContent ?? '',
+    fontedStyle: fonted?.getAttribute('style') ?? '',
     bookmarkName: bookmark?.getAttribute('data-name') ?? '',
     annotationCreator: annotation?.getAttribute('data-creator') ?? '',
     annotationBody: annotation?.getAttribute('data-body') ?? '',
@@ -309,6 +316,15 @@ if (mounted.highlightedText === 'yellow bg') {
   failL('highlight read',
     'expected yellow-bg span got "' + mounted.highlightedText + '"');
 }
+if (mounted.fontedText === 'monospace14'
+ && mounted.fontedStyle.includes('font-family: Courier New')
+ && mounted.fontedStyle.includes('font-size: 14pt')) {
+  ok('font face/size read', 'Courier New 14pt surfaced as inline style');
+} else {
+  failL('font face/size read',
+    'expected Courier New 14pt span got text="' + mounted.fontedText
+    + '" style="' + mounted.fontedStyle + '"');
+}
 // V0.10 reader assertions : bookmark / annotation / page break.
 if (mounted.bookmarkName === 'seedBM') {
   ok('bookmark read', '<a.odt-bookmark data-name="seedBM">');
@@ -374,7 +390,9 @@ await page.evaluate(() => {
     // V0.12 : tabs + multi-space runs must survive as <text:tab/> +
     // <text:s c="N"/> on save. Insert via direct DOM so contenteditable
     // doesn't collapse the whitespace before we see it.
-    + '<p>col1\tcol2   three-spaces</p>');
+    + '<p>col1\tcol2   three-spaces</p>'
+    // V0.13 : font face + size from editor-injected inline style.
+    + '<p>Editor <span style="font-family: Georgia; font-size: 18pt;">georgia18</span>.</p>');
   ce.dispatchEvent(new InputEvent('input', { bubbles: true }));
 });
 await new Promise((r) => setTimeout(r, 2000));
@@ -523,6 +541,15 @@ if (!after.ok) {
       } else {
         failL('page break write',
           'expected P_pagebreak paragraph + break-before, missing');
+      }
+      // V0.13 font face + size write : editor-injected Georgia 18pt
+      // should land as fo:font-family + fo:font-size in auto-styles.
+      if (xml.includes('fo:font-family="Georgia"')
+       && xml.includes('fo:font-size="18pt"')) {
+        ok('font face/size write', 'Georgia 18pt emitted in auto-styles');
+      } else {
+        failL('font face/size write',
+          'expected fo:font-family=Georgia + fo:font-size=18pt, missing');
       }
       // V0.12 tab + multi-space write : the tab + " " run from the
       // editor-injected paragraph should land as <text:tab/> + a

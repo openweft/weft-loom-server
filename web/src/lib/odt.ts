@@ -146,6 +146,11 @@ interface StyleHints {
   // background" semantics).
   color?: string;
   highlight?: string;
+  // V0.13 : per-span font face + size. fontSize keeps the source
+  // unit (pt / px / em / cm) so round-trip is byte-identical for
+  // common Word-/LO-emitted values like "11pt" or "10.5pt".
+  fontFamily?: string;
+  fontSize?: string;
 }
 
 // Paragraph-level hints surface as inline-style values on the HTML
@@ -194,6 +199,11 @@ function parseContent(xml: string, pictures: Record<string, string>): string {
       if (col && col.toLowerCase() !== 'transparent') h.color = col.toLowerCase();
       const bg = tprops.getAttributeNS(NS.fo, 'background-color');
       if (bg && bg.toLowerCase() !== 'transparent') h.highlight = bg.toLowerCase();
+      const ff = tprops.getAttributeNS(NS.fo, 'font-family')
+              || tprops.getAttributeNS(NS.style, 'font-name');
+      if (ff) h.fontFamily = ff;
+      const fz = tprops.getAttributeNS(NS.fo, 'font-size');
+      if (fz) h.fontSize = fz;
       const pos = tprops.getAttributeNS(NS.style, 'text-position');
       if (pos) {
         const head = pos.split(/\s+/)[0];
@@ -208,7 +218,7 @@ function parseContent(xml: string, pictures: Record<string, string>): string {
           }
         }
       }
-      if (h.bold || h.italic || h.underline || h.strike || h.subscript || h.superscript || h.color || h.highlight) {
+      if (h.bold || h.italic || h.underline || h.strike || h.subscript || h.superscript || h.color || h.highlight || h.fontFamily || h.fontSize) {
         styles.set(name, h);
       }
     }
@@ -358,13 +368,15 @@ function emitInline(node: Node, styles: Map<string, StyleHints>, pictures: Recor
       if (hints?.italic)      inner = '<i>' + inner + '</i>';
       if (hints?.bold)        inner = '<b>' + inner + '</b>';
       if (hints?.strike)      inner = '<s>' + inner + '</s>';
-      // V0.9 : colour + highlight wrap the whole inline subtree as a
-      // single styled span so contenteditable can edit through it
-      // without splintering the formatting.
-      if (hints?.color || hints?.highlight) {
+      // V0.9 + V0.13 : colour / highlight / font wrap the whole
+      // inline subtree as a single styled span so contenteditable can
+      // edit through it without splintering the formatting.
+      if (hints?.color || hints?.highlight || hints?.fontFamily || hints?.fontSize) {
         const parts: string[] = [];
-        if (hints.color)     parts.push('color: ' + hints.color);
-        if (hints.highlight) parts.push('background-color: ' + hints.highlight);
+        if (hints.color)      parts.push('color: ' + hints.color);
+        if (hints.highlight)  parts.push('background-color: ' + hints.highlight);
+        if (hints.fontFamily) parts.push('font-family: ' + hints.fontFamily);
+        if (hints.fontSize)   parts.push('font-size: ' + hints.fontSize);
         inner = '<span style="' + parts.join('; ') + ';">' + inner + '</span>';
       }
       out += inner;
@@ -584,8 +596,10 @@ function htmlToContentXML(html: string, collected: CollectedImage[], preservedAu
                 + (h.superscript ? 'P' : '');
     const colorKey = h.color ? '_c' + h.color.replace(/^#/, '') : '';
     const highlightKey = h.highlight ? '_h' + h.highlight.replace(/^#/, '') : '';
-    if (!flags && !colorKey && !highlightKey) return null;
-    const name = 'T_' + (flags || 'span') + colorKey + highlightKey;
+    const fontKey = h.fontFamily ? '_f' + h.fontFamily.replace(/\W+/g, '') : '';
+    const sizeKey = h.fontSize ? '_z' + h.fontSize.replace(/\W+/g, '') : '';
+    if (!flags && !colorKey && !highlightKey && !fontKey && !sizeKey) return null;
+    const name = 'T_' + (flags || 'span') + colorKey + highlightKey + fontKey + sizeKey;
     usedStyles.set(name, h);
     return name;
   };
@@ -670,6 +684,8 @@ function htmlToContentXML(html: string, collected: CollectedImage[], preservedAu
               + (h.superscript ? ' style:text-position="super 58%"' : '')
               + (h.color       ? ' fo:color="' + escapeAttr(h.color) + '"' : '')
               + (h.highlight   ? ' fo:background-color="' + escapeAttr(h.highlight) + '"' : '')
+              + (h.fontFamily  ? ' fo:font-family="' + escapeAttr(h.fontFamily) + '"' : '')
+              + (h.fontSize    ? ' fo:font-size="' + escapeAttr(h.fontSize) + '"' : '')
               + '/></style:style>\n';
   }
   for (const triple of usedAlignStyles) {
@@ -988,8 +1004,16 @@ function emitODTInline(node: Node, fmt: StyleHints, ctx: WriteCtx): string {
       if (cm) next.color = cm[1].trim().toLowerCase();
       const bm = /(?:^|;)\s*background(?:-color)?\s*:\s*([^;]+)/i.exec(inline);
       if (bm) next.highlight = bm[1].trim().toLowerCase();
+      const fm = /(?:^|;)\s*font-family\s*:\s*([^;]+)/i.exec(inline);
+      if (fm) next.fontFamily = fm[1].trim();
+      const sm = /(?:^|;)\s*font-size\s*:\s*([^;]+)/i.exec(inline);
+      if (sm) next.fontSize = sm[1].trim();
       const legacy = el.getAttribute('color');
       if (!cm && legacy) next.color = legacy.toLowerCase();
+      const legacyFace = el.getAttribute('face');
+      if (!fm && legacyFace) next.fontFamily = legacyFace;
+      const legacySize = el.getAttribute('size');
+      if (!sm && legacySize) next.fontSize = legacySize + 'pt';
     }
     else if (tag === 'br') { out += '<text:line-break/>'; continue; }
     else if (tag === 'a') {

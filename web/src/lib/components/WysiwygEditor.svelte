@@ -223,6 +223,42 @@
     onInput();
   }
 
+  // V0.13 : font family + size apply to the current selection. The
+  // execCommands wrap the selection in a <font> tag — the writer
+  // picks the face/size out of that AND the inline-style fallback.
+  function setFontFamily(name: string) {
+    if (!name) return;
+    editorEl.focus();
+    document.execCommand('fontName', false, name);
+    onInput();
+  }
+  function setFontSize(pt: string) {
+    if (!pt) return;
+    editorEl.focus();
+    // execCommand('fontSize') only accepts 1-7. We wrap in a span
+    // with inline font-size so the writer's pt-aware path picks it
+    // up cleanly.
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
+      onInput();
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    const span = document.createElement('span');
+    span.style.fontSize = pt;
+    try {
+      range.surroundContents(span);
+    } catch {
+      // surroundContents throws when the range crosses element
+      // boundaries ; fall back to extracting + re-wrapping.
+      const frag = range.extractContents();
+      span.appendChild(frag);
+      range.insertNode(span);
+    }
+    sel.removeAllRanges();
+    onInput();
+  }
+
   // insertPageBreak : drops <hr class="page-break"> at the caret.
   // Round-trips to ODF's <text:p text:style-name="P_pagebreak"/>
   // (paragraph with fo:break-before="page" in auto-styles).
@@ -349,6 +385,46 @@
       <option value="h1">Heading 1</option>
       <option value="h2">Heading 2</option>
       <option value="h3">Heading 3</option>
+    </select>
+    <select
+      class="select select-bordered select-xs"
+      title="Font family"
+      onchange={(e) => {
+        const v = (e.currentTarget as HTMLSelectElement).value;
+        if (v) setFontFamily(v);
+        (e.currentTarget as HTMLSelectElement).value = '';
+      }}
+    >
+      <option value="" disabled selected>Font</option>
+      <option>Arial</option>
+      <option>Helvetica</option>
+      <option>Times New Roman</option>
+      <option>Georgia</option>
+      <option>Garamond</option>
+      <option>Courier New</option>
+      <option>Verdana</option>
+      <option>Calibri</option>
+    </select>
+    <select
+      class="select select-bordered select-xs"
+      title="Font size"
+      onchange={(e) => {
+        const v = (e.currentTarget as HTMLSelectElement).value;
+        if (v) setFontSize(v);
+        (e.currentTarget as HTMLSelectElement).value = '';
+      }}
+    >
+      <option value="" disabled selected>Size</option>
+      <option value="8pt">8</option>
+      <option value="9pt">9</option>
+      <option value="10pt">10</option>
+      <option value="11pt">11</option>
+      <option value="12pt">12</option>
+      <option value="14pt">14</option>
+      <option value="16pt">16</option>
+      <option value="18pt">18</option>
+      <option value="24pt">24</option>
+      <option value="36pt">36</option>
     </select>
     <span class="divider divider-horizontal mx-0"></span>
     <button type="button" title="Bold (⌘B)"        class="btn btn-ghost btn-xs font-bold"        onclick={() => exec('bold')}>B</button>
