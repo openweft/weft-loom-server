@@ -134,7 +134,26 @@ function parseMeta(xml: string): ODTParsed['meta'] {
   return out;
 }
 
-interface StyleHints { bold?: boolean; italic?: boolean; underline?: boolean; }
+interface StyleHints {
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  strike?: boolean;
+  subscript?: boolean;
+  superscript?: boolean;
+}
+
+// Paragraph-level hints surface as inline-style values on the HTML
+// <p>/<h1-6> so the contenteditable preserves them visually + the
+// writer can pull them back off on save.
+interface ParaHints { align?: 'left' | 'center' | 'right' | 'justify'; }
+
+// ListKind : ODF lists are tagged with a style-name pointing into a
+// <text:list-style> entry ; the entry's child element decides
+// numbering (text:list-level-style-number) vs bullets
+// (text:list-level-style-bullet). The reader exposes that distinction
+// as <ol> vs <ul>.
+type ListKind = 'ul' | 'ol';
 
 // parseContent : walk content.xml and emit a sanitised HTML body
 // snippet. The automatic-styles table is consulted to resolve span
@@ -146,59 +165,115 @@ function parseContent(xml: string, pictures: Record<string, string>): string {
   // per inline run, with text properties that map cleanly to HTML
   // tags.
   const styles = new Map<string, StyleHints>();
+  const paraStyles = new Map<string, ParaHints>();
+  const listKinds = new Map<string, ListKind>();
   const styleEls = doc.getElementsByTagNameNS(NS.style, 'style');
   for (const s of Array.from(styleEls)) {
     const name = s.getAttributeNS(NS.style, 'name');
     if (!name) continue;
     const tprops = s.getElementsByTagNameNS(NS.style, 'text-properties')[0];
-    if (!tprops) continue;
-    const h: StyleHints = {};
-    const fw = tprops.getAttributeNS(NS.fo, 'font-weight');
-    if (fw && fw !== 'normal') h.bold = true;
-    const fs = tprops.getAttributeNS(NS.fo, 'font-style');
-    if (fs && fs !== 'normal') h.italic = true;
-    const us = tprops.getAttributeNS(NS.style, 'text-underline-style');
-    if (us && us !== 'none') h.underline = true;
-    if (h.bold || h.italic || h.underline) styles.set(name, h);
+    if (tprops) {
+      const h: StyleHints = {};
+      const fw = tprops.getAttributeNS(NS.fo, 'font-weight');
+      if (fw && fw !== 'normal') h.bold = true;
+      const fs = tprops.getAttributeNS(NS.fo, 'font-style');
+      if (fs && fs !== 'normal') h.italic = true;
+      const us = tprops.getAttributeNS(NS.style, 'text-underline-style');
+      if (us && us !== 'none') h.underline = true;
+      const ls = tprops.getAttributeNS(NS.style, 'text-line-through-style');
+      if (ls && ls !== 'none') h.strike = true;
+      const pos = tprops.getAttributeNS(NS.style, 'text-position');
+      if (pos) {
+        const head = pos.split(/\s+/)[0];
+        if (head === 'sub') h.subscript = true;
+        else if (head === 'super') h.superscript = true;
+        else {
+          // Numeric percentage : positive = super, negative = sub.
+          const pct = parseFloat(head);
+          if (!Number.isNaN(pct)) {
+            if (pct > 0) h.superscript = true;
+            else if (pct < 0) h.subscript = true;
+          }
+        }
+      }
+      if (h.bold || h.italic || h.underline || h.strike || h.subscript || h.superscript) {
+        styles.set(name, h);
+      }
+    }
+    const pprops = s.getElementsByTagNameNS(NS.style, 'paragraph-properties')[0];
+    if (pprops) {
+      const ta = pprops.getAttributeNS(NS.fo, 'text-align');
+      if (ta === 'start' || ta === 'left') paraStyles.set(name, { align: 'left' });
+      else if (ta === 'center') paraStyles.set(name, { align: 'center' });
+      else if (ta === 'end' || ta === 'right') paraStyles.set(name, { align: 'right' });
+      else if (ta === 'justify') paraStyles.set(name, { align: 'justify' });
+    }
+  }
+  // <text:list-style style:name="LO1"> resolves to <ol> when the
+  // first level uses text:list-level-style-number, to <ul> otherwise.
+  const listStyleEls = doc.getElementsByTagNameNS(NS.text, 'list-style');
+  for (const ls of Array.from(listStyleEls)) {
+    const name = ls.getAttributeNS(NS.style, 'name');
+    if (!name) continue;
+    const hasNumber = ls.getElementsByTagNameNS(NS.text, 'list-level-style-number').length > 0;
+    listKinds.set(name, hasNumber ? 'ol' : 'ul');
   }
 
+  const ctx: ParseCtx = { styles, paraStyles, listKinds, pictures };
   const body = doc.getElementsByTagNameNS(NS.office, 'body')[0];
   const textRoot = body?.getElementsByTagNameNS(NS.office, 'text')[0];
   if (!textRoot) return '';
   let out = '';
   for (const child of Array.from(textRoot.children)) {
-    out += emitBlock(child, styles, pictures);
+    out += emitBlock(child, ctx);
   }
   return out;
 }
 
-function emitBlock(node: Element, styles: Map<string, StyleHints>, pictures: Record<string, string>): string {
+interface ParseCtx {
+  styles: Map<string, StyleHints>;
+  paraStyles: Map<string, ParaHints>;
+  listKinds: Map<string, ListKind>;
+  pictures: Record<string, string>;
+}
+
+function paraStyleAttrs(styleName: string, ctx: ParseCtx): string {
+  let attrs = styleName ? ' data-odt-style="' + escapeAttr(styleName) + '"' : '';
+  const ph = ctx.paraStyles.get(styleName);
+  if (ph?.align) attrs += ' style="text-align: ' + ph.align + ';"';
+  return attrs;
+}
+
+function emitBlock(node: Element, ctx: ParseCtx): string {
   const ln = node.localName;
   // Preserve any text:style-name on the paragraph / heading so the
   // writer can re-emit it verbatim. Named styles like "Quotation",
-  // "Heading 1", or user-customised entries survive the round-trip
-  // — automatic-styles XML pass-through is a V0.6 follow-up.
+  // "Heading 1", or user-customised entries survive the round-trip.
+  // Paragraph alignment resolved from <style:paragraph-properties
+  // fo:text-align="…"> surfaces as inline style="text-align:…".
   const styleName = node.getAttributeNS(NS.text, 'style-name') ?? '';
-  const styleAttr = styleName ? ' data-odt-style="' + escapeAttr(styleName) + '"' : '';
+  const attrs = paraStyleAttrs(styleName, ctx);
   if (ln === 'p') {
-    return '<p' + styleAttr + '>' + emitInline(node, styles, pictures) + '</p>';
+    return '<p' + attrs + '>' + emitInline(node, ctx.styles, ctx.pictures) + '</p>';
   }
   if (ln === 'h') {
     const lvl = Math.min(6, Math.max(1, Number(node.getAttributeNS(NS.text, 'outline-level') ?? '1')));
-    return '<h' + lvl + styleAttr + '>' + emitInline(node, styles, pictures) + '</h' + lvl + '>';
+    return '<h' + lvl + attrs + '>' + emitInline(node, ctx.styles, ctx.pictures) + '</h' + lvl + '>';
   }
   if (ln === 'list') {
+    const listStyleName = node.getAttributeNS(NS.text, 'style-name') ?? '';
+    const kind = ctx.listKinds.get(listStyleName) ?? 'ul';
     let inner = '';
     for (const li of Array.from(node.children)) {
       if (li.localName === 'list-item') {
         // Each list-item contains one or more block children (typically
         // a single text:p). Emit them as <li>'s.
         let txt = '';
-        for (const inner2 of Array.from(li.children)) txt += emitInline(inner2, styles, pictures);
+        for (const inner2 of Array.from(li.children)) txt += emitInline(inner2, ctx.styles, ctx.pictures);
         inner += '<li>' + txt + '</li>';
       }
     }
-    return '<ul>' + inner + '</ul>';
+    return '<' + kind + '>' + inner + '</' + kind + '>';
   }
   if (ln === 'table') {
     let html = '<table>';
@@ -210,8 +285,8 @@ function emitBlock(node: Element, styles: Map<string, StyleHints>, pictures: Rec
         const cs = Number(cell.getAttributeNS(NS.table, 'number-columns-spanned') ?? '1');
         const rs = Number(cell.getAttributeNS(NS.table, 'number-rows-spanned') ?? '1');
         let cellInner = '';
-        for (const child of Array.from(cell.children)) cellInner += emitBlock(child, styles, pictures);
-        const stripped = /^<p>([\s\S]*)<\/p>$/.exec(cellInner.trim());
+        for (const child of Array.from(cell.children)) cellInner += emitBlock(child, ctx);
+        const stripped = /^<p[^>]*>([\s\S]*)<\/p>$/.exec(cellInner.trim());
         const body = stripped ? stripped[1] : cellInner;
         let attrs = '';
         if (cs > 1) attrs += ' colspan="' + cs + '"';
@@ -223,7 +298,7 @@ function emitBlock(node: Element, styles: Map<string, StyleHints>, pictures: Rec
     return html + '</table>';
   }
   // Unknown block : fall through to inline so we don't drop content.
-  return emitInline(node, styles, pictures);
+  return emitInline(node, ctx.styles, ctx.pictures);
 }
 
 function emitInline(node: Node, styles: Map<string, StyleHints>, pictures: Record<string, string>): string {
@@ -240,9 +315,15 @@ function emitInline(node: Node, styles: Map<string, StyleHints>, pictures: Recor
       const name = el.getAttributeNS(NS.text, 'style-name') ?? '';
       const hints = styles.get(name);
       let inner = emitInline(el, styles, pictures);
-      if (hints?.underline) inner = '<u>' + inner + '</u>';
-      if (hints?.italic)    inner = '<i>' + inner + '</i>';
-      if (hints?.bold)      inner = '<b>' + inner + '</b>';
+      // V0.7 adds strike + sub/super. <sup>/<sub> wrap the innermost
+      // so the visible text sits inside the smaller font ; <s>
+      // sits outside so the strikethrough crosses all decorations.
+      if (hints?.subscript)   inner = '<sub>' + inner + '</sub>';
+      if (hints?.superscript) inner = '<sup>' + inner + '</sup>';
+      if (hints?.underline)   inner = '<u>' + inner + '</u>';
+      if (hints?.italic)      inner = '<i>' + inner + '</i>';
+      if (hints?.bold)        inner = '<b>' + inner + '</b>';
+      if (hints?.strike)      inner = '<s>' + inner + '</s>';
       out += inner;
     } else if (ln === 'line-break') {
       out += '<br>';
@@ -407,15 +488,39 @@ function htmlToContentXML(html: string, collected: CollectedImage[], preservedAu
     root = tmp;
   }
   // Collect distinct StyleHints sets used in the doc so we can emit
-  // one <style:style> per combination.
+  // one <style:style> per combination. Flag encoding uses single
+  // letters so the resulting name is stable + short :
+  //   b=bold  i=italic  u=underline  s=strike  B=subscript  P=superscript
   const usedStyles = new Set<string>();
   const styleNameFor = (h: StyleHints): string | null => {
-    if (!h.bold && !h.italic && !h.underline) return null;
-    const key = (h.bold ? 'b' : '') + (h.italic ? 'i' : '') + (h.underline ? 'u' : '');
-    const name = 'T_' + key;
-    usedStyles.add(key);
+    const flags = (h.bold ? 'b' : '')
+                + (h.italic ? 'i' : '')
+                + (h.underline ? 'u' : '')
+                + (h.strike ? 's' : '')
+                + (h.subscript ? 'B' : '')
+                + (h.superscript ? 'P' : '');
+    if (!flags) return null;
+    usedStyles.add(flags);
+    return 'T_' + flags;
+  };
+  // Paragraph alignment : emit one <style:style style:family=
+  // "paragraph"> per (alignment, source-style) combo we encounter.
+  // The style ref attaches to <text:p text:style-name="…">. To keep
+  // things simple : `P_align_<dir>` for naked alignments without a
+  // source style name ; `<src>_align_<dir>` when chained on top.
+  const usedAlignStyles = new Set<string>();
+  const paraStyleNameFor = (existingStyle: string, align: string | null): string | null => {
+    if (!align) return existingStyle || null;
+    const base = existingStyle || 'P';
+    const name = base + '_align_' + align;
+    usedAlignStyles.add(name + '|' + align + '|' + existingStyle);
     return name;
   };
+  // Ordered-list style : ODF wants <text:list-style> in automatic-
+  // styles + <text:list text:style-name="L_ol">. We always emit
+  // both L_ol + L_ul ; the unused one is harmless.
+  let usedOL = false;
+  let usedUL = false;
   // Walk + emit body. Image collection runs as a side-effect of the
   // emitter — every <img> push appends to `collected`.
   const imageRefFor = (src: string, alt: string): string => {
@@ -442,9 +547,17 @@ function htmlToContentXML(html: string, collected: CollectedImage[], preservedAu
   let footnoteSeq = 0;
   const noteIdFor: NoteIdFor = () => 'ftn' + (++footnoteSeq);
 
+  const writeCtx: WriteCtx = {
+    styleNameFor,
+    paraStyleNameFor,
+    imageRefFor,
+    noteIdFor,
+    markListKind: (k: ListKind) => { if (k === 'ol') usedOL = true; else usedUL = true; },
+  };
+
   let body = '';
   for (const c of Array.from(root.childNodes)) {
-    body += emitODTBlock(c, { }, styleNameFor, imageRefFor, noteIdFor);
+    body += emitODTBlock(c, { }, writeCtx);
   }
   // Build the automatic-styles header. We re-emit the preserved
   // entries from the source content.xml first (so any user-customised
@@ -460,13 +573,38 @@ function htmlToContentXML(html: string, collected: CollectedImage[], preservedAu
   for (const k of usedStyles) {
     const name = 'T_' + k;
     if (preservedNames.has(name)) continue;
-    const bold = k.includes('b'), italic = k.includes('i'), underline = k.includes('u');
+    const bold = k.includes('b'),
+          italic = k.includes('i'),
+          underline = k.includes('u'),
+          strike = k.includes('s'),
+          subscript = k.includes('B'),
+          superscript = k.includes('P');
     stylesXML += `    <style:style style:name="${name}" style:family="text">`
               + '<style:text-properties'
-              + (bold      ? ' fo:font-weight="bold"' : '')
-              + (italic    ? ' fo:font-style="italic"' : '')
-              + (underline ? ' style:text-underline-style="solid"' : '')
+              + (bold        ? ' fo:font-weight="bold"' : '')
+              + (italic      ? ' fo:font-style="italic"' : '')
+              + (underline   ? ' style:text-underline-style="solid"' : '')
+              + (strike      ? ' style:text-line-through-style="solid"' : '')
+              + (subscript   ? ' style:text-position="sub 58%"' : '')
+              + (superscript ? ' style:text-position="super 58%"' : '')
               + '/></style:style>\n';
+  }
+  for (const triple of usedAlignStyles) {
+    const [name, align /*, base*/] = triple.split('|');
+    if (preservedNames.has(name)) continue;
+    stylesXML += `    <style:style style:name="${name}" style:family="paragraph">`
+              + '<style:paragraph-properties fo:text-align="' + align + '"/>'
+              + '</style:style>\n';
+  }
+  if (usedOL && !preservedNames.has('L_ol')) {
+    stylesXML += `    <text:list-style style:name="L_ol">
+      <text:list-level-style-number text:level="1" style:num-format="1" style:num-suffix="."/>
+    </text:list-style>\n`;
+  }
+  if (usedUL && !preservedNames.has('L_ul')) {
+    stylesXML += `    <text:list-style style:name="L_ul">
+      <text:list-level-style-bullet text:level="1" text:bullet-char="•"/>
+    </text:list-style>\n`;
   }
   return `<?xml version="1.0" encoding="UTF-8"?>
 <office:document-content
@@ -527,32 +665,59 @@ function base64Decode(b64: string): Uint8Array {
 type ImageRef = (src: string, alt: string) => string;
 type NoteIdFor = () => string;
 
-function emitODTBlock(node: Node, fmt: StyleHints, styleNameFor: (h: StyleHints) => string | null, imageRefFor: ImageRef, noteIdFor: NoteIdFor): string {
+interface WriteCtx {
+  styleNameFor: (h: StyleHints) => string | null;
+  paraStyleNameFor: (existingStyle: string, align: string | null) => string | null;
+  imageRefFor: ImageRef;
+  noteIdFor: NoteIdFor;
+  markListKind: (k: ListKind) => void;
+}
+
+// Pull a normalised text-align value out of an element's style="…"
+// attribute. Returns null when there's no inline alignment.
+function pickAlign(el: Element): string | null {
+  const inline = el.getAttribute('style') ?? '';
+  const m = /text-align\s*:\s*([a-z]+)/i.exec(inline);
+  if (!m) return null;
+  const v = m[1].toLowerCase();
+  if (v === 'left' || v === 'center' || v === 'right' || v === 'justify') return v;
+  return null;
+}
+
+function emitODTBlock(node: Node, fmt: StyleHints, ctx: WriteCtx): string {
   if (node.nodeType === 3) {
-    return wrapInline(node.textContent ?? '', fmt, styleNameFor) ;
+    return wrapInline(node.textContent ?? '', fmt, ctx.styleNameFor) ;
   }
   if (node.nodeType !== 1) return '';
   const el = node as Element;
   const tag = el.tagName.toLowerCase();
+  // Resolve a style-name attribute string : existing data-odt-style +
+  // any text-align lifted from the HTML inline style="…". When both
+  // are absent we omit the attribute entirely.
+  const odtBlockStyleAttr = (): string => {
+    const odtStyle = el.getAttribute('data-odt-style') ?? '';
+    const align = pickAlign(el);
+    const name = ctx.paraStyleNameFor(odtStyle, align);
+    return name ? ' text:style-name="' + escapeAttr(name) + '"' : '';
+  };
   if (tag === 'p' || tag === 'div') {
-    const odtStyle = el.getAttribute('data-odt-style');
-    const styleAttr = odtStyle ? ' text:style-name="' + escapeAttr(odtStyle) + '"' : '';
-    return '      <text:p' + styleAttr + '>' + emitODTInline(el, fmt, styleNameFor, imageRefFor, noteIdFor) + '</text:p>\n';
+    return '      <text:p' + odtBlockStyleAttr() + '>' + emitODTInline(el, fmt, ctx) + '</text:p>\n';
   }
   if (/^h[1-6]$/.test(tag)) {
     const lvl = Number(tag.slice(1));
-    const odtStyle = el.getAttribute('data-odt-style');
-    const styleAttr = odtStyle ? ' text:style-name="' + escapeAttr(odtStyle) + '"' : '';
-    return '      <text:h text:outline-level="' + lvl + '"' + styleAttr + '>' + emitODTInline(el, fmt, styleNameFor, imageRefFor, noteIdFor) + '</text:h>\n';
+    return '      <text:h text:outline-level="' + lvl + '"' + odtBlockStyleAttr() + '>' + emitODTInline(el, fmt, ctx) + '</text:h>\n';
   }
   if (tag === 'ul' || tag === 'ol') {
+    const kind: ListKind = tag === 'ol' ? 'ol' : 'ul';
+    ctx.markListKind(kind);
+    const listStyleName = kind === 'ol' ? 'L_ol' : 'L_ul';
     let inner = '';
     for (const li of Array.from(el.children)) {
       if (li.tagName.toLowerCase() === 'li') {
-        inner += '        <text:list-item><text:p>' + emitODTInline(li, fmt, styleNameFor, imageRefFor, noteIdFor) + '</text:p></text:list-item>\n';
+        inner += '        <text:list-item><text:p>' + emitODTInline(li, fmt, ctx) + '</text:p></text:list-item>\n';
       }
     }
-    return '      <text:list>\n' + inner + '      </text:list>\n';
+    return '      <text:list text:style-name="' + listStyleName + '">\n' + inner + '      </text:list>\n';
   }
   if (tag === 'br') {
     return '      <text:p/>\n';
@@ -588,7 +753,7 @@ function emitODTBlock(node: Node, fmt: StyleHints, styleNameFor: (h: StyleHints)
         // <text:p> for the text + bare <draw:frame> after when
         // there's an <img> child ; ODF prefers draw:frame as a
         // sibling of text:p rather than nested.
-        const cellInline = emitODTInline(tdEl, fmt, styleNameFor, imageRefFor, noteIdFor);
+        const cellInline = emitODTInline(tdEl, fmt, ctx);
         out += '          <table:table-cell' + attrs + '>'
             + '<text:p>' + cellInline + '</text:p>'
             + '</table:table-cell>\n';
@@ -604,17 +769,17 @@ function emitODTBlock(node: Node, fmt: StyleHints, styleNameFor: (h: StyleHints)
   if (tag === 'img') {
     const src = (el as HTMLImageElement).getAttribute('src') ?? '';
     const alt = (el as HTMLImageElement).getAttribute('alt') ?? '';
-    return '      <text:p>' + imageRefFor(src, alt) + '</text:p>\n';
+    return '      <text:p>' + ctx.imageRefFor(src, alt) + '</text:p>\n';
   }
   // Unknown : descend transparently as a paragraph wrapper.
-  return '      <text:p>' + emitODTInline(el, fmt, styleNameFor, imageRefFor, noteIdFor) + '</text:p>\n';
+  return '      <text:p>' + emitODTInline(el, fmt, ctx) + '</text:p>\n';
 }
 
-function emitODTInline(node: Node, fmt: StyleHints, styleNameFor: (h: StyleHints) => string | null, imageRefFor: ImageRef, noteIdFor: NoteIdFor): string {
+function emitODTInline(node: Node, fmt: StyleHints, ctx: WriteCtx): string {
   let out = '';
   for (const c of Array.from(node.childNodes)) {
     if (c.nodeType === 3) {
-      out += wrapInline(c.textContent ?? '', fmt, styleNameFor);
+      out += wrapInline(c.textContent ?? '', fmt, ctx.styleNameFor);
       continue;
     }
     if (c.nodeType !== 1) continue;
@@ -624,18 +789,20 @@ function emitODTInline(node: Node, fmt: StyleHints, styleNameFor: (h: StyleHints
     if (tag === 'b' || tag === 'strong') next.bold = true;
     else if (tag === 'i' || tag === 'em') next.italic = true;
     else if (tag === 'u') next.underline = true;
+    else if (tag === 's' || tag === 'strike' || tag === 'del') next.strike = true;
+    else if (tag === 'sub') next.subscript = true;
     else if (tag === 'br') { out += '<text:line-break/>'; continue; }
     else if (tag === 'a') {
       const href = (el as HTMLAnchorElement).getAttribute('href') ?? '';
-      out += '<text:a xlink:href="' + escapeAttr(href) + '">' + emitODTInline(el, fmt, styleNameFor, imageRefFor, noteIdFor) + '</text:a>';
+      out += '<text:a xlink:href="' + escapeAttr(href) + '">' + emitODTInline(el, fmt, ctx) + '</text:a>';
       continue;
     } else if (tag === 'img') {
       const src = (el as HTMLImageElement).getAttribute('src') ?? '';
       const alt = (el as HTMLImageElement).getAttribute('alt') ?? '';
-      out += imageRefFor(src, alt);
+      out += ctx.imageRefFor(src, alt);
       continue;
     } else if (tag === 'sup' && (el.getAttribute('class') ?? '').includes('footnote')) {
-      const id = el.getAttribute('data-id') || noteIdFor();
+      const id = el.getAttribute('data-id') || ctx.noteIdFor();
       const cls = ((el.getAttribute('class') ?? '').split(/\s+/).find(c => c !== 'footnote') ?? 'footnote');
       const cite = el.textContent ?? '';
       const body = el.getAttribute('data-body') ?? '';
@@ -655,7 +822,7 @@ function emitODTInline(node: Node, fmt: StyleHints, styleNameFor: (h: StyleHints
             return d;
           }
         })();
-        return '<text:p>' + emitODTInline(tmp, fmt, styleNameFor, imageRefFor, noteIdFor) + '</text:p>';
+        return '<text:p>' + emitODTInline(tmp, fmt, ctx) + '</text:p>';
       }).join('');
       out += '<text:note text:id="' + escapeAttr(id)
           + '" text:note-class="' + escapeAttr(cls) + '">'
@@ -663,8 +830,11 @@ function emitODTInline(node: Node, fmt: StyleHints, styleNameFor: (h: StyleHints
           + '<text:note-body>' + bodyParas + '</text:note-body>'
           + '</text:note>';
       continue;
+    } else if (tag === 'sup') {
+      // Non-footnote <sup> = explicit superscript run.
+      next.superscript = true;
     }
-    out += emitODTInline(el, next, styleNameFor, imageRefFor, noteIdFor);
+    out += emitODTInline(el, next, ctx);
   }
   return out;
 }

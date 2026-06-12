@@ -77,13 +77,27 @@ async function makeSeedODT() {
     <style:style style:name="P_userCustom" style:family="paragraph">
       <style:paragraph-properties fo:margin-left="2cm" fo:color="#ff00ff"/>
     </style:style>
+    <style:style style:name="P_align_center" style:family="paragraph">
+      <style:paragraph-properties fo:text-align="center"/>
+    </style:style>
     <style:style style:name="T_b" style:family="text">
       <style:text-properties fo:font-weight="bold"/>
     </style:style>
+    <style:style style:name="T_s" style:family="text">
+      <style:text-properties style:text-line-through-style="solid"/>
+    </style:style>
+    <text:list-style style:name="L_ol_seed">
+      <text:list-level-style-number text:level="1" style:num-format="1" style:num-suffix="."/>
+    </text:list-style>
   </office:automatic-styles>
   <office:body>
     <office:text>
       <text:p text:style-name="Quotation">Hello ODT world.<text:note text:id="ftn1" text:note-class="footnote"><text:note-citation>1</text:note-citation><text:note-body><text:p>Seed <text:span text:style-name="T_b">bold</text:span> body.</text:p><text:p>Second paragraph.</text:p></text:note-body></text:note></text:p>
+      <text:p text:style-name="P_align_center">Centred line with <text:span text:style-name="T_s">strike</text:span>.</text:p>
+      <text:list text:style-name="L_ol_seed">
+        <text:list-item><text:p>first</text:p></text:list-item>
+        <text:list-item><text:p>second</text:p></text:list-item>
+      </text:list>
       <text:p><draw:frame draw:name="seed" text:anchor-type="as-char" svg:width="1in" svg:height="1in"><draw:image xlink:href="Pictures/seed.png" xlink:type="simple" xlink:show="embed" xlink:actuate="onLoad"/></draw:frame></text:p>
     </office:text>
   </office:body>
@@ -136,6 +150,11 @@ const mounted = await page.evaluate(() => {
   const img = ce?.querySelector('img');
   const ftn = ce?.querySelector('sup.footnote');
   const styledP = ce?.querySelector('p[data-odt-style]');
+  const centred = Array.from(ce?.querySelectorAll('p') ?? [])
+    .find(p => (p.getAttribute('style') ?? '').includes('text-align: center'));
+  const hasOl = !!ce?.querySelector('ol');
+  const olItems = Array.from(ce?.querySelectorAll('ol > li') ?? []).map(li => li.textContent ?? '');
+  const strikeEl = ce?.querySelector('s');
   return {
     hasWysiwyg: !!ce,
     hasCodeMirror: !!cm,
@@ -146,6 +165,10 @@ const mounted = await page.evaluate(() => {
     footnoteBody: ftn?.getAttribute('data-body') ?? '',
     footnoteId: ftn?.getAttribute('data-id') ?? '',
     paraStyle: styledP?.getAttribute('data-odt-style') ?? '',
+    centredText: centred?.textContent ?? '',
+    hasOl,
+    olItems,
+    strikeText: strikeEl?.textContent ?? '',
   };
 });
 if (!mounted.hasWysiwyg) {
@@ -204,6 +227,26 @@ if (mounted.paraStyle === 'Quotation') {
   failL('paragraph style read path',
     'expected data-odt-style="Quotation" got "' + mounted.paraStyle + '"');
 }
+// V0.7 reader assertions : alignment, ordered list, strikethrough.
+if (mounted.centredText.includes('Centred line')) {
+  ok('paragraph alignment read', 'fo:text-align="center" surfaced as inline style');
+} else {
+  failL('paragraph alignment read',
+    'expected centred <p> with "Centred line" got "' + mounted.centredText + '"');
+}
+if (mounted.hasOl && mounted.olItems[0] === 'first' && mounted.olItems[1] === 'second') {
+  ok('ordered list read', '<ol> with two <li> in correct order');
+} else {
+  failL('ordered list read',
+    'expected <ol><li>first</li><li>second</li></ol> got hasOl=' + mounted.hasOl
+    + ' items=' + JSON.stringify(mounted.olItems));
+}
+if (mounted.strikeText === 'strike') {
+  ok('strikethrough read', '<s>strike</s> surfaced from T_s span');
+} else {
+  failL('strikethrough read',
+    'expected <s>strike</s> got "' + mounted.strikeText + '"');
+}
 
 // 4) drive an edit (text + a 2×2 table insert) + wait for the
 //    debounced save (~600 ms) + extra time for jszip generation.
@@ -227,6 +270,20 @@ await page.evaluate(() => {
   // independently of the seed's <text:note> being preserved.
   document.execCommand('insertHTML', false,
     '<sup class="footnote" data-id="ftn2" data-body="Editor-added <i>italic</i> body.">2</sup>');
+  // V0.7 write-path : append a fresh <sub>/<sup>/<s> trio + an
+  // <ol> + an aligned paragraph so the writer's auto-style emit is
+  // exercised even when the source ODT doesn't carry those styles.
+  // We bypass execCommand here because contenteditable's insertHTML
+  // strips `<p>` boundaries when the caret is mid-paragraph (the
+  // tag gets demoted to <span> + text-align is lost).
+  const append = (h) => {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = h;
+    while (tmp.firstChild) ce.appendChild(tmp.firstChild);
+  };
+  append('<p>E=mc<sup>2</sup>, H<sub>2</sub>O, <s>old</s> idea.</p>'
+    + '<p style="text-align: right;">right-aligned line</p>'
+    + '<ol><li>editor first</li><li>editor second</li></ol>');
   ce.dispatchEvent(new InputEvent('input', { bubbles: true }));
 });
 await new Promise((r) => setTimeout(r, 2000));
@@ -314,6 +371,30 @@ if (!after.ok) {
       } else {
         failL('automatic-styles pass-through',
           'P_userCustom or its fo:color got dropped — auto-styles XML not preserved');
+      }
+      // V0.7 write-path : <sup>/<sub>/<s>/right-aligned <p>/<ol>
+      // all need to land in the saved XML.
+      if (xml.includes('style:text-position="super 58%"')
+       && xml.includes('style:text-position="sub 58%"')
+       && xml.includes('style:text-line-through-style="solid"')) {
+        ok('sub/super/strike write', 'all three text-properties emitted');
+      } else {
+        failL('sub/super/strike write',
+          'expected super 58% + sub 58% + text-line-through-style in styles header');
+      }
+      if (xml.includes('fo:text-align="right"')) {
+        ok('alignment write', 'fo:text-align="right" emitted in auto-styles');
+      } else {
+        failL('alignment write',
+          'editor-added right-aligned paragraph did not produce fo:text-align="right"');
+      }
+      if (xml.includes('<text:list text:style-name="L_ol"')
+       && xml.includes('text:list-level-style-number')) {
+        ok('ordered list write',
+          '<text:list text:style-name="L_ol"> + numbered list-style emitted');
+      } else {
+        failL('ordered list write',
+          'editor-added <ol> did not produce text:list with numbered list-style');
       }
       // Image-write-back of new-data:-URL <img> tags through the
       // contenteditable is V0.4 work — the puppeteer harness can't
