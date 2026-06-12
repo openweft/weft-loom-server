@@ -950,13 +950,13 @@
                 {#key project + '|nb|' + currentFile}
                   <NotebookEditor {project} file={currentFile} />
                 {/key}
-              {:else if currentFile.toLowerCase().endsWith('.rtf')}
-                <!-- RTF files open in the WYSIWYG editor (Word-like
-                     surface) instead of the raw-source CodeMirror.
-                     Round-trips via parseRTF on load + writeRTF on
-                     save. ODT will land here once the V0.9 pandoc
-                     pipeline is wired. -->
-                {#key project + '|rtf|' + currentFile}
+              {:else if currentFile.toLowerCase().endsWith('.rtf') || currentFile.toLowerCase().endsWith('.odt')}
+                <!-- RTF + ODT both open in the WYSIWYG editor
+                     (Word-like surface) instead of the raw-source
+                     CodeMirror. The editor detects the file
+                     extension to pick parseRTF/writeRTF vs the
+                     pure-browser parseODT/writeODT (jszip-backed). -->
+                {#key project + '|wyswg|' + currentFile}
                   <WysiwygEditor {project} file={currentFile} />
                 {/key}
               {:else}

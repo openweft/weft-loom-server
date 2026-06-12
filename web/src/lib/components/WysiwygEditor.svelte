@@ -1,18 +1,15 @@
 <script lang="ts">
-  // WysiwygEditor — Word-like editing surface for `.rtf` files. RTF
-  // is a binary-ish markup that nobody hand-edits ; CodeMirror on
-  // raw RTF was bad UX (the user has to know control words like
-  // `\par`, `\b`, `\fs24`). This editor swaps the source view for a
-  // contentEditable surface so authoring feels like LibreOffice
-  // Writer or Word, while the save path serialises back to RTF for
-  // round-trip with the rest of the toolchain (pandoc, marp).
-  //
-  // The same component will host ODT once the V0.9 pandoc-based
-  // load + save pipeline is wired ; the toolbar + DOM shape are
-  // format-agnostic.
+  // WysiwygEditor — Word-like editing surface for word-processing
+  // formats nobody hand-edits as source : `.rtf` + `.odt`. RTF is
+  // control-word markup, ODT is a zipped XML container — CodeMirror
+  // on either was bad UX. The editor swaps the raw view for a
+  // contenteditable surface so authoring feels like LibreOffice
+  // Writer or Word, while the save path serialises back to the
+  // original format for round-trip with the rest of the toolchain.
 
   import { onMount, onDestroy, untrack } from 'svelte';
   import { parseRTF, writeRTF } from '../rtf';
+  import { parseODT, writeODT } from '../odt';
 
   interface Props {
     project: string;
@@ -28,6 +25,10 @@
   // keystroke we serialise + PUT. Keeps the keystroke loop tight.
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
 
+  function format(): 'rtf' | 'odt' {
+    return file.toLowerCase().endsWith('.odt') ? 'odt' : 'rtf';
+  }
+
   async function load() {
     status = 'loading';
     try {
@@ -36,12 +37,23 @@
       );
       if (!r.ok) throw new Error('HTTP ' + r.status);
       etag = r.headers.get('etag') ?? '';
-      const text = await r.text();
-      const parsed = parseRTF(text);
-      // Inject the rendered HTML into the contenteditable. If the
-      // file was empty (new file), seed with an empty paragraph so
-      // the caret has somewhere to land.
-      editorEl.innerHTML = parsed.html || '<p><br></p>';
+      let html = '';
+      if (format() === 'odt') {
+        // ODT is binary (zip) ; fetch as ArrayBuffer + decode via the
+        // jszip-backed parser.
+        const buf = await r.arrayBuffer();
+        if (buf.byteLength === 0) {
+          html = '<p><br></p>';
+        } else {
+          const parsed = await parseODT(buf);
+          html = parsed.html || '<p><br></p>';
+        }
+      } else {
+        const text = await r.text();
+        const parsed = parseRTF(text);
+        html = parsed.html || '<p><br></p>';
+      }
+      editorEl.innerHTML = html;
       status = 'ready';
     } catch (e) {
       status = 'error';
@@ -53,10 +65,19 @@
     if (status !== 'ready' && status !== 'saving') return;
     status = 'saving';
     try {
-      const rtf = writeRTF(editorEl.innerHTML);
+      let body: BodyInit;
+      if (format() === 'odt') {
+        const bytes = await writeODT(editorEl.innerHTML);
+        // BodyInit accepts BufferSource ; wrap to a Blob so fetch
+        // sets the proper Content-Length without copying the buffer
+        // through a string round-trip.
+        body = new Blob([bytes], { type: 'application/vnd.oasis.opendocument.text' });
+      } else {
+        body = writeRTF(editorEl.innerHTML);
+      }
       const r = await fetch(
         '/api/projects/' + encodeURIComponent(project) + '/files/' + encodeURIComponent(file),
-        { method: 'PUT', body: rtf },
+        { method: 'PUT', body },
       );
       if (!r.ok && r.status !== 204) throw new Error('PUT ' + r.status);
       etag = r.headers.get('etag') ?? etag;
@@ -147,7 +168,7 @@
     {:else if status === 'error'}
       <span class="text-error text-xs" title={errorMessage}>error</span>
     {:else if status === 'ready'}
-      <span class="opacity-50 text-xs">RTF</span>
+      <span class="opacity-50 text-xs uppercase">{format()}</span>
     {/if}
   </div>
 

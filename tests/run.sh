@@ -104,16 +104,25 @@ node tests/wysiwyg-rtf.mjs
 WYSIWYG=$?
 
 echo
+echo "----- WYSIWYG ODT suite -----"
+# Same guard for .odt : the pure-browser parseODT/writeODT path
+# round-trips the document via jszip + DOMParser, no server-side
+# pandoc round-trip needed.
+node tests/wysiwyg-odt.mjs
+WYSIWYG_ODT=$?
+
+echo
 echo "==============================================="
-if [ $UI -eq 0 ] && [ $LANG -eq 0 ] && [ $PREVIEW -eq 0 ] && [ $UIENTRY -eq 0 ] && [ $THEMEP -eq 0 ] && [ $WYSIWYG -eq 0 ]; then
+if [ $UI -eq 0 ] && [ $LANG -eq 0 ] && [ $PREVIEW -eq 0 ] && [ $UIENTRY -eq 0 ] && [ $THEMEP -eq 0 ] && [ $WYSIWYG -eq 0 ] && [ $WYSIWYG_ODT -eq 0 ]; then
   echo "  \033[32mALL PASS\033[0m"
   exit 0
 fi
-[ $UI      -eq 0 ] && echo "  ui-suite           : \033[32mPASS\033[0m" || echo "  ui-suite           : \033[31mFAIL\033[0m"
-[ $LANG    -eq 0 ] && echo "  lang-suite         : \033[32mPASS\033[0m" || echo "  lang-suite         : \033[31mFAIL\033[0m"
-[ $PREVIEW -eq 0 ] && echo "  preview-suite      : \033[32mPASS\033[0m" || echo "  preview-suite      : \033[31mFAIL\033[0m"
-[ $UIENTRY -eq 0 ] && echo "  ui-compile-entry   : \033[32mPASS\033[0m" || echo "  ui-compile-entry   : \033[31mFAIL\033[0m"
-[ $THEMEP  -eq 0 ] && echo "  theme-preview      : \033[32mPASS\033[0m" || echo "  theme-preview      : \033[31mFAIL\033[0m"
-[ $WYSIWYG -eq 0 ] && echo "  wysiwyg-rtf        : \033[32mPASS\033[0m" || echo "  wysiwyg-rtf        : \033[31mFAIL\033[0m"
+[ $UI         -eq 0 ] && echo "  ui-suite           : \033[32mPASS\033[0m" || echo "  ui-suite           : \033[31mFAIL\033[0m"
+[ $LANG       -eq 0 ] && echo "  lang-suite         : \033[32mPASS\033[0m" || echo "  lang-suite         : \033[31mFAIL\033[0m"
+[ $PREVIEW    -eq 0 ] && echo "  preview-suite      : \033[32mPASS\033[0m" || echo "  preview-suite      : \033[31mFAIL\033[0m"
+[ $UIENTRY    -eq 0 ] && echo "  ui-compile-entry   : \033[32mPASS\033[0m" || echo "  ui-compile-entry   : \033[31mFAIL\033[0m"
+[ $THEMEP     -eq 0 ] && echo "  theme-preview      : \033[32mPASS\033[0m" || echo "  theme-preview      : \033[31mFAIL\033[0m"
+[ $WYSIWYG    -eq 0 ] && echo "  wysiwyg-rtf        : \033[32mPASS\033[0m" || echo "  wysiwyg-rtf        : \033[31mFAIL\033[0m"
+[ $WYSIWYG_ODT -eq 0 ] && echo "  wysiwyg-odt        : \033[32mPASS\033[0m" || echo "  wysiwyg-odt        : \033[31mFAIL\033[0m"
 echo "==============================================="
 exit 1

@@ -110,6 +110,8 @@ export function languageForPath(path: string): string {
       return 'svelte';
     case 'rtf':
       return 'rtf';
+    case 'odt':
+      return 'odt';
     case 'yaml':
     case 'yml':
       return 'yaml';
