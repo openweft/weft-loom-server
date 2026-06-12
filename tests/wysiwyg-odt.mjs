@@ -73,7 +73,7 @@ async function makeSeedODT() {
   office:version="1.2">
   <office:body>
     <office:text>
-      <text:p>Hello ODT world.</text:p>
+      <text:p text:style-name="Quotation">Hello ODT world.<text:note text:id="ftn1" text:note-class="footnote"><text:note-citation>1</text:note-citation><text:note-body><text:p>Seed footnote body.</text:p></text:note-body></text:note></text:p>
       <text:p><draw:frame draw:name="seed" text:anchor-type="as-char" svg:width="1in" svg:height="1in"><draw:image xlink:href="Pictures/seed.png" xlink:type="simple" xlink:show="embed" xlink:actuate="onLoad"/></draw:frame></text:p>
     </office:text>
   </office:body>
@@ -124,12 +124,18 @@ const mounted = await page.evaluate(() => {
   const ce = document.querySelector('[contenteditable="true"][role="textbox"]');
   const cm = document.querySelector('.cm-editor');
   const img = ce?.querySelector('img');
+  const ftn = ce?.querySelector('sup.footnote');
+  const styledP = ce?.querySelector('p[data-odt-style]');
   return {
     hasWysiwyg: !!ce,
     hasCodeMirror: !!cm,
     body: ce ? (ce.textContent || '').trim().slice(0, 80) : '',
     formatLabel: (document.querySelector('.uppercase')?.textContent || '').trim(),
     imgSrcPrefix: img ? (img.getAttribute('src') || '').slice(0, 30) : '',
+    footnoteCitation: ftn?.textContent ?? '',
+    footnoteBody: ftn?.getAttribute('data-body') ?? '',
+    footnoteId: ftn?.getAttribute('data-id') ?? '',
+    paraStyle: styledP?.getAttribute('data-odt-style') ?? '',
   };
 });
 if (!mounted.hasWysiwyg) {
@@ -162,6 +168,29 @@ if (mounted.imgSrcPrefix.startsWith('data:image/png')) {
     'expected <img src="data:image/png..."> ; got src prefix : "'
     + mounted.imgSrcPrefix + '"');
 }
+// Footnote read path : the seed ODT carries a <text:note text:id=ftn1>
+// with a citation of "1" and a body of "Seed footnote body." ; parseODT
+// should surface it as <sup class="footnote" data-id="ftn1"
+// data-body="Seed footnote body.">1</sup> inside the contenteditable.
+if (mounted.footnoteCitation === '1'
+ && mounted.footnoteBody === 'Seed footnote body.'
+ && mounted.footnoteId === 'ftn1') {
+  ok('footnote read path', '<sup class="footnote"> with id+body+citation');
+} else {
+  failL('footnote read path',
+    'expected ftn1/"1"/"Seed footnote body." got id="' + mounted.footnoteId
+    + '" cite="' + mounted.footnoteCitation
+    + '" body="' + mounted.footnoteBody + '"');
+}
+// Paragraph-style read path : the seed's first <text:p> carries
+// text:style-name="Quotation" ; parseODT should surface it as
+// <p data-odt-style="Quotation"> in the contenteditable.
+if (mounted.paraStyle === 'Quotation') {
+  ok('paragraph style read path', 'data-odt-style="Quotation" preserved');
+} else {
+  failL('paragraph style read path',
+    'expected data-odt-style="Quotation" got "' + mounted.paraStyle + '"');
+}
 
 // 4) drive an edit (text + a 2×2 table insert) + wait for the
 //    debounced save (~600 ms) + extra time for jszip generation.
@@ -181,6 +210,10 @@ await page.evaluate(() => {
   // click. The component's `insertTable()` produces the same shape.
   document.execCommand('insertHTML', false,
     '<table><tbody><tr><td>A1</td><td>B1</td></tr><tr><td>A2</td><td>B2</td></tr></tbody></table>');
+  // Append a fresh footnote so the writer path is exercised
+  // independently of the seed's <text:note> being preserved.
+  document.execCommand('insertHTML', false,
+    '<sup class="footnote" data-id="ftn2" data-body="Editor-added body.">2</sup>');
   ce.dispatchEvent(new InputEvent('input', { bubbles: true }));
 });
 await new Promise((r) => setTimeout(r, 2000));
@@ -221,6 +254,30 @@ if (!after.ok) {
         failL('table round-trip',
           'expected <table:table> + A1 + B2 in saved XML, got : '
           + xml.slice(xml.indexOf('<office:body>') > 0 ? xml.indexOf('<office:body>') : 0, 400));
+      }
+      // Footnote write-back : the editor-added <sup class="footnote"
+      // data-id="ftn2" data-body="Editor-added body.">2</sup> should
+      // round-trip out as <text:note text:id="ftn2" text:note-class=
+      // "footnote"><text:note-citation>2</text:note-citation>
+      // <text:note-body><text:p>Editor-added body.</text:p></text:note-body>
+      // </text:note>. Seed's ftn1 should also survive the round-trip
+      // since we re-emit notes we read.
+      if (xml.includes('text:note-class="footnote"')
+       && xml.includes('Editor-added body.')
+       && xml.includes('Seed footnote body.')) {
+        ok('footnote round-trip', 'seed ftn1 + editor-added ftn2 preserved');
+      } else {
+        failL('footnote round-trip',
+          'expected text:note-class="footnote" + both bodies, got snippet : '
+          + xml.slice(Math.max(0, xml.indexOf('text:note')), xml.indexOf('text:note') + 300));
+      }
+      // Paragraph-style round-trip : the seed's text:style-name=
+      // "Quotation" attribute should re-emerge in the saved XML.
+      if (xml.includes('text:style-name="Quotation"')) {
+        ok('paragraph style round-trip', 'text:style-name="Quotation" preserved');
+      } else {
+        failL('paragraph style round-trip',
+          'text:style-name="Quotation" missing — paragraph customisation lost on save');
       }
       // Image-write-back of new-data:-URL <img> tags through the
       // contenteditable is V0.4 work — the puppeteer harness can't

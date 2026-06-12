@@ -157,12 +157,18 @@ function parseContent(xml: string, pictures: Record<string, string>): string {
 
 function emitBlock(node: Element, styles: Map<string, StyleHints>, pictures: Record<string, string>): string {
   const ln = node.localName;
+  // Preserve any text:style-name on the paragraph / heading so the
+  // writer can re-emit it verbatim. Named styles like "Quotation",
+  // "Heading 1", or user-customised entries survive the round-trip
+  // — automatic-styles XML pass-through is a V0.6 follow-up.
+  const styleName = node.getAttributeNS(NS.text, 'style-name') ?? '';
+  const styleAttr = styleName ? ' data-odt-style="' + escapeAttr(styleName) + '"' : '';
   if (ln === 'p') {
-    return '<p>' + emitInline(node, styles, pictures) + '</p>';
+    return '<p' + styleAttr + '>' + emitInline(node, styles, pictures) + '</p>';
   }
   if (ln === 'h') {
     const lvl = Math.min(6, Math.max(1, Number(node.getAttributeNS(NS.text, 'outline-level') ?? '1')));
-    return '<h' + lvl + '>' + emitInline(node, styles, pictures) + '</h' + lvl + '>';
+    return '<h' + lvl + styleAttr + '>' + emitInline(node, styles, pictures) + '</h' + lvl + '>';
   }
   if (ln === 'list') {
     let inner = '';
@@ -233,6 +239,29 @@ function emitInline(node: Node, styles: Map<string, StyleHints>, pictures: Recor
       // Hyperlink ; we keep the visible text + the href.
       const href = el.getAttributeNS(NS.xlink, 'href') ?? '';
       out += '<a href="' + escapeAttr(href) + '">' + emitInline(el, styles, pictures) + '</a>';
+    } else if (ln === 'note') {
+      // <text:note text:id=… text:note-class="footnote">
+      //   <text:note-citation>N</text:note-citation>
+      //   <text:note-body><text:p>…</text:p></text:note-body>
+      // </text:note>
+      // We surface footnotes as <sup class="footnote" data-id=… data-body=…>N</sup>
+      // so contenteditable can round-trip them in V0.5. Body is
+      // plain text only ; rich-body lands in V0.6.
+      const id = el.getAttributeNS(NS.text, 'id') ?? '';
+      const cls = el.getAttributeNS(NS.text, 'note-class') ?? 'footnote';
+      const cite = el.getElementsByTagNameNS(NS.text, 'note-citation')[0]?.textContent ?? '';
+      const bodyEl = el.getElementsByTagNameNS(NS.text, 'note-body')[0];
+      let bodyText = '';
+      if (bodyEl) {
+        for (const p of Array.from(bodyEl.getElementsByTagNameNS(NS.text, 'p'))) {
+          if (bodyText) bodyText += '\n';
+          bodyText += p.textContent ?? '';
+        }
+      }
+      out += '<sup class="footnote ' + escapeAttr(cls)
+          + '" data-id="' + escapeAttr(id)
+          + '" data-body="' + escapeAttr(bodyText)
+          + '">' + escapeHTML(cite) + '</sup>';
     } else if (ln === 'frame') {
       // draw:frame wraps draw:image (and other media). Find the
       // image child + resolve its href against the pictures map.
@@ -384,9 +413,12 @@ function htmlToContentXML(html: string, collected: CollectedImage[]): string {
     return drawFrame(src, alt);
   };
 
+  let footnoteSeq = 0;
+  const noteIdFor: NoteIdFor = () => 'ftn' + (++footnoteSeq);
+
   let body = '';
   for (const c of Array.from(root.childNodes)) {
-    body += emitODTBlock(c, { }, styleNameFor, imageRefFor);
+    body += emitODTBlock(c, { }, styleNameFor, imageRefFor, noteIdFor);
   }
   // Build the automatic-styles header from the used set.
   let stylesXML = '';
@@ -456,8 +488,9 @@ function base64Decode(b64: string): Uint8Array {
 }
 
 type ImageRef = (src: string, alt: string) => string;
+type NoteIdFor = () => string;
 
-function emitODTBlock(node: Node, fmt: StyleHints, styleNameFor: (h: StyleHints) => string | null, imageRefFor: ImageRef): string {
+function emitODTBlock(node: Node, fmt: StyleHints, styleNameFor: (h: StyleHints) => string | null, imageRefFor: ImageRef, noteIdFor: NoteIdFor): string {
   if (node.nodeType === 3) {
     return wrapInline(node.textContent ?? '', fmt, styleNameFor) ;
   }
@@ -465,17 +498,21 @@ function emitODTBlock(node: Node, fmt: StyleHints, styleNameFor: (h: StyleHints)
   const el = node as Element;
   const tag = el.tagName.toLowerCase();
   if (tag === 'p' || tag === 'div') {
-    return '      <text:p>' + emitODTInline(el, fmt, styleNameFor, imageRefFor) + '</text:p>\n';
+    const odtStyle = el.getAttribute('data-odt-style');
+    const styleAttr = odtStyle ? ' text:style-name="' + escapeAttr(odtStyle) + '"' : '';
+    return '      <text:p' + styleAttr + '>' + emitODTInline(el, fmt, styleNameFor, imageRefFor, noteIdFor) + '</text:p>\n';
   }
   if (/^h[1-6]$/.test(tag)) {
     const lvl = Number(tag.slice(1));
-    return '      <text:h text:outline-level="' + lvl + '">' + emitODTInline(el, fmt, styleNameFor, imageRefFor) + '</text:h>\n';
+    const odtStyle = el.getAttribute('data-odt-style');
+    const styleAttr = odtStyle ? ' text:style-name="' + escapeAttr(odtStyle) + '"' : '';
+    return '      <text:h text:outline-level="' + lvl + '"' + styleAttr + '>' + emitODTInline(el, fmt, styleNameFor, imageRefFor, noteIdFor) + '</text:h>\n';
   }
   if (tag === 'ul' || tag === 'ol') {
     let inner = '';
     for (const li of Array.from(el.children)) {
       if (li.tagName.toLowerCase() === 'li') {
-        inner += '        <text:list-item><text:p>' + emitODTInline(li, fmt, styleNameFor, imageRefFor) + '</text:p></text:list-item>\n';
+        inner += '        <text:list-item><text:p>' + emitODTInline(li, fmt, styleNameFor, imageRefFor, noteIdFor) + '</text:p></text:list-item>\n';
       }
     }
     return '      <text:list>\n' + inner + '      </text:list>\n';
@@ -514,7 +551,7 @@ function emitODTBlock(node: Node, fmt: StyleHints, styleNameFor: (h: StyleHints)
         // <text:p> for the text + bare <draw:frame> after when
         // there's an <img> child ; ODF prefers draw:frame as a
         // sibling of text:p rather than nested.
-        const cellInline = emitODTInline(tdEl, fmt, styleNameFor, imageRefFor);
+        const cellInline = emitODTInline(tdEl, fmt, styleNameFor, imageRefFor, noteIdFor);
         out += '          <table:table-cell' + attrs + '>'
             + '<text:p>' + cellInline + '</text:p>'
             + '</table:table-cell>\n';
@@ -533,10 +570,10 @@ function emitODTBlock(node: Node, fmt: StyleHints, styleNameFor: (h: StyleHints)
     return '      <text:p>' + imageRefFor(src, alt) + '</text:p>\n';
   }
   // Unknown : descend transparently as a paragraph wrapper.
-  return '      <text:p>' + emitODTInline(el, fmt, styleNameFor, imageRefFor) + '</text:p>\n';
+  return '      <text:p>' + emitODTInline(el, fmt, styleNameFor, imageRefFor, noteIdFor) + '</text:p>\n';
 }
 
-function emitODTInline(node: Node, fmt: StyleHints, styleNameFor: (h: StyleHints) => string | null, imageRefFor: ImageRef): string {
+function emitODTInline(node: Node, fmt: StyleHints, styleNameFor: (h: StyleHints) => string | null, imageRefFor: ImageRef, noteIdFor: NoteIdFor): string {
   let out = '';
   for (const c of Array.from(node.childNodes)) {
     if (c.nodeType === 3) {
@@ -553,15 +590,27 @@ function emitODTInline(node: Node, fmt: StyleHints, styleNameFor: (h: StyleHints
     else if (tag === 'br') { out += '<text:line-break/>'; continue; }
     else if (tag === 'a') {
       const href = (el as HTMLAnchorElement).getAttribute('href') ?? '';
-      out += '<text:a xlink:href="' + escapeAttr(href) + '">' + emitODTInline(el, fmt, styleNameFor, imageRefFor) + '</text:a>';
+      out += '<text:a xlink:href="' + escapeAttr(href) + '">' + emitODTInline(el, fmt, styleNameFor, imageRefFor, noteIdFor) + '</text:a>';
       continue;
     } else if (tag === 'img') {
       const src = (el as HTMLImageElement).getAttribute('src') ?? '';
       const alt = (el as HTMLImageElement).getAttribute('alt') ?? '';
       out += imageRefFor(src, alt);
       continue;
+    } else if (tag === 'sup' && (el.getAttribute('class') ?? '').includes('footnote')) {
+      const id = el.getAttribute('data-id') || noteIdFor();
+      const cls = ((el.getAttribute('class') ?? '').split(/\s+/).find(c => c !== 'footnote') ?? 'footnote');
+      const cite = el.textContent ?? '';
+      const body = el.getAttribute('data-body') ?? '';
+      const bodyParas = body.split('\n').map(p => '<text:p>' + escapeHTML(p) + '</text:p>').join('');
+      out += '<text:note text:id="' + escapeAttr(id)
+          + '" text:note-class="' + escapeAttr(cls) + '">'
+          + '<text:note-citation>' + escapeHTML(cite) + '</text:note-citation>'
+          + '<text:note-body>' + bodyParas + '</text:note-body>'
+          + '</text:note>';
+      continue;
     }
-    out += emitODTInline(el, next, styleNameFor, imageRefFor);
+    out += emitODTInline(el, next, styleNameFor, imageRefFor, noteIdFor);
   }
   return out;
 }
