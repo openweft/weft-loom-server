@@ -48,6 +48,13 @@ const NS = {
 export interface ODTParsed {
   html: string;
   meta: { title?: string; author?: string; date?: string };
+  // Raw `<office:automatic-styles>` block from the source content.xml.
+  // The reader can't surface every Word-/LibreOffice-specific style
+  // attribute as semantic HTML, so we stash the entries verbatim and
+  // re-emit them on save — any user-customised paragraph/cell/list
+  // style the document referenced by name still resolves correctly
+  // in the saved file.
+  preservedAutoStyles?: string;
 }
 
 // parseODT : read an ODT file (Blob / ArrayBuffer / Uint8Array) and
@@ -83,7 +90,17 @@ export async function parseODT(data: ArrayBuffer | Uint8Array | Blob): Promise<O
 
   const meta = parseMeta(metaText);
   const html = parseContent(contentText, pictures);
-  return { html, meta };
+  const preservedAutoStyles = extractAutoStyles(contentText);
+  return { html, meta, preservedAutoStyles };
+}
+
+// extractAutoStyles : pull the inner XML of <office:automatic-styles>
+// from content.xml as a raw string. We can't re-serialise via
+// DOMParser without losing prefix consistency, and the spec lets us
+// pass the block through verbatim so we go with the regex.
+function extractAutoStyles(xml: string): string {
+  const m = /<office:automatic-styles[^>]*>([\s\S]*?)<\/office:automatic-styles>/.exec(xml);
+  return m ? m[1].trim() : '';
 }
 
 function mimeForExt(path: string): string {
@@ -332,9 +349,13 @@ interface CollectedImage { path: string; bytes: Uint8Array; mime: string; }
 // manifest gains a file-entry per image so Word / LibreOffice can
 // find the media. External http(s) URLs pass through unchanged (no
 // repack — the xlink:href stays absolute).
-export async function writeODT(html: string, now: string = new Date().toISOString()): Promise<Uint8Array> {
+export async function writeODT(
+  html: string,
+  now: string = new Date().toISOString(),
+  preservedAutoStyles: string = '',
+): Promise<Uint8Array> {
   const collected: CollectedImage[] = [];
-  const contentXML = htmlToContentXML(html, collected);
+  const contentXML = htmlToContentXML(html, collected, preservedAutoStyles);
 
   const zip = new JSZip();
   // The mimetype entry must be first + uncompressed.
@@ -367,7 +388,7 @@ ${extras}</manifest:manifest>
 // emitted by the WYSIWYG and produces an ODF content.xml with
 // per-document automatic-styles for the bold/italic/underline runs
 // we encounter.
-function htmlToContentXML(html: string, collected: CollectedImage[]): string {
+function htmlToContentXML(html: string, collected: CollectedImage[], preservedAutoStyles: string): string {
   let root: Element;
   try {
     const doc = new DOMParser().parseFromString(
@@ -420,11 +441,22 @@ function htmlToContentXML(html: string, collected: CollectedImage[]): string {
   for (const c of Array.from(root.childNodes)) {
     body += emitODTBlock(c, { }, styleNameFor, imageRefFor, noteIdFor);
   }
-  // Build the automatic-styles header from the used set.
-  let stylesXML = '';
+  // Build the automatic-styles header. We re-emit the preserved
+  // entries from the source content.xml first (so any user-customised
+  // paragraph/cell/list styles still resolve), then append our
+  // T_b/T_i/T_u entries. Dedup is name-scoped : a preserved entry with
+  // the same style:name as one of ours wins, since the document body
+  // likely references it.
+  const preservedNames = new Set<string>();
+  for (const m of preservedAutoStyles.matchAll(/style:name="([^"]+)"/g)) {
+    preservedNames.add(m[1]);
+  }
+  let stylesXML = preservedAutoStyles ? preservedAutoStyles + '\n' : '';
   for (const k of usedStyles) {
+    const name = 'T_' + k;
+    if (preservedNames.has(name)) continue;
     const bold = k.includes('b'), italic = k.includes('i'), underline = k.includes('u');
-    stylesXML += `    <style:style style:name="T_${k}" style:family="text">`
+    stylesXML += `    <style:style style:name="${name}" style:family="text">`
               + '<style:text-properties'
               + (bold      ? ' fo:font-weight="bold"' : '')
               + (italic    ? ' fo:font-style="italic"' : '')

@@ -21,6 +21,10 @@
   let status = $state<'loading' | 'ready' | 'saving' | 'error'>('loading');
   let errorMessage = $state('');
   let etag = '';
+  // Raw <office:automatic-styles> XML from the loaded ODT (pass-through
+  // on save so user-customised paragraph/cell/list styles still
+  // resolve in the round-tripped file).
+  let odtPreservedAutoStyles = '';
   // Debounce timer for save-on-change : ~600 ms after the last
   // keystroke we serialise + PUT. Keeps the keystroke loop tight.
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -47,6 +51,7 @@
         } else {
           const parsed = await parseODT(buf);
           html = parsed.html || '<p><br></p>';
+          odtPreservedAutoStyles = parsed.preservedAutoStyles ?? '';
         }
       } else {
         const text = await r.text();
@@ -67,7 +72,11 @@
     try {
       let body: BodyInit;
       if (format() === 'odt') {
-        const bytes = await writeODT(editorEl.innerHTML);
+        const bytes = await writeODT(
+          editorEl.innerHTML,
+          new Date().toISOString(),
+          odtPreservedAutoStyles,
+        );
         // BodyInit accepts BufferSource ; wrap to a Blob so fetch
         // sets the proper Content-Length without copying the buffer
         // through a string round-trip.

@@ -70,7 +70,14 @@ async function makeSeedODT() {
   xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"
   xmlns:xlink="http://www.w3.org/1999/xlink"
   xmlns:dc="http://purl.org/dc/elements/1.1/"
+  xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0"
+  xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0"
   office:version="1.2">
+  <office:automatic-styles>
+    <style:style style:name="P_userCustom" style:family="paragraph">
+      <style:paragraph-properties fo:margin-left="2cm" fo:color="#ff00ff"/>
+    </style:style>
+  </office:automatic-styles>
   <office:body>
     <office:text>
       <text:p text:style-name="Quotation">Hello ODT world.<text:note text:id="ftn1" text:note-class="footnote"><text:note-citation>1</text:note-citation><text:note-body><text:p>Seed footnote body.</text:p></text:note-body></text:note></text:p>
@@ -278,6 +285,17 @@ if (!after.ok) {
       } else {
         failL('paragraph style round-trip',
           'text:style-name="Quotation" missing — paragraph customisation lost on save');
+      }
+      // Automatic-styles pass-through : the seed defined a
+      // user-customised <style:style style:name="P_userCustom"> ;
+      // the writer should re-emit it verbatim so the saved file
+      // still carries the user's definition.
+      if (xml.includes('style:name="P_userCustom"')
+       && xml.includes('fo:color="#ff00ff"')) {
+        ok('automatic-styles pass-through', 'P_userCustom + #ff00ff preserved');
+      } else {
+        failL('automatic-styles pass-through',
+          'P_userCustom or its fo:color got dropped — auto-styles XML not preserved');
       }
       // Image-write-back of new-data:-URL <img> tags through the
       // contenteditable is V0.4 work — the puppeteer harness can't
