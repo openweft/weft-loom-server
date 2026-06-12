@@ -3,6 +3,29 @@
   themes: light --default, dark --prefersdark;
 }
 
+/* Seti UI icon font (MIT, github.com/jesseweed/seti-ui). The
+ * file lives under /seti/seti.woff served from the SPA's public
+ * folder. Rendering : a span with `font-family: seti` + the
+ * extension's codepoint as its text content. */
+@font-face {
+  font-family: 'seti';
+  src: url('/seti/seti.woff') format('woff'),
+       url('/seti/seti.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+.seti-icon {
+  font-family: 'seti';
+  font-style: normal;
+  font-variant: normal;
+  font-weight: normal;
+  text-decoration: none;
+  text-transform: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
 /* CodeMirror needs the editor surface to fill its container ; tailwind's
    preflight resets affect contenteditable so we restore the bare
    minimum for keystroke visibility. */
@@ -18,80 +41,41 @@
 }
 
 /* Yjs awareness — remote-user cursors + selections. y-codemirror.next
-   stamps each remote cursor with an inline `--user-color` CSS variable
-   sourced from awareness.user.color (which CollaboratorList also
-   reads). The selectors below make the cursor + the floating name pill
-   reliably visible across both light + dark themes. */
+   stamps each remote cursor with inline `background-color: ${user.color}` +
+   `border-color: ${user.color}` so the elements already pick up the
+   user's color without a CSS variable. The library default styles use
+   `.cm-ySelection*` class names (prefixed with `cm-`, NOT bare
+   `.ySelection`), so the overrides below must match that prefix to
+   take effect.
 
-/* Selection highlight under remote-user-selected text. The inline
-   background-color from y-codemirror is RGBA-25 over the user color ;
-   we just give it a tiny left border so the empty-selection caret
-   region stays visible. */
-.cm-editor .ySelection {
-  background-color: rgb(var(--y-color, 99 102 241) / 0.18) !important;
-  border-radius: 1px;
-}
+   The library ships the username pill (`.cm-ySelectionInfo`) at
+   `opacity: 0` with a `:hover` override on the caret to fade it in.
+   We force-show it so the operator sees who is typing where at a
+   glance, not only on mouse hover. */
 
-/* The vertical caret bar. */
-.cm-editor .ySelectionCaret {
-  position: relative;
-  border-left: 2px solid;
-  margin-left: -1px;
-  margin-right: -1px;
-  box-sizing: border-box;
-  display: inline;
-}
-
-/* The little dot that sits above the caret. */
-.cm-editor .ySelectionCaretDot {
-  border-radius: 50%;
-  position: absolute;
-  width: 5px;
-  height: 5px;
-  top: -3px;
-  left: -3px;
-  background-color: inherit;
-  border-color: inherit;
-  transition: transform 0.3s ease;
-}
-
-/* The floating "username" pill that appears above the caret. y-codemirror
-   renders this as an absolutely-positioned span with the user color on
-   its background — we just need to make it visible (it ships as
-   display: none in the base stylesheet). */
-.cm-editor .ySelectionInfo {
-  position: absolute;
-  top: -1.5em;
-  left: -2px;
+/* The username pill (name of the remote peer). Always visible, even
+   when the caret isn't hovered. y-codemirror sets the inline
+   background-color to the user.color we pushed via
+   awareness.setLocalStateField('user', { name, color }). */
+.cm-editor .cm-ySelectionInfo {
+  opacity: 1 !important;
+  transition-delay: 0s !important;
   font-family: ui-sans-serif, system-ui, sans-serif;
   font-size: 11px;
   font-weight: 600;
-  font-style: normal;
-  line-height: 1.4;
-  user-select: none;
   color: white;
   padding: 1px 6px;
   border-radius: 3px 3px 3px 0;
   white-space: nowrap;
-  z-index: 10;
   pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.3s ease;
+  z-index: 10;
 }
 
-/* Show the username pill on hover/active caret. */
-.cm-editor .ySelectionCaret:hover .ySelectionInfo,
-.cm-editor .ySelectionCaret.cm-ySelectionCaret-active .ySelectionInfo,
-.cm-editor .ySelectionCaret:focus-within .ySelectionInfo {
-  opacity: 1;
-}
-
-/* Always-on pill mode : tip from user feedback that they want to see
-   "who is typing where" at a glance, not on hover. Comment the next
-   block out to revert to hover-only. */
-.cm-editor .ySelectionInfo {
-  opacity: 1;
-}
+/* Selection highlight under remote-user-selected text. The library
+   uses `cm-ySelection` ; the inline background-color from
+   y-codemirror.next is the user.colorLight (defaults to color + '33'
+   = 20% alpha when colorLight isn't pushed). No override needed
+   beyond this presence comment ; the library style cascades unchanged. */
 
 /* Print export : the navbar's ⤓ PDF button stamps `.weft-printing`
    onto <body> just before calling window.print(). The rules below

@@ -8,9 +8,11 @@
   // disclosure triangles. Each file click rebinds the editor to the
   // per-file Yjs ytext key ; openinng a different file in the same
   // project doesn't reconnect the WS provider.
-  import { untrack } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
   import { listFiles, deleteFile, type File } from '../api';
+  import ContextMenu, { type ContextEntry } from './ContextMenu.svelte';
   import { languageForPath, iconForPath } from '../theme';
+  import { getStatus, type FileChange } from '../git';
   import NewFileDialog from './NewFileDialog.svelte';
   import GitPanel from './GitPanel.svelte';
 
@@ -28,8 +30,68 @@
   let newOpen = $state(false);
   let gitOpen = $state(false);
   // collapsed: paths of directories the user has explicitly collapsed.
-  // Default = expanded (rooted on initial mount).
-  let collapsed = $state<Set<string>>(new Set());
+  // Default = ALL dirs collapsed (VSCode parity — opening a project
+  // shouldn't drown the user in a fully-expanded tree). We seed the
+  // set lazily after the file list arrives so every directory the
+  // server returns starts closed ; user click expands.
+  let collapsed = $state<Set<string>>(new Set(['.weft-loom']));
+  let initialCollapseSeeded = false;
+
+  // Git status per file. The map is keyed by repo-relative path so a
+  // change like "src/main.tex" lines up with the explorer node's
+  // fullPath. Polled every 15 s ; tolerates the project not being
+  // configured for git (gitChanges stays empty, no badges render).
+  let gitChanges = $state<Map<string, string>>(new Map());
+  let gitPoll: ReturnType<typeof setInterval> | undefined;
+  async function refreshGitStatus() {
+    try {
+      const s = await getStatus(project);
+      if (!s.configured) {
+        if (gitChanges.size > 0) gitChanges = new Map();
+        return;
+      }
+      const next = new Map<string, string>();
+      for (const c of s.changes ?? []) next.set(c.path, c.status);
+      gitChanges = next;
+    } catch {
+      // Best-effort : a transient HTTP error doesn't drop the existing
+      // badges (better to show stale than to flash empty).
+    }
+  }
+  // iconTheme bump : the SettingsPanel dispatches this event on theme
+  // switch. Reading `iconBump` inside the template forces Svelte to
+  // re-evaluate every `iconForPath(...)` call after the user picks a
+  // new icon set.
+  let iconBump = $state<number>(0);
+  function onIconThemeChange() { iconBump++; }
+  onMount(() => {
+    refreshGitStatus();
+    gitPoll = setInterval(refreshGitStatus, 15_000);
+    window.addEventListener('weft-loom-icon-theme-change', onIconThemeChange);
+  });
+  onDestroy(() => {
+    if (gitPoll) clearInterval(gitPoll);
+    window.removeEventListener('weft-loom-icon-theme-change', onIconThemeChange);
+  });
+  // Reload on project switch.
+  $effect(() => {
+    project;
+    refreshGitStatus();
+  });
+
+  // Map a status string to a (badge char, tailwind text colour).
+  // Mirrors the GitSidebar legend so the two views stay readable
+  // side-by-side.
+  function gitBadge(status: string | undefined): { ch: string; cls: string } | null {
+    switch (status) {
+      case 'modified':  return { ch: 'M', cls: 'text-warning' };
+      case 'staged':    return { ch: 'A', cls: 'text-success' };
+      case 'deleted':   return { ch: 'D', cls: 'text-error' };
+      case 'renamed':   return { ch: 'R', cls: 'text-info' };
+      case 'untracked': return { ch: 'U', cls: 'text-success/70' };
+      default:          return null;
+    }
+  }
 
   let refreshSeq = 0;
   // Debug counters tracing exactly which await step locks up
@@ -53,7 +115,20 @@
       }
       const j = await resp.json();
       stepJSON++;
-      if (mySeq === refreshSeq) files = j.items ?? [];
+      if (mySeq === refreshSeq) {
+        files = j.items ?? [];
+        // First load : pre-collapse every directory so the tree
+        // opens compact (VSCode parity). Subsequent reloads honour
+        // whatever the user has expanded/collapsed by hand.
+        if (!initialCollapseSeeded) {
+          const next = new Set(collapsed);
+          for (const f of files) {
+            if (f.dir) next.add(f.path);
+          }
+          collapsed = next;
+          initialCollapseSeeded = true;
+        }
+      }
       stepCommit++;
     } catch (e) {
       if (mySeq === refreshSeq) loadError = 'fetch-err: ' + String(e);
@@ -87,6 +162,10 @@
     fullPath: string;    // path from root
     dir: boolean;
     children: Node[];    // ordered : dirs first, alphabetical inside
+    // Set on dirs that contain a `.git/` subdir : surfaces a small
+    // ⎇ badge in the explorer so the user can spot nested Git repos
+    // (submodules, vendored libs, side projects).
+    isGitRepo?: boolean;
   }
 
   function buildTree(list: File[]): Node {
@@ -127,6 +206,21 @@
       };
       parent.children.push(leaf);
     }
+
+    // Mark every directory that contains a `.git/` subdir as a Git
+    // repo. The project root counts too — most projects have a
+    // `.git` at the top. We walk byPath for O(N) detection ; far
+    // cheaper than scanning each dir on render.
+    for (const [path, node] of byPath) {
+      if (!node.dir) continue;
+      const gitPath = path === '' ? '.git' : path + '/.git';
+      if (byPath.has(gitPath)) {
+        node.isGitRepo = true;
+        // Also flag the root when a top-level .git exists.
+        if (path !== '') root.isGitRepo = root.isGitRepo;
+      }
+    }
+    if (byPath.has('.git')) root.isGitRepo = true;
 
     // Recursively order : directories first, alphabetical inside each
     // group. Mutates in place ; the input root tree is small enough
@@ -180,8 +274,8 @@
     onOpen(node.fullPath, languageForPath(node.fullPath));
   }
 
-  async function remove(node: Node, ev: Event) {
-    ev.stopPropagation();
+  async function remove(node: Node, ev?: Event) {
+    ev?.stopPropagation();
     if (node.dir) return;
     if (!confirm(`Delete ${node.fullPath} ?`)) return;
     try {
@@ -195,14 +289,71 @@
     }
   }
 
+  // Rename : ask for new path, copy content via the files API (PUT
+  // creates ; the old file gets unlinked afterwards). No dedicated
+  // server endpoint yet ; this client-side dance is enough for the
+  // single-tenant workflow.
+  async function rename(node: Node) {
+    if (node.dir) return;
+    const next = prompt('Rename to', node.fullPath);
+    if (!next || next === node.fullPath) return;
+    try {
+      // Fetch + write under new path.
+      const r = await fetch(
+        '/api/projects/' + encodeURIComponent(project) + '/files/' + encodeURIComponent(node.fullPath),
+      );
+      if (!r.ok) throw new Error('read failed : ' + r.status);
+      const content = await r.text();
+      const w = await fetch(
+        '/api/projects/' + encodeURIComponent(project) + '/files/' + encodeURIComponent(next),
+        { method: 'PUT', body: content, headers: { 'Content-Type': 'application/octet-stream' } },
+      );
+      if (!w.ok) throw new Error('write failed : ' + w.status);
+      await deleteFile(project, node.fullPath);
+      if (node.fullPath === currentFile) onOpen(next, languageForPath(next));
+      await refresh();
+    } catch (e) {
+      alert('Rename failed : ' + String(e));
+    }
+  }
+
+  // Context-menu glue : right-click on a row opens our shared
+  // ContextMenu with Open / Reveal / Rename / Delete actions. We
+  // mount a ContextMenu instance scoped to this explorer so its
+  // popover anchors near the cursor regardless of App-level state.
+  let rowCtx: { open: (x: number, y: number, items: ContextEntry[]) => void; close: () => void } | undefined = $state();
+
+  function openRowContext(ev: MouseEvent, node: Node) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const items: ContextEntry[] = [];
+    if (!node.dir) {
+      items.push({ kind: 'item', label: 'Open', action: () => open(node) });
+      items.push({ kind: 'divider' });
+    }
+    items.push({ kind: 'item', label: 'Rename…', shortcut: 'F2', disabled: node.dir, action: () => rename(node) });
+    items.push({
+      kind: 'item',
+      label: 'Delete',
+      shortcut: '⌫',
+      danger: true,
+      disabled: node.dir,
+      action: () => remove(node),
+    });
+    items.push({ kind: 'divider' });
+    items.push({ kind: 'item', label: 'Copy path', action: () => { navigator.clipboard?.writeText(node.fullPath); } });
+    items.push({ kind: 'item', label: 'Refresh', action: () => refresh() });
+    rowCtx?.open(ev.clientX, ev.clientY, items);
+  }
+
   function onCreated(path: string, language: string) {
     refresh();
     onOpen(path, language);
   }
 </script>
 
-<aside class="w-full h-full bg-base-100 border-r border-base-300 flex flex-col overflow-hidden">
-  <header class="flex items-center justify-between px-3 py-2 border-b border-base-300">
+<aside class="w-full h-full min-h-0 bg-base-100 border-r border-base-300 flex flex-col overflow-hidden">
+  <header class="flex items-center justify-between px-3 h-9 border-b border-base-300 bg-base-200">
     <span class="text-xs font-semibold uppercase opacity-60">Files</span>
     <div class="flex gap-1">
       <button
@@ -234,17 +385,17 @@
       </button>
     </div>
   </header>
-  <ul class="menu menu-sm flex-1 overflow-y-auto p-1">
-    <!-- temp debug : surface the FileExplorer's runtime state to the
-         user-visible UI so we can see why the loading state is stuck.
-         Remove once the cause is identified. -->
-    <li class="px-2 py-1 text-[10px] opacity-80 font-mono border-b border-base-200 mb-1 leading-tight">
-      proj={project || '∅'} seq={refreshSeq} ld={loading?1:0}
-      <br/>
-      pre={stepBefore} aft={stepAfter} json={stepJSON} cmt={stepCommit}
-      <br/>
-      n={files.length} {#if loadError}err={loadError}{/if}
-    </li>
+  <!-- File list scrolls VERTICALLY only.
+       Drop daisyUI's `menu` class : it sets `flex-flow: column
+       wrap` which caps the scrollHeight at the container height
+       — items beyond the fold get hidden in a "second column" with
+       no scrollbar. A plain block list with `flex-1 min-h-0
+       overflow-y-auto overflow-x-hidden` is the correct primitive
+       for a vertical-scrollable file tree. -->
+  <ul class="flex-1 min-h-0 w-full overflow-y-auto overflow-x-hidden p-1 block">
+    <!-- (former runtime-state debug row removed — its long
+         comma-separated content was forcing the explorer into a
+         horizontal scroll bar that nothing else triggered.) -->
 
     {#if loading}
       <li class="px-2 py-1">
@@ -262,38 +413,80 @@
         {@const node = row.node}
         {@const depth = row.depth}
         {@const isCollapsed = collapsed.has(node.fullPath)}
-        <li>
+        <li class="relative">
+          <!-- VSCode-style indent guides : one vertical line per
+               nested level. CSS gradient over a background image
+               keeps the cost flat (one element, no extra DOM). -->
+          {#each Array(depth) as _, lvl (lvl)}
+            <span
+              class="absolute top-0 bottom-0 border-l border-base-300/70 pointer-events-none"
+              style="left: {lvl * 12 + 10}px"
+              aria-hidden="true"
+            ></span>
+          {/each}
           <button
             type="button"
-            class="group flex items-center w-full"
+            class="group flex items-center w-full max-w-full relative min-w-0 overflow-hidden box-border py-1 text-left hover:bg-base-200 data-[active=true]:bg-base-300 rounded"
             style="padding-left: {depth * 12 + 4}px"
             onclick={() => open(node)}
+            oncontextmenu={(ev) => openRowContext(ev, node)}
             class:menu-active={!node.dir && node.fullPath === currentFile}
           >
             {#if node.dir}
-              <span class="font-mono text-xs">
-                {isCollapsed ? '▸' : '▾'} {iconForPath(node.fullPath, true)} {node.name}
+              <!-- Truncate the directory name in its own block so
+                   `text-overflow:ellipsis` actually works ; the git
+                   badge SVG sits next to it as a sibling flex item
+                   so it can't push the name past the container.
+                   The icon span carries `.seti-icon` so when the
+                   Seti UI theme is active the @font-face kicks in
+                   for the PUA codepoint ; other themes are
+                   unaffected (their emoji are outside the seti
+                   font's claimed code points). -->
+              <span class="font-mono text-xs truncate min-w-0 flex-1">
+                {isCollapsed ? '▸' : '▾'} <span class="seti-icon">{iconBump, iconForPath(node.fullPath, true)}</span> {node.name}
               </span>
+              {#if node.isGitRepo}
+                  <!-- codicon `git-branch` — small mono glyph next
+                       to a directory that contains a `.git/`. Helps
+                       spot nested repos / submodules without opening
+                       them. -->
+                <svg
+                  viewBox="0 0 16 16"
+                  width="11"
+                  height="11"
+                  fill="currentColor"
+                  aria-hidden="true"
+                  title="Git repository"
+                  class="opacity-50 shrink-0 mr-1"
+                >
+                  <path fill-rule="evenodd" clip-rule="evenodd" d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V5.5l-.005.083A3.001 3.001 0 0 1 9.5 8.5h-3c-.83 0-1.555.337-2.094.882V11.628a2.251 2.251 0 1 1-1.5 0V4.372a2.25 2.25 0 1 1 1.5 0v3.378A4.49 4.49 0 0 1 6.5 7h3a1.5 1.5 0 0 0 1.5-1.5v-.128A2.251 2.251 0 0 1 9.5 3.25zM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5zm8.25-8.75a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5z"/>
+                </svg>
+              {/if}
             {:else}
-              <span class="font-mono text-xs">{iconForPath(node.fullPath)} {node.name}</span>
-            {/if}
-            {#if !node.dir}
-              <span
-                role="button"
-                tabindex="0"
-                aria-label="Delete {node.fullPath}"
-                class="ml-auto opacity-0 group-hover:opacity-100 hover:text-error text-xs px-1 cursor-pointer"
-                onclick={(ev) => remove(node, ev)}
-                onkeydown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') remove(node, ev); }}
-              >
-                ✕
+              {@const badge = gitBadge(gitChanges.get(node.fullPath))}
+              <!-- File row name : `truncate` requires `display:block`
+                   + nowrap to ellipsis-cut long names. `min-w-0 flex-1`
+                   lets it shrink inside the flex parent. -->
+              <span class="font-mono text-xs truncate min-w-0 flex-1 {badge?.cls ?? ''}">
+                <span class="seti-icon">{iconBump, iconForPath(node.fullPath)}</span> {node.name}
               </span>
+              {#if badge}
+                <span
+                  class="ml-auto mr-1 font-mono text-[10px] font-bold {badge.cls}"
+                  title={badge.ch === 'M' ? 'Modified' : badge.ch === 'A' ? 'Staged' : badge.ch === 'D' ? 'Deleted' : badge.ch === 'R' ? 'Renamed' : badge.ch === 'U' ? 'Untracked' : ''}
+                >{badge.ch}</span>
+              {/if}
             {/if}
+            <!-- The inline ✕ delete button used to live here ; it was
+                 a misclick footgun. Delete + Rename now live in the
+                 right-click context menu (Rename / Delete) — see the
+                 `oncontextmenu` handler bound on the row button below. -->
           </button>
         </li>
       {/each}
     {/if}
   </ul>
+  <ContextMenu bind:this={rowCtx} />
 </aside>
 
 <NewFileDialog bind:open={newOpen} {project} onClose={() => (newOpen = false)} onCreated={onCreated} />

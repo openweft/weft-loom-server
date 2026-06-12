@@ -7,15 +7,17 @@
   interface Props {
     current: string;
     onSwitch: (name: string, language: string) => void;
+    // Bindable open state so the MenuBar's "Switch project…" item
+    // can pop the dropdown without owning the project listing.
+    open?: boolean;
   }
 
-  let { current, onSwitch }: Props = $props();
+  let { current, onSwitch, open = $bindable(false) }: Props = $props();
 
   let projects = $state<Project[]>([]);
   let loadError = $state<string | null>(null);
   let loading = $state(false);
   let cloneOpen = $state(false);
-  let open = $state(false);
 
   async function refresh() {
     loading = true;

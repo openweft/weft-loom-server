@@ -74,6 +74,26 @@ export function saveConfig(project: string, config: GitConfig): Promise<void> {
   return http('POST', `/api/projects/${encodeURIComponent(project)}/git/config`, config);
 }
 
+export interface LogEntry {
+  sha: string;
+  parents: string[];
+  author: string;
+  email: string;
+  subject: string;
+  unix_time: number;
+  ref_names?: string[];
+}
+
+export interface LogResponse {
+  entries: LogEntry[];
+  head_sha: string;
+  branch: string;
+}
+
+export function getLog(project: string, limit = 200): Promise<LogResponse> {
+  return http('GET', `/api/projects/${encodeURIComponent(project)}/git/log?limit=${limit}`);
+}
+
 export function pull(project: string): Promise<GitStatus> {
   return http('POST', `/api/projects/${encodeURIComponent(project)}/git/pull`);
 }

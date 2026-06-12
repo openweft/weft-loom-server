@@ -20,15 +20,19 @@
 </script>
 
 {#if files.length > 0}
+  <!-- Tab strip is FIXED at 36 px high (h-9 in tailwind = 2.25rem).
+       Each tab uses items-center for vertical alignment ; no py-*
+       so an oversized emoji icon can't push the row past 36 px.
+       This is the canonical "header height" used across the app. -->
   <div
     role="tablist"
-    class="flex items-stretch bg-base-200 border-b border-base-300 overflow-x-auto"
+    class="flex items-stretch bg-base-200 border-b border-base-300 overflow-x-auto h-9"
   >
     {#each files as f (f)}
       <div
         role="tab"
         tabindex="0"
-        class="group flex items-center gap-1 px-3 py-1 border-r border-base-300 cursor-pointer hover:bg-base-100 text-xs font-mono whitespace-nowrap"
+        class="group flex items-center gap-1 px-3 border-r border-base-300 cursor-pointer hover:bg-base-100 text-xs font-mono whitespace-nowrap"
         class:bg-base-100={f === active}
         class:border-b-2={f === active}
         class:border-b-primary={f === active}
@@ -36,7 +40,7 @@
         onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') onActivate(f); }}
         title={f}
       >
-        <span class="text-base leading-none">{iconForPath(f)}</span>
+        <span class="text-sm leading-none">{iconForPath(f)}</span>
         <span>{basename(f)}</span>
         <button
           type="button"

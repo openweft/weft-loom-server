@@ -33,8 +33,61 @@
     cpp: 'C / C++',
     python: 'Python',
     rust: 'Rust',
-    javascript: 'JS / TS',
+    javascript: 'JavaScript',
+    typescript: 'TypeScript',
+    svelte: 'Svelte',
+    html: 'HTML',
+    css: 'CSS',
+    json: 'JSON',
+    yaml: 'YAML',
+    toml: 'TOML',
+    hcl: 'HCL / Terraform',
+    ruby: 'Ruby',
+    perl: 'Perl',
+    shell: 'Shell',
+    zig: 'Zig',
   };
+
+  // Filter text — typed into a search input above the language
+  // dropdown. With ~20 langs the dropdown becomes unwieldy without
+  // a filter ; matches against both the language id (`hcl`) and the
+  // display label (`HCL / Terraform`). When the filter changes we
+  // auto-pick the first matching entry so the rest of the dialog
+  // (template list, path autosuggest) stays in sync.
+  let langFilter = $state<string>('');
+  let tplFilter = $state<string>('');
+  function matches(needle: string, hay: string): boolean {
+    if (!needle) return true;
+    return hay.toLowerCase().includes(needle.toLowerCase());
+  }
+
+  const langOptions = $derived(() => {
+    const all = LANGS.map((l) => ({ id: l, label: LANG_LABELS[l] ?? l }));
+    all.push({ id: 'blank', label: 'Other / blank' });
+    return all.filter((o) => matches(langFilter, o.id + ' ' + o.label));
+  });
+  const tplOptions = $derived(() =>
+    visibleTemplates.filter((t) => matches(tplFilter, t.name + ' ' + t.description)),
+  );
+
+  // Auto-jump the active selection to the first match whenever the
+  // filter narrows out the current pick. Keeps the template combo
+  // + path autosuggest tied to whatever the user is filtering
+  // toward.
+  $effect(() => {
+    const opts = langOptions();
+    if (!opts.length) return;
+    if (!opts.some((o) => o.id === lang)) {
+      lang = opts[0].id;
+    }
+  });
+  $effect(() => {
+    const opts = tplOptions();
+    if (!opts.length) return;
+    if (!opts.some((o) => o.id === templateId)) {
+      templateId = opts[0].id;
+    }
+  });
 
   // We treat the blank template as its own bucket so it doesn't
   // pollute the regular language lists.
@@ -126,23 +179,48 @@
         <label class="label">
           <span class="label-text text-xs uppercase opacity-60">Language</span>
         </label>
+        <!-- Filter input above the combo : type to narrow. With ~20
+             languages a free-typing filter is faster than scrolling
+             the dropdown. The combo below auto-collapses to the
+             matched entries. -->
+        <input
+          type="text"
+          bind:value={langFilter}
+          placeholder="Filter languages…"
+          class="input input-bordered input-xs mb-1 font-mono"
+        />
+        <!-- Drop the `size` attribute : with size>1 a <select>
+             becomes a listbox where `bind:value` stops re-syncing
+             on filter narrows. Plain dropdown + auto-jump effect
+             above keeps the active pick valid. -->
         <select class="select select-bordered select-sm w-full" bind:value={lang}>
-          {#each LANGS as l}
-            <option value={l}>{LANG_LABELS[l] ?? l}</option>
+          {#each langOptions() as o}
+            <option value={o.id}>{o.label}</option>
           {/each}
-          <option value="blank">Other / blank</option>
         </select>
+        {#if langOptions().length === 0}
+          <p class="text-[10px] opacity-50 italic mt-1">No language matches "{langFilter}".</p>
+        {/if}
       </div>
 
       <div class="form-control">
         <label class="label">
           <span class="label-text text-xs uppercase opacity-60">Template</span>
         </label>
+        <input
+          type="text"
+          bind:value={tplFilter}
+          placeholder="Filter templates…"
+          class="input input-bordered input-xs mb-1 font-mono"
+        />
         <select class="select select-bordered select-sm w-full" bind:value={templateId}>
-          {#each visibleTemplates as t}
+          {#each tplOptions() as t}
             <option value={t.id}>{t.name}</option>
           {/each}
         </select>
+        {#if tplOptions().length === 0}
+          <p class="text-[10px] opacity-50 italic mt-1">No template matches "{tplFilter}".</p>
+        {/if}
       </div>
     </div>
 
