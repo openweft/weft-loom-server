@@ -64,9 +64,22 @@ func TestLocalStore_TraversalRefused(t *testing.T) {
 	if err == nil {
 		t.Error("traversal should have been refused")
 	}
-	// Verify no escape happened.
-	if _, err := os.Stat(filepath.Join(root, "..", "..", "..", "etc", "passwd")); err == nil {
-		t.Error("traversal succeeded — file landed outside root")
+	// Verify no escape happened. The earlier assertion compared
+	// os.Stat against filepath.Join(root, "..", "..", "..", "etc",
+	// "passwd") which resolves to the real /etc/passwd on Linux CI
+	// (a file that always exists) — a false-positive failure. The
+	// semantic guarantee is "the store didn't write outside its
+	// own root", which we check directly : walk root looking for
+	// anything named "passwd", and check no sibling etc/ dir got
+	// created next to root.
+	_ = filepath.Walk(root, func(path string, info os.FileInfo, _ error) error {
+		if info != nil && info.Name() == "passwd" {
+			t.Errorf("traversal succeeded — passwd landed inside root : %s", path)
+		}
+		return nil
+	})
+	if _, err := os.Stat(filepath.Join(root, "..", "etc")); err == nil {
+		t.Errorf("traversal may have succeeded — sibling etc/ dir next to root")
 	}
 }
 
