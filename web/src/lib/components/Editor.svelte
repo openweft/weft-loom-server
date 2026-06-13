@@ -596,11 +596,13 @@
     // to the awareness map yet) and BOTH seeded — Yjs merged the two
     // independent inserts at offset 0 into a duplicated "hellohello"
     // buffer, or worse, silently corrupted the doc state.
+    // Seed the bib cache eagerly — independent of the WS sync
+    // handshake. The cite-autocomplete + BibliographyPanel both
+    // want a project handle the moment the editor mounts, not 2 s
+    // later. Polling kicks off the periodic .bib refresh too.
+    bib.setProject(project);
+    bib.start();
     provider!.once('sync', () => {
-      // Seed `bib` cache for this project (\cite{} autocomplete +
-      // future lint resolve). Cheap : it just kicks off polling.
-      bib.setProject(project);
-      bib.start();
       setTimeout(() => {
         void seedFromDisk();
       }, 500);

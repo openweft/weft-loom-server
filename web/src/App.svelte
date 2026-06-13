@@ -30,6 +30,7 @@
   import Editor from './lib/components/Editor.svelte';
   import WysiwygEditor from './lib/components/WysiwygEditor.svelte';
   import LatexSymbolPalette from './lib/components/LatexSymbolPalette.svelte';
+  import BibliographyPanel from './lib/components/BibliographyPanel.svelte';
   import TabBar from './lib/components/TabBar.svelte';
   import NewFileDialog from './lib/components/NewFileDialog.svelte';
   import AIChatPanel from './lib/components/AIChatPanel.svelte';
@@ -989,6 +990,7 @@
                   />
                 {/key}
                 <LatexSymbolPalette visible={language === 'latex'} />
+                <BibliographyPanel visible={language === 'latex'} />
               {/if}
             {:else}
               <div class="h-full flex items-center justify-center opacity-50 text-sm">
