@@ -63,6 +63,12 @@ export interface ODTParsed {
   // style the document referenced by name still resolves correctly
   // in the saved file.
   preservedAutoStyles?: string;
+  // T10 V0.3 : raw <text:user-field-decls> / <text:variable-decls>
+  // block from the source content.xml. Carries the actual stored
+  // values (office:string-value / office:value) that the body's
+  // <text:user-field-get> elements reference ; preserving the block
+  // verbatim avoids re-emitting empty-string defaults on save.
+  preservedFieldDecls?: string;
   // T10 V0.2 : page header / footer content carried from styles.xml's
   // <style:master-page> definition. The WYSIWYG renders them as
   // separate editable bands above + below each page in Pages mode ;
@@ -105,6 +111,7 @@ export async function parseODT(data: ArrayBuffer | Uint8Array | Blob): Promise<O
   const meta = parseMeta(metaText);
   const html = parseContent(contentText, pictures);
   const preservedAutoStyles = extractAutoStyles(contentText);
+  const preservedFieldDecls = extractFieldDecls(contentText);
   // T10 V0.2 : pull the header/footer from styles.xml if present.
   // The standard layout uses a single <style:master-page> with
   // <style:header> + <style:footer> children — we extract the
@@ -141,7 +148,7 @@ export async function parseODT(data: ArrayBuffer | Uint8Array | Blob): Promise<O
       }
     }
   }
-  return { html, meta, preservedAutoStyles, header, footer };
+  return { html, meta, preservedAutoStyles, preservedFieldDecls, header, footer };
 }
 
 // T10 : the set of <text:*> local names we treat as fields. Any
@@ -210,6 +217,19 @@ function fieldLabel(kind: string, name: string): string {
 function extractAutoStyles(xml: string): string {
   const m = /<office:automatic-styles[^>]*>([\s\S]*?)<\/office:automatic-styles>/.exec(xml);
   return m ? m[1].trim() : '';
+}
+
+// extractFieldDecls : pull the full <text:user-field-decls> +
+// <text:variable-decls> blocks from content.xml. Returns the
+// concatenated outer XML (one or both elements) ready to inject
+// inside <office:text> before the body content on save.
+function extractFieldDecls(xml: string): string {
+  let out = '';
+  const udfRe = /<text:user-field-decls\b[^>]*(?:\/>|>[\s\S]*?<\/text:user-field-decls>)/g;
+  const varRe = /<text:variable-decls\b[^>]*(?:\/>|>[\s\S]*?<\/text:variable-decls>)/g;
+  for (const m of xml.matchAll(udfRe)) out += m[0];
+  for (const m of xml.matchAll(varRe)) out += m[0];
+  return out;
 }
 
 function mimeForExt(path: string): string {
@@ -405,10 +425,10 @@ function paraStyleAttrs(styleName: string, ctx: ParseCtx): string {
   let attrs = styleName ? ' data-odt-style="' + escapeAttr(styleName) + '"' : '';
   const ph = ctx.paraStyles.get(styleName);
   const parts: string[] = [];
-  if (ph?.align)       parts.push('text-align: ' + ph.align);
-  if (ph?.lineHeight)  parts.push('line-height: ' + ph.lineHeight);
-  if (ph?.marginLeft)  parts.push('margin-left: ' + ph.marginLeft);
-  if (ph?.textIndent)  parts.push('text-indent: ' + ph.textIndent);
+  if (ph?.align)       parts.push('text-align: ' + escapeCss(ph.align));
+  if (ph?.lineHeight)  parts.push('line-height: ' + escapeCss(ph.lineHeight));
+  if (ph?.marginLeft)  parts.push('margin-left: ' + escapeCss(ph.marginLeft));
+  if (ph?.textIndent)  parts.push('text-indent: ' + escapeCss(ph.textIndent));
   if (parts.length) attrs += ' style="' + parts.join('; ') + ';"';
   return attrs;
 }
@@ -516,10 +536,10 @@ function emitInline(node: Node, styles: Map<string, StyleHints>, pictures: Recor
       // edit through it without splintering the formatting.
       if (hints?.color || hints?.highlight || hints?.fontFamily || hints?.fontSize) {
         const parts: string[] = [];
-        if (hints.color)      parts.push('color: ' + hints.color);
-        if (hints.highlight)  parts.push('background-color: ' + hints.highlight);
-        if (hints.fontFamily) parts.push('font-family: ' + hints.fontFamily);
-        if (hints.fontSize)   parts.push('font-size: ' + hints.fontSize);
+        if (hints.color)      parts.push('color: ' + escapeCss(hints.color));
+        if (hints.highlight)  parts.push('background-color: ' + escapeCss(hints.highlight));
+        if (hints.fontFamily) parts.push('font-family: ' + escapeCss(hints.fontFamily));
+        if (hints.fontSize)   parts.push('font-size: ' + escapeCss(hints.fontSize));
         inner = '<span style="' + parts.join('; ') + ';">' + inner + '</span>';
       }
       out += inner;
@@ -534,7 +554,10 @@ function emitInline(node: Node, styles: Map<string, StyleHints>, pictures: Recor
     } else if (ln === 'a') {
       // Hyperlink ; we keep the visible text + the href.
       const href = el.getAttributeNS(NS.xlink, 'href') ?? '';
-      out += '<a href="' + escapeAttr(href) + '">' + emitInline(el, styles, pictures) + '</a>';
+      const textStyle = el.getAttributeNS(NS.text, 'style-name') ?? '';
+      out += '<a href="' + escapeAttr(href) + '"'
+          + (textStyle ? ' data-text-style-name="' + escapeAttr(textStyle) + '"' : '')
+          + '>' + emitInline(el, styles, pictures) + '</a>';
     } else if (ln === 'bookmark' || ln === 'bookmark-start') {
       // V0.10 point + range bookmarks. Range bookmarks emit a marker
       // pair (-start + matching -end) ; for the contenteditable we
@@ -559,9 +582,10 @@ function emitInline(node: Node, styles: Map<string, StyleHints>, pictures: Recor
       // display format hint where the source provided one.
       const kind = ln;
       const name = el.getAttributeNS(NS.text, 'name') ?? '';
-      const fmt = el.getAttributeNS(NS.style, 'num-format')
-               || el.getAttributeNS(NS.text, 'fixed-date')
-               || '';
+      const fmt = el.getAttributeNS(NS.style, 'num-format') || '';
+      const fixedDate = el.getAttributeNS(NS.text, 'fixed-date') || '';
+      const dateValue = el.getAttributeNS(NS.text, 'date-value') || '';
+      const timeValue = el.getAttributeNS(NS.text, 'time-value') || '';
       // Visible glyph : the source's displayed value. Word/LO render
       // the current value when they write the file, so we surface
       // it as-is + let the user pick whether to re-render on save.
@@ -571,6 +595,9 @@ function emitInline(node: Node, styles: Map<string, StyleHints>, pictures: Recor
           + ' data-kind="' + escapeAttr(kind) + '"'
           + (name ? ' data-name="' + escapeAttr(name) + '"' : '')
           + (fmt ? ' data-fmt="' + escapeAttr(fmt) + '"' : '')
+          + (fixedDate ? ' data-fixed-date="' + escapeAttr(fixedDate) + '"' : '')
+          + (dateValue ? ' data-date-value="' + escapeAttr(dateValue) + '"' : '')
+          + (timeValue ? ' data-time-value="' + escapeAttr(timeValue) + '"' : '')
           + '>' + escapeHTML(label) + '</span>';
     } else if (ln === 'annotation' && el.namespaceURI === NS.office) {
       // V0.10 comments/annotations. ODF :
@@ -699,6 +726,15 @@ function escapeHTML(s: string): string {
 function escapeAttr(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
 }
+// escapeCss : strict whitelist for any attacker-controlled fragment
+// that lands inside a style="…" attribute. Rejection-on-bad-char
+// avoids the XSS path where a crafted fo:color / fo:font-family /
+// fo:font-size value escapes the attribute (e.g. `red;}</style><script>…`).
+// Whitelist covers all ODF colour/length/family/percentage literals.
+function escapeCss(v: string): string {
+  if (!v) return '';
+  return /^[A-Za-z0-9 .,#%()\-]+$/.test(v) ? v : 'inherit';
+}
 
 // ---------------------------------------------------------------
 // Writer — HTML → ODT bytes.
@@ -755,10 +791,11 @@ export async function writeODT(
   userDefined?: Record<string, string>,
   headerHtml?: string,
   footerHtml?: string,
+  preservedFieldDecls: string = '',
 ): Promise<Uint8Array> {
   const collected: CollectedImage[] = [];
   const mediaCollected: CollectedMedia[] = [];
-  const contentXML = htmlToContentXML(html, collected, mediaCollected, preservedAutoStyles);
+  const contentXML = htmlToContentXML(html, collected, mediaCollected, preservedAutoStyles, preservedFieldDecls);
   // T10 V0.2 : if the user has a non-empty header or footer, emit a
   // styles.xml with a master-page that carries them. Word + LO both
   // pick up the master-page on open even when we don't reference it
@@ -784,6 +821,44 @@ export async function writeODT(
 // run, peeling inline formatting via a quick text-only walk (rich
 // inline content in the H/F band is V0.3 work).
 function buildStylesXml(headerHtml?: string, footerHtml?: string): string {
+  // Track which inline styles the band-walk requested so we can emit
+  // one <style:style> per used name into <office:automatic-styles>.
+  const usedBandStyles = new Set<'Bold' | 'Italic' | 'BoldItalic'>();
+  function walkBandInline(node: Node, fmt: { bold?: boolean; italic?: boolean }): string {
+    let out = '';
+    for (const c of Array.from(node.childNodes)) {
+      if (c.nodeType === 3) {
+        const text = escapeHTML(c.textContent ?? '');
+        if (!text) continue;
+        const styleName = fmt.bold && fmt.italic ? 'BoldItalic'
+                        : fmt.bold ? 'Bold'
+                        : fmt.italic ? 'Italic'
+                        : '';
+        if (styleName) {
+          usedBandStyles.add(styleName as 'Bold' | 'Italic' | 'BoldItalic');
+          out += '<text:span text:style-name="' + styleName + '">' + text + '</text:span>';
+        } else {
+          out += text;
+        }
+        continue;
+      }
+      if (c.nodeType !== 1) continue;
+      const el = c as Element;
+      const tag = el.tagName.toLowerCase();
+      if (tag === 'br') { out += '<text:line-break/>'; continue; }
+      if (tag === 'a') {
+        const href = el.getAttribute('href') ?? '';
+        out += '<text:a xlink:href="' + escapeAttr(href) + '">'
+            + walkBandInline(el, fmt) + '</text:a>';
+        continue;
+      }
+      const next = { ...fmt };
+      if (tag === 'b' || tag === 'strong') next.bold = true;
+      else if (tag === 'i' || tag === 'em') next.italic = true;
+      out += walkBandInline(el, next);
+    }
+    return out;
+  }
   function htmlBandToOdf(html: string): string {
     if (!html || !html.trim()) return '';
     try {
@@ -795,11 +870,11 @@ function buildStylesXml(headerHtml?: string, footerHtml?: string): string {
       for (const c of Array.from(doc.body.children)) {
         const tag = c.tagName.toLowerCase();
         if (tag === 'p' || tag === 'div') {
-          out += '<text:p>' + escapeHTML(c.textContent ?? '') + '</text:p>';
+          out += '<text:p>' + walkBandInline(c, {}) + '</text:p>';
         }
       }
       // If the input had only text nodes (no <p>), wrap as one.
-      if (!out) out = '<text:p>' + escapeHTML(doc.body.textContent ?? '') + '</text:p>';
+      if (!out) out = '<text:p>' + walkBandInline(doc.body, {}) + '</text:p>';
       return out;
     } catch {
       return '<text:p>' + escapeHTML(html) + '</text:p>';
@@ -811,13 +886,26 @@ function buildStylesXml(headerHtml?: string, footerHtml?: string): string {
   const fBlock = footerHtml && footerHtml.trim()
     ? '\n      <style:footer>' + htmlBandToOdf(footerHtml) + '</style:footer>'
     : '';
+  let autoStylesXml = '';
+  for (const s of usedBandStyles) {
+    const bold = s === 'Bold' || s === 'BoldItalic';
+    const italic = s === 'Italic' || s === 'BoldItalic';
+    autoStylesXml += '    <style:style style:name="' + s + '" style:family="text">'
+                  + '<style:text-properties'
+                  + (bold   ? ' fo:font-weight="bold"' : '')
+                  + (italic ? ' fo:font-style="italic"' : '')
+                  + '/></style:style>\n';
+  }
   return `<?xml version="1.0" encoding="UTF-8"?>
 <office:document-styles
   xmlns:office="${NS.office}"
   xmlns:text="${NS.text}"
   xmlns:style="${NS.style}"
   xmlns:fo="${NS.fo}"
+  xmlns:xlink="${NS.xlink}"
   office:version="1.2">
+  <office:automatic-styles>
+${autoStylesXml}  </office:automatic-styles>
   <office:master-styles>
     <style:master-page style:name="Standard" style:page-layout-name="Mpm1">${hBlock}${fBlock}
     </style:master-page>
@@ -852,7 +940,7 @@ ${stylesEntry}${extras}</manifest:manifest>
 // emitted by the WYSIWYG and produces an ODF content.xml with
 // per-document automatic-styles for the bold/italic/underline runs
 // we encounter.
-function htmlToContentXML(html: string, collected: CollectedImage[], mediaCollected: CollectedMedia[], preservedAutoStyles: string): string {
+function htmlToContentXML(html: string, collected: CollectedImage[], mediaCollected: CollectedMedia[], preservedAutoStyles: string, preservedFieldDecls: string = ''): string {
   let root: Element;
   try {
     const doc = new DOMParser().parseFromString(
@@ -1005,10 +1093,10 @@ function htmlToContentXML(html: string, collected: CollectedImage[], mediaCollec
               + (h.strike      ? ' style:text-line-through-style="solid"' : '')
               + (h.subscript   ? ' style:text-position="sub 58%"' : '')
               + (h.superscript ? ' style:text-position="super 58%"' : '')
-              + (h.color       ? ' fo:color="' + escapeAttr(h.color) + '"' : '')
-              + (h.highlight   ? ' fo:background-color="' + escapeAttr(h.highlight) + '"' : '')
-              + (h.fontFamily  ? ' fo:font-family="' + escapeAttr(h.fontFamily) + '"' : '')
-              + (h.fontSize    ? ' fo:font-size="' + escapeAttr(h.fontSize) + '"' : '')
+              + (h.color       ? ' fo:color="' + escapeAttr(escapeCss(h.color)) + '"' : '')
+              + (h.highlight   ? ' fo:background-color="' + escapeAttr(escapeCss(h.highlight)) + '"' : '')
+              + (h.fontFamily  ? ' fo:font-family="' + escapeAttr(escapeCss(h.fontFamily)) + '"' : '')
+              + (h.fontSize    ? ' fo:font-size="' + escapeAttr(escapeCss(h.fontSize)) + '"' : '')
               + '/></style:style>\n';
   }
   for (const [name, { ph }] of usedParaStyles) {
@@ -1036,6 +1124,42 @@ function htmlToContentXML(html: string, collected: CollectedImage[], mediaCollec
               + '<style:paragraph-properties fo:break-before="page"/>'
               + '</style:style>\n';
   }
+  // T10 V0.3 : <text:user-field-decls> block before the body. Prefer
+  // the preserved verbatim block (carries the actual stored values)
+  // ; otherwise reconstruct one stub-declaration per unique field
+  // name referenced from the body so Word/LO can resolve the gets.
+  let fieldDeclsXML = '';
+  if (preservedFieldDecls) {
+    fieldDeclsXML = preservedFieldDecls;
+  } else {
+    const userFieldNames = new Set<string>();
+    const variableNames = new Set<string>();
+    const fieldSpanRe = /<span\b[^>]*\bclass="[^"]*\bodt-field\b[^"]*"[^>]*>/g;
+    for (const m of body.matchAll(fieldSpanRe)) {
+      const span = m[0];
+      const kindM = /\bdata-kind="([^"]+)"/.exec(span);
+      const nameM = /\bdata-name="([^"]+)"/.exec(span);
+      if (!kindM || !nameM) continue;
+      if (kindM[1] === 'user-field-get') userFieldNames.add(nameM[1]);
+      else if (kindM[1] === 'variable-get') variableNames.add(nameM[1]);
+    }
+    if (userFieldNames.size > 0) {
+      let inner = '';
+      for (const n of userFieldNames) {
+        inner += '<text:user-field-decl text:name="' + escapeAttr(n)
+              + '" office:value-type="string" office:string-value=""/>';
+      }
+      fieldDeclsXML += '<text:user-field-decls>' + inner + '</text:user-field-decls>';
+    }
+    if (variableNames.size > 0) {
+      let inner = '';
+      for (const n of variableNames) {
+        inner += '<text:variable-decl text:name="' + escapeAttr(n)
+              + '" office:value-type="string"/>';
+      }
+      fieldDeclsXML += '<text:variable-decls>' + inner + '</text:variable-decls>';
+    }
+  }
   return `<?xml version="1.0" encoding="UTF-8"?>
 <office:document-content
   xmlns:office="${NS.office}"
@@ -1052,7 +1176,7 @@ function htmlToContentXML(html: string, collected: CollectedImage[], mediaCollec
 ${stylesXML}  </office:automatic-styles>
   <office:body>
     <office:text>
-${body}
+${fieldDeclsXML ? '      ' + fieldDeclsXML + '\n' : ''}${body}
     </office:text>
   </office:body>
 </office:document-content>
@@ -1174,18 +1298,28 @@ function emitODTBlock(node: Node, fmt: StyleHints, ctx: WriteCtx): string {
     ctx.markListKind(kind);
     const listStyleName = kind === 'ol' ? 'L_ol' : 'L_ul';
     let inner = '';
+    const blockTags = new Set(['table', 'p', 'div', 'aside', 'blockquote']);
     for (const li of Array.from(el.children)) {
       if (li.tagName.toLowerCase() !== 'li') continue;
-      // V0.11 : split the <li>'s children into a text-prefix (the
-      // <li>'s direct text + inline content) + any nested <ul>/<ol>
-      // which become inner <text:list> blocks under this list-item.
-      const items: Element[] = [];
+      // V0.11 : split the <li>'s children into :
+      //   - nestedLists  (ul / ol)        → inner <text:list> blocks
+      //   - nestedBlocks (table / p / div / aside / blockquote)
+      //                                   → emit each via emitODTBlock
+      //   - inline children               → join into one <text:p>
+      // Without this split, cramming a <table> into emitODTInline
+      // dropped the structure entirely (cells flattened to text).
+      const nestedLists: Element[] = [];
+      const nestedBlocks: Element[] = [];
       const inlineFrag = document.createDocumentFragment();
       for (const child of Array.from(li.childNodes)) {
         if (child.nodeType === 1) {
           const ct = (child as Element).tagName.toLowerCase();
           if (ct === 'ul' || ct === 'ol') {
-            items.push(child as Element);
+            nestedLists.push(child as Element);
+            continue;
+          }
+          if (blockTags.has(ct)) {
+            nestedBlocks.push(child as Element);
             continue;
           }
         }
@@ -1193,9 +1327,8 @@ function emitODTBlock(node: Node, fmt: StyleHints, ctx: WriteCtx): string {
       }
       const inlineXML = emitODTInline(inlineFrag as unknown as Element, fmt, ctx);
       let nestedXML = '';
-      for (const n of items) {
-        nestedXML += emitODTBlock(n, fmt, ctx);
-      }
+      for (const n of nestedBlocks) nestedXML += emitODTBlock(n, fmt, ctx);
+      for (const n of nestedLists)  nestedXML += emitODTBlock(n, fmt, ctx);
       inner += '        <text:list-item><text:p>' + inlineXML + '</text:p>'
             + (nestedXML ? '\n' + nestedXML + '        ' : '')
             + '</text:list-item>\n';
@@ -1226,16 +1359,41 @@ function emitODTBlock(node: Node, fmt: StyleHints, ctx: WriteCtx): string {
         }
       }
     }
-    const colCount = rows.reduce((m, r) => Math.max(m, r.children.length), 1);
+    // Compute an upper bound on the column count by walking the rows
+    // and summing every cell's colspan ; a simple `children.length`
+    // misses cells whose span widens the row past N cells.
+    const colCount = rows.reduce((m, r) => {
+      let sum = 0;
+      for (const c of Array.from(r.children)) {
+        const t = c.tagName.toLowerCase();
+        if (t !== 'td' && t !== 'th') continue;
+        sum += Number((c as HTMLElement).getAttribute('colspan') ?? '1');
+      }
+      return Math.max(m, sum);
+    }, 1);
     let out = '      <table:table>\n';
     out += '        <table:table-column table:number-columns-repeated="' + colCount + '"/>\n';
-    for (const tr of rows) {
+    // Track cells covered by a rowspan from a previous row. Each
+    // entry is a Set<colIndex> of columns already occupied in the
+    // CURRENT row by a span originating above ; we advance the
+    // column cursor past them when iterating <td>/<th> children.
+    const covered: Set<number>[] = rows.map(() => new Set<number>());
+    for (let rIdx = 0; rIdx < rows.length; rIdx++) {
+      const tr = rows[rIdx];
       out += '        <table:table-row>\n';
-      for (const tdEl of Array.from(tr.children)) {
-        const t = tdEl.tagName.toLowerCase();
-        if (t !== 'td' && t !== 'th') continue;
-        const cs = Number((tdEl as HTMLElement).getAttribute('colspan') ?? '1');
-        const rs = Number((tdEl as HTMLElement).getAttribute('rowspan') ?? '1');
+      let col = 0;
+      const cells = Array.from(tr.children).filter(c => {
+        const t = c.tagName.toLowerCase();
+        return t === 'td' || t === 'th';
+      });
+      for (const tdEl of cells) {
+        // Skip over columns already covered by a rowspan from above.
+        while (covered[rIdx].has(col)) {
+          out += '          <table:covered-table-cell/>\n';
+          col++;
+        }
+        const cs = Math.max(1, Number((tdEl as HTMLElement).getAttribute('colspan') ?? '1'));
+        const rs = Math.max(1, Number((tdEl as HTMLElement).getAttribute('rowspan') ?? '1'));
         let attrs = '';
         if (cs > 1) attrs += ' table:number-columns-spanned="' + cs + '"';
         if (rs > 1) attrs += ' table:number-rows-spanned="' + rs + '"';
@@ -1247,6 +1405,27 @@ function emitODTBlock(node: Node, fmt: StyleHints, ctx: WriteCtx): string {
         out += '          <table:table-cell' + attrs + '>'
             + '<text:p>' + cellInline + '</text:p>'
             + '</table:table-cell>\n';
+        // Covered cells inside this row (colspan > 1).
+        if (cs > 1) {
+          out += '          <table:covered-table-cell table:number-columns-repeated="' + (cs - 1) + '"/>\n';
+        }
+        // Mark cells covered by rowspan in subsequent rows.
+        if (rs > 1) {
+          for (let dr = 1; dr < rs; dr++) {
+            const targetRow = rIdx + dr;
+            if (targetRow >= rows.length) break;
+            for (let dc = 0; dc < cs; dc++) {
+              covered[targetRow].add(col + dc);
+            }
+          }
+        }
+        col += cs;
+      }
+      // Trailing covered cells (rowspans from above past the last
+      // emitted real cell in this row).
+      while (covered[rIdx].has(col)) {
+        out += '          <table:covered-table-cell/>\n';
+        col++;
       }
       out += '        </table:table-row>\n';
     }
@@ -1288,6 +1467,7 @@ function emitODTBlock(node: Node, fmt: StyleHints, ctx: WriteCtx): string {
     const h = /height\s*:\s*([^;]+)/.exec(inline)?.[1]?.trim() ?? (tag === 'audio' ? '0.3in' : '3in');
     return '      <text:p>'
          + '<draw:frame' + (name ? ' draw:name="' + escapeAttr(name) + '"' : '')
+         + ' text:anchor-type="paragraph"'
          + ' svg:width="' + escapeAttr(w) + '"'
          + ' svg:height="' + escapeAttr(h) + '">'
          + '<draw:plugin xlink:href="' + escapeAttr(ref.href) + '"'
@@ -1320,6 +1500,9 @@ function emitODTInline(node: Node, fmt: StyleHints, ctx: WriteCtx): string {
       const kind = el.getAttribute('data-kind') ?? 'page-number';
       const nm = el.getAttribute('data-name') ?? '';
       const fmt = el.getAttribute('data-fmt') ?? '';
+      const fixedDate = el.getAttribute('data-fixed-date') ?? '';
+      const dateValue = el.getAttribute('data-date-value') ?? '';
+      const timeValue = el.getAttribute('data-time-value') ?? '';
       const visible = el.textContent ?? '';
       const safeKind = FIELD_LOCALS.has(kind) ? kind : 'page-number';
       const attrs: string[] = [];
@@ -1328,6 +1511,11 @@ function emitODTInline(node: Node, fmt: StyleHints, ctx: WriteCtx): string {
         attrs.push('style:num-format="' + escapeAttr(fmt) + '"');
       }
       if (safeKind === 'page-number') attrs.push('text:select-page="current"');
+      if (safeKind === 'date' || safeKind === 'time') {
+        if (fixedDate) attrs.push('text:fixed-date="' + escapeAttr(fixedDate) + '"');
+        if (safeKind === 'date' && dateValue) attrs.push('text:date-value="' + escapeAttr(dateValue) + '"');
+        if (safeKind === 'time' && timeValue) attrs.push('text:time-value="' + escapeAttr(timeValue) + '"');
+      }
       const head = '<text:' + safeKind + (attrs.length ? ' ' + attrs.join(' ') : '') + '>';
       out += head + escapeHTML(visible) + '</text:' + safeKind + '>';
       continue;
@@ -1426,7 +1614,10 @@ function emitODTInline(node: Node, fmt: StyleHints, ctx: WriteCtx): string {
     else if (tag === 'br') { out += '<text:line-break/>'; continue; }
     else if (tag === 'a') {
       const href = (el as HTMLAnchorElement).getAttribute('href') ?? '';
-      out += '<text:a xlink:href="' + escapeAttr(href) + '">' + emitODTInline(el, fmt, ctx) + '</text:a>';
+      const textStyle = el.getAttribute('data-text-style-name') ?? '';
+      out += '<text:a xlink:href="' + escapeAttr(href) + '"'
+          + (textStyle ? ' text:style-name="' + escapeAttr(textStyle) + '"' : '')
+          + '>' + emitODTInline(el, fmt, ctx) + '</text:a>';
       continue;
     } else if (tag === 'img') {
       const src = (el as HTMLImageElement).getAttribute('src') ?? '';
@@ -1445,6 +1636,7 @@ function emitODTInline(node: Node, fmt: StyleHints, ctx: WriteCtx): string {
       const h = /height\s*:\s*([^;]+)/.exec(inline)?.[1]?.trim() ?? (tag === 'audio' ? '0.3in' : '3in');
       out += '<draw:frame'
           + (name ? ' draw:name="' + escapeAttr(name) + '"' : '')
+          + ' text:anchor-type="as-char"'
           + ' svg:width="' + escapeAttr(w) + '"'
           + ' svg:height="' + escapeAttr(h) + '">'
           + '<draw:plugin xlink:href="' + escapeAttr(ref.href) + '"'
