@@ -14,6 +14,7 @@
   import { untrack } from 'svelte';
   import { TEMPLATES, findTemplate, type Template } from '../templates';
   import { writeFile } from '../api';
+  import { writeODT } from '../odt';
 
   interface Props {
     open: boolean;
@@ -46,6 +47,8 @@
     perl: 'Perl',
     shell: 'Shell',
     zig: 'Zig',
+    rtf: 'RTF (Rich Text)',
+    odt: 'ODT (OpenDocument)',
   };
 
   // Filter text — typed into a search input above the language
@@ -156,7 +159,17 @@
     creating = true;
     err = null;
     try {
-      await writeFile(project, path, tpl.content);
+      if (tpl.mode === 'odt') {
+        // Today's date interpolation for the few ${date}-bearing
+        // templates ; ${title} stays a literal placeholder so the
+        // user notices and fills it in.
+        const today = new Date().toISOString().slice(0, 10);
+        const html = tpl.content.replace(/\$\{date\}/g, today);
+        const bytes = await writeODT(html, new Date().toISOString());
+        await writeFile(project, path, bytes, 'application/vnd.oasis.opendocument.text');
+      } else {
+        await writeFile(project, path, tpl.content);
+      }
       onCreated(path, tpl.language);
       open = false;
       path = '';

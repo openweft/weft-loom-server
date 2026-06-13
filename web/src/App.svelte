@@ -723,8 +723,15 @@
     const w = window as unknown as {
       weftLoomOpenFile?: (p: string) => void;
       weftLoomTriggerCompile?: () => Promise<unknown>;
+      weftLoomTemplates?: unknown;
+      weftLoomWriteODT?: unknown;
     };
     w.weftLoomOpenFile = openFileByPath;
+    // Expose the templates catalogue + writeODT so the
+    // odt-templates regression suite can drive the same path
+    // NewFileDialog runs when the user picks "From template".
+    import('./lib/templates').then(m => { w.weftLoomTemplates = m; });
+    import('./lib/odt').then(m => { w.weftLoomWriteODT = m.writeODT; });
     // Mirror of the SPA's Run code-path : start a compile against the
     // current file using the same {language, entry} body the
     // bottom-panel sends. Lets the ui-compile-entry regression suite

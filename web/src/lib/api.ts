@@ -40,16 +40,21 @@ export async function listFiles(project: string): Promise<File[]> {
 export async function writeFile(
   project: string,
   path: string,
-  body: string,
+  body: string | Uint8Array | Blob,
+  contentType: string = 'text/plain',
 ): Promise<void> {
   const url = `/api/projects/${encodeURIComponent(project)}/files/${path
     .split('/')
     .map(encodeURIComponent)
     .join('/')}`;
+  let payload: BodyInit;
+  if (typeof body === 'string') payload = body;
+  else if (body instanceof Blob) payload = body;
+  else payload = new Blob([body as unknown as BlobPart], { type: contentType });
   const resp = await fetch(url, {
     method: 'PUT',
-    headers: { 'Content-Type': 'text/plain' },
-    body,
+    headers: { 'Content-Type': contentType },
+    body: payload,
   });
   if (!resp.ok) {
     throw new Error(`write-file ${resp.status}: ${await resp.text()}`);

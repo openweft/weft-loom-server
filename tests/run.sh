@@ -122,8 +122,17 @@ node tests/wysiwyg-odt-toolbar.mjs
 WYSIWYG_ODT_TB=$?
 
 echo
+echo "----- ODT starter templates suite -----"
+# Regression guard for the ODT template catalogue : every entry in
+# TEMPLATES whose language='odt' must round-trip through writeODT
+# + the file API + parse back as a valid ODF zip with its anchor
+# text preserved.
+node tests/odt-templates.mjs
+ODT_TPL=$?
+
+echo
 echo "==============================================="
-if [ $UI -eq 0 ] && [ $LANG -eq 0 ] && [ $PREVIEW -eq 0 ] && [ $UIENTRY -eq 0 ] && [ $THEMEP -eq 0 ] && [ $WYSIWYG -eq 0 ] && [ $WYSIWYG_ODT -eq 0 ] && [ $WYSIWYG_ODT_TB -eq 0 ]; then
+if [ $UI -eq 0 ] && [ $LANG -eq 0 ] && [ $PREVIEW -eq 0 ] && [ $UIENTRY -eq 0 ] && [ $THEMEP -eq 0 ] && [ $WYSIWYG -eq 0 ] && [ $WYSIWYG_ODT -eq 0 ] && [ $WYSIWYG_ODT_TB -eq 0 ] && [ $ODT_TPL -eq 0 ]; then
   echo "  \033[32mALL PASS\033[0m"
   exit 0
 fi
@@ -135,5 +144,6 @@ fi
 [ $WYSIWYG    -eq 0 ] && echo "  wysiwyg-rtf        : \033[32mPASS\033[0m" || echo "  wysiwyg-rtf        : \033[31mFAIL\033[0m"
 [ $WYSIWYG_ODT -eq 0 ] && echo "  wysiwyg-odt        : \033[32mPASS\033[0m" || echo "  wysiwyg-odt        : \033[31mFAIL\033[0m"
 [ $WYSIWYG_ODT_TB -eq 0 ] && echo "  wysiwyg-odt-toolbar: \033[32mPASS\033[0m" || echo "  wysiwyg-odt-toolbar: \033[31mFAIL\033[0m"
+[ $ODT_TPL -eq 0 ] && echo "  odt-templates      : \033[32mPASS\033[0m" || echo "  odt-templates      : \033[31mFAIL\033[0m"
 echo "==============================================="
 exit 1

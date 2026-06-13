@@ -21,6 +21,12 @@ export interface Template {
   suggestedExtension: string;
   description: string;
   content: string;
+  // For text formats, `content` is the literal file body. For binary
+  // formats (currently just ODT), `mode: 'odt'` means `content` is an
+  // HTML body that NewFileDialog must run through writeODT() before
+  // PUT-ing. RTF is intentionally text-mode — the WysiwygEditor reads
+  // raw RTF source.
+  mode?: 'text' | 'odt';
 }
 
 export const TEMPLATES: Template[] = [
@@ -701,6 +707,192 @@ This is a minimal RTF document. \\i Italic\\i0  + \\b bold\\b0  + \\ul underline
 \\par
 Open the Preview pane to see this rendered.
 }
+`,
+  },
+
+  // ---- ODT (OpenDocument Text) ----------------------------------
+  // Content is HTML the WysiwygEditor would render — NewFileDialog
+  // runs it through writeODT() at create time. Inline styles, named
+  // styles, paragraph alignment, font choices all round-trip via
+  // the V1.0 plumbing.
+  {
+    id: 'odt-blank',
+    name: 'ODT blank',
+    language: 'odt',
+    suggestedExtension: '.odt',
+    description: 'Empty word-processing document — opens in the WYSIWYG editor.',
+    mode: 'odt',
+    content: '<p><br></p>',
+  },
+  {
+    id: 'odt-cv',
+    name: 'ODT — Curriculum Vitae',
+    language: 'odt',
+    suggestedExtension: '.odt',
+    description: 'CV / résumé scaffold with sections, dates, bullets, contact strip.',
+    mode: 'odt',
+    content: `<h1 style="text-align: center;">Your Name</h1>
+<p style="text-align: center;"><span style="font-size: 10pt;">Email · Phone · City · linkedin.com/in/you · github.com/you</span></p>
+<h2>Profile</h2>
+<p>One- or two-sentence pitch : the role you want + the value you bring. Numbers if you have them.</p>
+<h2>Experience</h2>
+<p><b>Senior Role · Company</b> &nbsp;&nbsp; <span style="color: #666;"><i>Jan 2024 – present</i></span></p>
+<ul>
+<li>Led a team of N engineers to ship X, which drove Y by Z%.</li>
+<li>Owned migration from A to B in Q1 ; reduced infra cost by N%.</li>
+<li>Mentored M junior engineers ; two promoted within the year.</li>
+</ul>
+<p><b>Earlier Role · Previous Company</b> &nbsp;&nbsp; <span style="color: #666;"><i>Jul 2021 – Dec 2023</i></span></p>
+<ul>
+<li>Bullet point that highlights an impact, not a duty.</li>
+<li>Bullet point with a quantified outcome.</li>
+</ul>
+<h2>Education</h2>
+<p><b>M.Sc. in Field</b> · University, Year</p>
+<p><b>B.Sc. in Field</b> · University, Year</p>
+<h2>Skills</h2>
+<p>Languages: …  ·  Frameworks: …  ·  Tools: …  ·  Languages spoken: …</p>
+<h2>Selected projects</h2>
+<ul>
+<li><b>Project name</b> — one line of what + outcome. <a href="https://github.com/you/project">link</a></li>
+<li><b>Project name</b> — one line of what + outcome.</li>
+</ul>
+`,
+  },
+  {
+    id: 'odt-letter',
+    name: 'ODT — Formal letter',
+    language: 'odt',
+    suggestedExtension: '.odt',
+    description: 'Block-format business letter with addresses, date, salutation, signature.',
+    mode: 'odt',
+    content: `<p>Your Name</p>
+<p>Your Street Address</p>
+<p>Your City, Postcode</p>
+<p>your@email</p>
+<p><br></p>
+<p style="text-align: right;">\${date}</p>
+<p><br></p>
+<p><b>Recipient Name</b></p>
+<p>Recipient Title</p>
+<p>Recipient Organisation</p>
+<p>Street Address</p>
+<p>City, Postcode</p>
+<p><br></p>
+<p><b>Subject:</b> One-line subject of the letter.</p>
+<p><br></p>
+<p>Dear Mr./Ms. Surname,</p>
+<p><br></p>
+<p>Opening paragraph stating who you are + why you're writing.</p>
+<p><br></p>
+<p>Middle paragraph(s) developing the request, claim, or proposal. Be specific. If you're asking for something, say exactly what.</p>
+<p><br></p>
+<p>Closing paragraph with the next step you're proposing + a clear call to action. Mention any enclosed documents.</p>
+<p><br></p>
+<p>Yours sincerely,</p>
+<p><br></p>
+<p><br></p>
+<p>Your Name</p>
+`,
+  },
+  {
+    id: 'odt-report',
+    name: 'ODT — Report',
+    language: 'odt',
+    suggestedExtension: '.odt',
+    description: 'Technical / project report with TOC slot, sections, figures, table.',
+    mode: 'odt',
+    content: `<h1 style="text-align: center;">Report title</h1>
+<p style="text-align: center;"><i>Subtitle · Author · \${date}</i></p>
+<p><br></p>
+<h2>Executive summary</h2>
+<p>One paragraph synthesising the problem, the approach, and the headline result.</p>
+<h2>1. Context</h2>
+<p>What problem motivated the work. Reference prior art + previous attempts.</p>
+<h2>2. Approach</h2>
+<p>What you did and why. Architecture diagrams + decision rationale.</p>
+<h2>3. Results</h2>
+<p>Findings. A table to summarise the numbers :</p>
+<table><tbody>
+<tr><th>Metric</th><th>Baseline</th><th>This work</th><th>Δ</th></tr>
+<tr><td>Throughput (req/s)</td><td>—</td><td>—</td><td>—</td></tr>
+<tr><td>P99 latency (ms)</td><td>—</td><td>—</td><td>—</td></tr>
+<tr><td>Cost ($/month)</td><td>—</td><td>—</td><td>—</td></tr>
+</tbody></table>
+<h2>4. Discussion</h2>
+<p>What the results mean. Caveats. Failure modes encountered.</p>
+<h2>5. Next steps</h2>
+<ul>
+<li>Action 1 — owner, deadline.</li>
+<li>Action 2 — owner, deadline.</li>
+</ul>
+<h2>References</h2>
+<ol>
+<li>Author, “Title,” <i>Venue</i>, Year.</li>
+<li>Author, “Title,” <i>Venue</i>, Year.</li>
+</ol>
+`,
+  },
+  {
+    id: 'odt-meeting',
+    name: 'ODT — Meeting notes',
+    language: 'odt',
+    suggestedExtension: '.odt',
+    description: 'Meeting agenda + decisions + action items, in the canonical shape.',
+    mode: 'odt',
+    content: `<h1>Meeting — \${title}</h1>
+<p><b>Date:</b> \${date} &nbsp;·&nbsp; <b>Time:</b> HH:MM–HH:MM &nbsp;·&nbsp; <b>Location:</b> …</p>
+<p><b>Attendees:</b> N1, N2, N3</p>
+<p><b>Absent:</b> —</p>
+<h2>Agenda</h2>
+<ol>
+<li>Topic 1 (owner, 15 min)</li>
+<li>Topic 2 (owner, 10 min)</li>
+<li>Topic 3 (owner, 15 min)</li>
+<li>AOB + actions review (5 min)</li>
+</ol>
+<h2>Discussion</h2>
+<h3>Topic 1</h3>
+<p>Notes…</p>
+<h3>Topic 2</h3>
+<p>Notes…</p>
+<h2>Decisions</h2>
+<ul>
+<li><b>D1:</b> what was decided + rationale.</li>
+<li><b>D2:</b> what was decided + rationale.</li>
+</ul>
+<h2>Action items</h2>
+<table><tbody>
+<tr><th>#</th><th>Action</th><th>Owner</th><th>Due</th></tr>
+<tr><td>A1</td><td>…</td><td>N1</td><td>YYYY-MM-DD</td></tr>
+<tr><td>A2</td><td>…</td><td>N2</td><td>YYYY-MM-DD</td></tr>
+</tbody></table>
+<h2>Next meeting</h2>
+<p>Date · Topics carried over.</p>
+`,
+  },
+  {
+    id: 'odt-thesis-chapter',
+    name: 'ODT — Thesis chapter',
+    language: 'odt',
+    suggestedExtension: '.odt',
+    description: 'Single thesis chapter with abstract, sections, footnote pattern, references.',
+    mode: 'odt',
+    content: `<h1>Chapter N — Title</h1>
+<h2>Abstract</h2>
+<p>A short summary of the chapter’s argument + main results.</p>
+<h2>N.1 Introduction</h2>
+<p>Motivation ; what this chapter contributes to the dissertation argument.<sup class="footnote" data-id="ftn1" data-body="A footnote ; replace this body with a citation or a side note.">1</sup></p>
+<h2>N.2 Background</h2>
+<p>Relevant prior work, in chronological or thematic order.</p>
+<h2>N.3 Method</h2>
+<p>What was done, step by step ; reproducible enough that a peer could re-run it.</p>
+<h2>N.4 Results</h2>
+<p>Findings, with the appropriate amount of skepticism + statistical context.</p>
+<h2>N.5 Discussion</h2>
+<p>What the results mean for the dissertation’s claims. Acknowledge limitations.</p>
+<h2>N.6 Conclusion</h2>
+<p>What the chapter establishes ; what the next chapter builds on.</p>
 `,
   },
 
