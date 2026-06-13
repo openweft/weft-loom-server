@@ -203,8 +203,15 @@ node tests/odt-fields-outline.mjs
 ODT_FIELDS=$?
 
 echo
+echo "----- Page-mode + meta-vars suite -----"
+# Regression guard for T11 (Word-style page layout with rulers)
+# + the MetadataPanel user-defined ODT variable editor.
+node tests/page-mode-vars.mjs
+PAGE_VARS=$?
+
+echo
 echo "==============================================="
-if [ $UI -eq 0 ] && [ $LANG -eq 0 ] && [ $PREVIEW -eq 0 ] && [ $UIENTRY -eq 0 ] && [ $THEMEP -eq 0 ] && [ $WYSIWYG -eq 0 ] && [ $WYSIWYG_ODT -eq 0 ] && [ $WYSIWYG_ODT_TB -eq 0 ] && [ $ODT_TPL -eq 0 ] && [ $LATEX_PAL -eq 0 ] && [ $MARP_PIC -eq 0 ] && [ $BIB_PAN -eq 0 ] && [ $INLINE_MATH -eq 0 ] && [ $OUTLINE -eq 0 ] && [ $PDF_VIEW -eq 0 ] && [ $COMMENTS -eq 0 ] && [ $ODT_FIELDS -eq 0 ]; then
+if [ $UI -eq 0 ] && [ $LANG -eq 0 ] && [ $PREVIEW -eq 0 ] && [ $UIENTRY -eq 0 ] && [ $THEMEP -eq 0 ] && [ $WYSIWYG -eq 0 ] && [ $WYSIWYG_ODT -eq 0 ] && [ $WYSIWYG_ODT_TB -eq 0 ] && [ $ODT_TPL -eq 0 ] && [ $LATEX_PAL -eq 0 ] && [ $MARP_PIC -eq 0 ] && [ $BIB_PAN -eq 0 ] && [ $INLINE_MATH -eq 0 ] && [ $OUTLINE -eq 0 ] && [ $PDF_VIEW -eq 0 ] && [ $COMMENTS -eq 0 ] && [ $ODT_FIELDS -eq 0 ] && [ $PAGE_VARS -eq 0 ]; then
   echo "  \033[32mALL PASS\033[0m"
   exit 0
 fi
@@ -225,5 +232,6 @@ fi
 [ $PDF_VIEW -eq 0 ] && echo "  pdf-viewer-mount   : \033[32mPASS\033[0m" || echo "  pdf-viewer-mount   : \033[31mFAIL\033[0m"
 [ $COMMENTS -eq 0 ] && echo "  comments-panel     : \033[32mPASS\033[0m" || echo "  comments-panel     : \033[31mFAIL\033[0m"
 [ $ODT_FIELDS -eq 0 ] && echo "  odt-fields-outline : \033[32mPASS\033[0m" || echo "  odt-fields-outline : \033[31mFAIL\033[0m"
+[ $PAGE_VARS -eq 0 ] && echo "  page-mode-vars     : \033[32mPASS\033[0m" || echo "  page-mode-vars     : \033[31mFAIL\033[0m"
 echo "==============================================="
 exit 1

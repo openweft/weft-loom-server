@@ -155,6 +155,41 @@
     const id = setInterval(() => { nowTick = Date.now(); }, 30000);
     return () => clearInterval(id);
   });
+
+  // T11 : page-layout toggle + paper size. Pages mode constrains
+  // the editor to a fixed-width column styled like A4 / US Letter
+  // with margins + box-shadow ; continuous mode is the original
+  // edge-to-edge writing surface. Both persist in localStorage so
+  // the user's preference survives a reload.
+  const PAGE_MODE_KEY = 'weft-loom-page-mode';
+  const PAPER_SIZE_KEY = 'weft-loom-paper-size';
+  let pageMode = $state<'continuous' | 'pages'>(
+    (typeof localStorage !== 'undefined' && (localStorage.getItem(PAGE_MODE_KEY) as 'continuous' | 'pages')) || 'continuous',
+  );
+  let paperSize = $state<'a4' | 'letter'>(
+    (typeof localStorage !== 'undefined' && (localStorage.getItem(PAPER_SIZE_KEY) as 'a4' | 'letter')) || 'a4',
+  );
+  $effect(() => {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(PAGE_MODE_KEY, pageMode);
+      localStorage.setItem(PAPER_SIZE_KEY, paperSize);
+    }
+  });
+  // Paper geometry in centimetres. The rulers tick every cm + the
+  // page wrapper uses these for width/min-height. Margins are
+  // editable in V0.2 ; V0.1 ships sane defaults (2.5 cm all around
+  // matches the LibreOffice + Word default).
+  const PAPER_DIMS: Record<'a4' | 'letter', { wCm: number; hCm: number }> = {
+    a4:     { wCm: 21,    hCm: 29.7 },
+    letter: { wCm: 21.59, hCm: 27.94 },
+  };
+  const MARGIN_CM = 2.5;
+  const paperWidthCm  = $derived(PAPER_DIMS[paperSize].wCm);
+  const paperHeightCm = $derived(PAPER_DIMS[paperSize].hCm);
+  // Ruler tick labels every cm — 0, 1, 2, … wCm-1. The body area
+  // starts at MARGIN_CM cm, ends at paperWidthCm - MARGIN_CM.
+  const hTicks = $derived(Array.from({ length: Math.floor(paperWidthCm) + 1 }, (_, i) => i));
+  const vTicks = $derived(Array.from({ length: Math.floor(paperHeightCm) + 1 }, (_, i) => i));
   const savedLabel = $derived(() => {
     if (!savedAt) return '';
     const delta = Math.max(0, nowTick - savedAt);
@@ -595,6 +630,38 @@
     <button type="button" title="Undo (⌘Z)"  class="btn btn-ghost btn-xs" onclick={() => exec('undo')}>↶</button>
     <button type="button" title="Redo (⌘⇧Z)" class="btn btn-ghost btn-xs" onclick={() => exec('redo')}>↷</button>
     <span class="divider divider-horizontal mx-0"></span>
+    <!-- T11 : layout mode toggle ((Continu) vs (Pages)) + paper size
+         dropdown. Pages mode renders the editor inside a fixed-width
+         A4/US-Letter column with horizontal + vertical rulers above
+         and to the left of the writing surface. -->
+    <div class="join" title="Mode de présentation">
+      <button
+        type="button"
+        class="join-item btn btn-xs"
+        class:btn-active={pageMode === 'continuous'}
+        onclick={() => (pageMode = 'continuous')}
+        data-testid="layout-continuous"
+      >Continu</button>
+      <button
+        type="button"
+        class="join-item btn btn-xs"
+        class:btn-active={pageMode === 'pages'}
+        onclick={() => (pageMode = 'pages')}
+        data-testid="layout-pages"
+      >Pages</button>
+    </div>
+    {#if pageMode === 'pages'}
+      <select
+        class="select select-bordered select-xs"
+        bind:value={paperSize}
+        title="Format papier"
+        data-testid="layout-paper"
+      >
+        <option value="a4">A4</option>
+        <option value="letter">US Letter</option>
+      </select>
+    {/if}
+    <span class="divider divider-horizontal mx-0"></span>
     <!-- Explicit save button : visible 💾 + status badge so the user
          never has to wonder whether their changes are on disk.
          Cmd+S also routes here through the keyboard handler. -->
@@ -629,19 +696,72 @@
   </div>
 
   <!-- Editing surface -->
-  <div
-    bind:this={editorEl}
-    contenteditable="true"
-    role="textbox"
-    tabindex="0"
-    aria-label="Rich text editor"
-    aria-multiline="true"
-    spellcheck="true"
-    oninput={onInput}
-    onkeydown={onKeyDown}
-    class="flex-1 overflow-auto px-8 py-6 outline-none prose prose-sm max-w-none bg-base-100 wysiwyg-surface"
-    style="line-height: 1.6; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;"
-  ></div>
+  {#if pageMode === 'pages'}
+    <!-- T11 Pages mode : the editor sits inside a fixed-width
+         A4/US-Letter "page" with rulers across the top + down the
+         left edge. The page is centred on a grey workspace so the
+         user sees the document as it would print. -->
+    <div class="page-mode-wrap flex-1 overflow-auto bg-base-200" data-testid="page-mode-wrap">
+      <!-- Horizontal ruler : sticky to the top so it tracks the
+           page as the user scrolls. cm ticks every 1 cm with a
+           numeric label every other tick. -->
+      <div class="ruler-h" style="width: {paperWidthCm}cm">
+        {#each hTicks as cm (cm)}
+          <div
+            class="tick"
+            class:tick-major={cm % 1 === 0}
+            class:tick-margin={cm === MARGIN_CM || cm === paperWidthCm - MARGIN_CM}
+            style="left: {cm}cm"
+          ><span class="tick-label">{cm}</span></div>
+        {/each}
+        <!-- Body shading inside the margins -->
+        <div class="ruler-body" style="left: {MARGIN_CM}cm; width: {paperWidthCm - 2 * MARGIN_CM}cm"></div>
+      </div>
+      <div class="page-row" style="min-width: calc({paperWidthCm}cm + 2.5rem)">
+        <!-- Vertical ruler : cm ticks down the left side of the page. -->
+        <div class="ruler-v" style="height: {paperHeightCm}cm">
+          {#each vTicks as cm (cm)}
+            <div
+              class="tick-v"
+              class:tick-major={cm % 1 === 0}
+              class:tick-margin={cm === MARGIN_CM || cm === paperHeightCm - MARGIN_CM}
+              style="top: {cm}cm"
+            ><span class="tick-label-v">{cm}</span></div>
+          {/each}
+          <div class="ruler-body-v" style="top: {MARGIN_CM}cm; height: {paperHeightCm - 2 * MARGIN_CM}cm"></div>
+        </div>
+        <div class="page-paper" style="width: {paperWidthCm}cm; min-height: {paperHeightCm}cm">
+          <div
+            bind:this={editorEl}
+            contenteditable="true"
+            role="textbox"
+            tabindex="0"
+            aria-label="Rich text editor"
+            aria-multiline="true"
+            spellcheck="true"
+            oninput={onInput}
+            onkeydown={onKeyDown}
+            class="outline-none prose prose-sm max-w-none wysiwyg-surface"
+            style="padding: {MARGIN_CM}cm; line-height: 1.6; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; min-height: calc({paperHeightCm}cm - {2 * MARGIN_CM}cm);"
+          ></div>
+        </div>
+      </div>
+    </div>
+  {:else}
+    <div
+      bind:this={editorEl}
+      contenteditable="true"
+      role="textbox"
+      tabindex="0"
+      aria-label="Rich text editor"
+      aria-multiline="true"
+      spellcheck="true"
+      oninput={onInput}
+      onkeydown={onKeyDown}
+      class="flex-1 overflow-auto px-8 py-6 outline-none prose prose-sm max-w-none bg-base-100 wysiwyg-surface"
+      style="line-height: 1.6; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;"
+    ></div>
+  {/if}
 </div>
 
 <style>
@@ -755,6 +875,103 @@
   /* T10 : visible badge for ODT fields. The user sees [date],
      [#], [$ClientName] etc. on a pale blue chip so they know
      they're editing a dynamic value, not literal text. */
+  /* T11 Pages-mode layout. */
+  .page-mode-wrap {
+    padding: 1rem;
+    background-image:
+      linear-gradient(to right, rgba(0,0,0,0.04) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(0,0,0,0.04) 1px, transparent 1px);
+    background-size: 1cm 1cm;
+  }
+  .ruler-h {
+    position: sticky;
+    top: 0;
+    height: 1.4rem;
+    margin-left: 2.5rem; /* matches the vertical ruler width below */
+    background: white;
+    border: 1px solid rgba(0,0,0,0.1);
+    border-radius: 2px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+    position: relative;
+    z-index: 2;
+  }
+  .ruler-h .tick {
+    position: absolute;
+    top: 0;
+    width: 0;
+    border-left: 1px solid rgba(0,0,0,0.4);
+    height: 50%;
+  }
+  .ruler-h .tick.tick-major { height: 70%; border-left-color: rgba(0,0,0,0.6); }
+  .ruler-h .tick.tick-margin { border-left-color: rgba(0,100,200,0.7); height: 100%; }
+  .ruler-h .tick-label {
+    position: absolute;
+    top: 60%;
+    left: 2px;
+    font-size: 0.55rem;
+    color: rgba(0,0,0,0.6);
+    user-select: none;
+  }
+  .ruler-h .ruler-body {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: rgba(0, 130, 220, 0.06);
+    border-left: 1px solid rgba(0, 100, 200, 0.4);
+    border-right: 1px solid rgba(0, 100, 200, 0.4);
+    z-index: -1;
+  }
+  .page-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 0;
+    margin: 0.5rem 0 1rem;
+  }
+  .ruler-v {
+    position: sticky;
+    left: 0;
+    width: 2.5rem;
+    background: white;
+    border: 1px solid rgba(0,0,0,0.1);
+    border-radius: 2px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+    position: relative;
+    z-index: 1;
+  }
+  .ruler-v .tick-v {
+    position: absolute;
+    left: 0;
+    right: 0;
+    border-top: 1px solid rgba(0,0,0,0.4);
+    height: 0;
+  }
+  .ruler-v .tick-v.tick-major { border-top-color: rgba(0,0,0,0.6); }
+  .ruler-v .tick-v.tick-margin { border-top-color: rgba(0,100,200,0.7); }
+  .ruler-v .tick-label-v {
+    position: absolute;
+    top: 1px;
+    right: 2px;
+    font-size: 0.55rem;
+    color: rgba(0,0,0,0.6);
+    user-select: none;
+    writing-mode: horizontal-tb;
+  }
+  .ruler-v .ruler-body-v {
+    position: absolute;
+    left: 0;
+    right: 0;
+    background: rgba(0, 130, 220, 0.06);
+    border-top: 1px solid rgba(0, 100, 200, 0.4);
+    border-bottom: 1px solid rgba(0, 100, 200, 0.4);
+    z-index: -1;
+  }
+  .page-paper {
+    background: white;
+    color: #1a1a1a;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15), 0 0 0 1px rgba(0,0,0,0.06);
+    margin-bottom: 1rem;
+  }
+
   .wysiwyg-surface :global(span.odt-field) {
     background: rgba(0, 130, 220, 0.12);
     border: 1px solid rgba(0, 130, 220, 0.4);

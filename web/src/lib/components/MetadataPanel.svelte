@@ -33,6 +33,13 @@
   let lang = $state<'latex' | 'markdown' | 'rtf' | 'odt' | null>(null);
   let lastSig = '';
   let poll: ReturnType<typeof setInterval> | undefined;
+  // T10 V0.1.5 : user-defined ODT variables editor. The local state
+  // mirrors parsed.meta.userDefined ; mutations propagate to the
+  // WysiwygEditor via window.weftLoomODTVars.set() which triggers
+  // a save.
+  let userVars = $state<Array<{ name: string; value: string }>>([]);
+  let newVarName = $state('');
+  let newVarValue = $state('');
 
   function pickGroup(src: string, name: string): string | null {
     const m = new RegExp('\\\\' + name + '\\{([^{}]*)\\}').exec(src);
@@ -106,11 +113,15 @@
       if (nextLang === 'odt') {
         // ODT is a zip ; pull as ArrayBuffer + decode with jszip.
         const buf = await r.arrayBuffer();
-        if (buf.byteLength === 0) { entries = []; return; }
+        if (buf.byteLength === 0) { entries = []; userVars = []; return; }
         const parsed = await parseODT(buf);
         entries = fromMetaObj(parsed.meta);
+        const ud = parsed.meta.userDefined ?? {};
+        userVars = Object.entries(ud).map(([name, value]) => ({ name, value }));
         return;
       }
+      // Non-ODT files don't carry user-defined vars (RTF V0.2 work).
+      userVars = [];
       const text = await r.text();
       if (nextLang === 'latex')    entries = parseLatex(text);
       else if (nextLang === 'markdown') entries = parseMarkdown(text);
@@ -126,6 +137,44 @@
   $effect(() => { file; lastSig = ''; refresh(); });
 
   function toggleCollapsed() { onToggle?.(); }
+
+  // T10 V0.1.5 : push the locally-edited userVars to the WysiwygEditor's
+  // exposed setter. The editor's setter rebuilds odtUserDefined +
+  // triggers a save, which round-trips through writeODT into meta.xml.
+  function pushUserVars(next: Array<{ name: string; value: string }>) {
+    const obj: Record<string, string> = {};
+    for (const v of next) {
+      const n = v.name.trim();
+      if (!n) continue;
+      obj[n] = v.value;
+    }
+    const fn = (window as unknown as {
+      weftLoomODTVars?: { set: (v: Record<string, string>) => void };
+    }).weftLoomODTVars;
+    if (fn) fn.set(obj);
+    userVars = next;
+  }
+
+  function addUserVar() {
+    const name = newVarName.trim();
+    if (!name) return;
+    if (userVars.some(v => v.name === name)) {
+      alert('Une variable nommée "' + name + '" existe déjà.');
+      return;
+    }
+    pushUserVars([...userVars, { name, value: newVarValue }]);
+    newVarName = '';
+    newVarValue = '';
+  }
+
+  function updateUserVar(idx: number, patch: Partial<{ name: string; value: string }>) {
+    const next = userVars.map((v, i) => i === idx ? { ...v, ...patch } : v);
+    pushUserVars(next);
+  }
+
+  function deleteUserVar(idx: number) {
+    pushUserVars(userVars.filter((_, i) => i !== idx));
+  }
 </script>
 
 <aside class="flex flex-col bg-base-100 text-xs h-full w-full">
@@ -162,16 +211,90 @@
     <!-- accordion closed -->
   {:else if !file || !lang}
     <p class="px-3 py-2 opacity-50 italic">Open a .tex / .md / .rtf / .odt file to see metadata.</p>
-  {:else if entries.length === 0}
-    <p class="px-3 py-2 opacity-50 italic">No metadata found in the preamble.</p>
   {:else}
-    <!-- `content-start` pins grid rows to the top so they don't
-         space out vertically when the panel is resized taller. -->
-    <dl class="overflow-auto flex-1 py-1 px-2 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 content-start items-baseline">
-      {#each entries as e (e.key)}
-        <dt class="font-mono text-[10px] uppercase opacity-60">{e.label}</dt>
-        <dd class="font-mono text-xs truncate" title={e.value}>{e.value}</dd>
-      {/each}
-    </dl>
+    <div class="overflow-auto flex-1">
+      {#if entries.length > 0}
+        <dl class="py-1 px-2 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 content-start items-baseline">
+          {#each entries as e (e.key)}
+            <dt class="font-mono text-[10px] uppercase opacity-60">{e.label}</dt>
+            <dd class="font-mono text-xs truncate" title={e.value}>{e.value}</dd>
+          {/each}
+        </dl>
+      {:else}
+        <p class="px-3 py-2 opacity-50 italic">No metadata found in the preamble.</p>
+      {/if}
+
+      {#if lang === 'odt'}
+        <!-- T10 V0.1.5 : editable user-defined ODT variables. Each
+             pair maps to a <meta:user-defined> entry on save, and
+             can be referenced inline via the "{f}" Insert-field
+             toolbar button → user-field-get path. -->
+        <div class="border-t border-base-300 mt-1 pt-2 px-2">
+          <div class="text-[10px] uppercase opacity-60 mb-1 flex items-center gap-2">
+            <span>Variables</span>
+            <span class="badge badge-ghost badge-xs">{userVars.length}</span>
+            <span class="ml-auto opacity-50 normal-case text-[10px] italic">interpolées dans le doc</span>
+          </div>
+          {#each userVars as v, idx (v.name + ':' + idx)}
+            <div class="flex items-center gap-1 mb-1" data-testid="meta-var-row">
+              <input
+                type="text"
+                class="input input-bordered input-xs font-mono w-28"
+                value={v.name}
+                onchange={(e) => updateUserVar(idx, { name: (e.currentTarget).value })}
+                placeholder="nom"
+                data-testid="meta-var-name"
+              />
+              <input
+                type="text"
+                class="input input-bordered input-xs font-mono flex-1 min-w-0"
+                value={v.value}
+                onchange={(e) => updateUserVar(idx, { value: (e.currentTarget).value })}
+                placeholder="valeur"
+                data-testid="meta-var-value"
+              />
+              <button
+                type="button"
+                class="btn btn-ghost btn-xs text-error"
+                onclick={() => deleteUserVar(idx)}
+                title="Supprimer cette variable"
+                data-testid="meta-var-delete"
+              >×</button>
+            </div>
+          {/each}
+          <div class="flex items-center gap-1 pt-1 border-t border-base-300/50">
+            <input
+              type="text"
+              class="input input-bordered input-xs font-mono w-28"
+              placeholder="nom"
+              bind:value={newVarName}
+              onkeydown={(e) => { if (e.key === 'Enter') addUserVar(); }}
+              data-testid="meta-var-new-name"
+            />
+            <input
+              type="text"
+              class="input input-bordered input-xs font-mono flex-1 min-w-0"
+              placeholder="valeur"
+              bind:value={newVarValue}
+              onkeydown={(e) => { if (e.key === 'Enter') addUserVar(); }}
+              data-testid="meta-var-new-value"
+            />
+            <button
+              type="button"
+              class="btn btn-primary btn-xs"
+              onclick={addUserVar}
+              disabled={!newVarName.trim()}
+              title="Ajouter la variable"
+              data-testid="meta-var-add"
+            >+</button>
+          </div>
+          {#if userVars.length > 0}
+            <p class="opacity-50 italic text-[10px] mt-1">
+              Insère <code>{`{f}`}</code> dans la barre WYSIWYG → "v" → choisis une variable pour la référencer.
+            </p>
+          {/if}
+        </div>
+      {/if}
+    </div>
   {/if}
 </aside>
