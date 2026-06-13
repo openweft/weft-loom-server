@@ -442,62 +442,156 @@
     formulaBarValue = v;
   }
 
+  // navigateTo : move the selection / focus to (r, c) and scroll
+  // the target cell into the visible window. Used by every
+  // keyboard navigation path. Excel-style : arrow keys always
+  // navigate ; the caret-mid-text gating from before was the
+  // reason "right / left don't work" once a cell had content.
+  function navigateTo(r: number, c: number) {
+    const nr = Math.max(0, Math.min(MAX_ROWS - 1, r));
+    const nc = Math.max(0, Math.min(MAX_COLS - 1, c));
+    ensureCell(activeSheet, nr, nc);
+    selectCell(nr, nc);
+    scrollCellIntoView(nr, nc);
+    focusCell(nr, nc);
+  }
+
+  // scrollCellIntoView : adjust scrollEl.scrollTop / scrollLeft so
+  // the (r, c) cell sits inside the visible body area. Padding by
+  // one cell on each side keeps the target away from the sticky
+  // header strip + the right / bottom edges.
+  function scrollCellIntoView(r: number, c: number) {
+    if (!scrollEl) return;
+    const cellTop = r * ROW_H;
+    const cellLeft = c * COL_W;
+    const cellBottom = cellTop + ROW_H;
+    const cellRight = cellLeft + COL_W;
+    const viewTop = scrollEl.scrollTop + HEADER_H;
+    const viewLeft = scrollEl.scrollLeft + HEADER_W;
+    const viewBottom = scrollEl.scrollTop + scrollEl.clientHeight;
+    const viewRight = scrollEl.scrollLeft + scrollEl.clientWidth;
+    if (cellTop < viewTop) {
+      scrollEl.scrollTop = Math.max(0, cellTop - HEADER_H);
+    } else if (cellBottom > viewBottom) {
+      scrollEl.scrollTop = cellBottom - scrollEl.clientHeight + ROW_H;
+    }
+    if (cellLeft < viewLeft) {
+      scrollEl.scrollLeft = Math.max(0, cellLeft - HEADER_W);
+    } else if (cellRight > viewRight) {
+      scrollEl.scrollLeft = cellRight - scrollEl.clientWidth + COL_W;
+    }
+  }
+
+  // Navigation keys we always intercept ; printable keys + others
+  // flow through so contenteditable text input still works.
+  const NAV_KEYS = new Set([
+    'Tab', 'Enter', 'Escape',
+    'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+    'Home', 'End', 'PageUp', 'PageDown',
+  ]);
+
+  // onContainerKey : runs at the scroll container level so
+  // navigation keeps working even when focus drifts off the cell
+  // (e.g. after a row-changing nav, the browser sometimes parks
+  // focus on document.body before the new cell's RAF lands).
+  // When focus IS on a cell, the cell's own onkeydown already
+  // ran + stopPropagation()-ed the event ; the container handler
+  // only fires for unhandled bubbles.
+  function onContainerKey(e: KeyboardEvent) {
+    if (!NAV_KEYS.has(e.key)) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    onCellKey(selRow, selCol, e);
+  }
+
   function onCellKey(r: number, c: number, e: KeyboardEvent) {
-    if (e.key === 'Tab') {
-      e.preventDefault();
-      const next = e.shiftKey ? Math.max(0, c - 1) : c + 1;
-      ensureCell(activeSheet, r, next);
-      selectCell(r, next);
-      focusCell(r, next);
-    } else if (e.key === 'Enter') {
-      e.preventDefault();
-      const next = r + 1;
-      ensureCell(activeSheet, next, c);
-      selectCell(next, c);
-      focusCell(next, c);
-    } else if (e.key === 'ArrowDown') {
-      const next = r + 1;
-      ensureCell(activeSheet, next, c);
-      selectCell(next, c);
-      focusCell(next, c);
-      e.preventDefault();
-    } else if (e.key === 'ArrowUp' && r > 0) {
-      selectCell(r - 1, c);
-      focusCell(r - 1, c);
-      e.preventDefault();
-    } else if (e.key === 'ArrowLeft' && c > 0
-      // Don't steal arrow-left when the caret is mid-text in the cell.
-      && (window.getSelection()?.anchorOffset ?? 0) === 0) {
-      selectCell(r, c - 1);
-      focusCell(r, c - 1);
-      e.preventDefault();
-    } else if (e.key === 'ArrowRight') {
-      const len = (e.currentTarget as HTMLElement).textContent?.length ?? 0;
-      if ((window.getSelection()?.anchorOffset ?? 0) === len) {
-        selectCell(r, c + 1);
-        ensureCell(activeSheet, r, c + 1);
-        focusCell(r, c + 1);
+    // Modifier-combos (Cmd/Ctrl + key) flow through so the user
+    // can copy / paste / undo / etc. without us hijacking.
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    // If we're going to handle this nav key, stop propagation so
+    // the container's fallback handler doesn't fire on the same
+    // event.
+    if (NAV_KEYS.has(e.key)) e.stopPropagation();
+    switch (e.key) {
+      case 'Tab':
         e.preventDefault();
-      }
+        navigateTo(r, e.shiftKey ? c - 1 : c + 1);
+        return;
+      case 'Enter':
+        e.preventDefault();
+        navigateTo(r + 1, c);
+        return;
+      case 'ArrowDown':
+        e.preventDefault();
+        navigateTo(r + 1, c);
+        return;
+      case 'ArrowUp':
+        e.preventDefault();
+        navigateTo(r - 1, c);
+        return;
+      case 'ArrowLeft':
+        e.preventDefault();
+        navigateTo(r, c - 1);
+        return;
+      case 'ArrowRight':
+        e.preventDefault();
+        navigateTo(r, c + 1);
+        return;
+      case 'Home':
+        e.preventDefault();
+        navigateTo(r, 0);
+        return;
+      case 'End':
+        e.preventDefault();
+        navigateTo(r, Math.max(0, (sheets[activeSheet]?.cells[r]?.length ?? 1) - 1));
+        return;
+      case 'PageDown':
+        e.preventDefault();
+        navigateTo(r + Math.max(1, Math.floor(viewportH / ROW_H) - 1), c);
+        return;
+      case 'PageUp':
+        e.preventDefault();
+        navigateTo(r - Math.max(1, Math.floor(viewportH / ROW_H) - 1), c);
+        return;
+      case 'Escape':
+        // Blur out of the cell so the user is back in "selection
+        // mode" (Excel's Esc cancels edit + keeps selection).
+        (e.currentTarget as HTMLElement).blur();
+        return;
     }
   }
 
   function focusCell(r: number, c: number) {
-    setTimeout(() => {
+    // Keep focus inside scrollEl so the container's keydown
+    // fallback always catches navigation keys. We FIRST focus the
+    // scroll container ; then poll for the target cell + transfer
+    // focus to it when it lands.
+    if (scrollEl && document.activeElement !== scrollEl
+     && !scrollEl.contains(document.activeElement)) {
+      scrollEl.focus({ preventScroll: true });
+    }
+    let attempts = 0;
+    const tryFocus = () => {
       const el = document.querySelector(
         '[data-cell="' + r + ',' + c + '"]',
       ) as HTMLElement | null;
-      el?.focus();
-      // Move caret to end so subsequent typing extends.
-      const range = document.createRange();
       if (el) {
+        el.focus({ preventScroll: true });
+        const range = document.createRange();
         range.selectNodeContents(el);
         range.collapse(false);
         const sel = window.getSelection();
         sel?.removeAllRanges();
         sel?.addRange(range);
+        return;
       }
-    }, 0);
+      if (++attempts < 8) requestAnimationFrame(tryFocus);
+      else if (scrollEl) {
+        // Cell stayed out of DOM ; keep scrollEl focused so the
+        // container fallback can keep handling navigation keys.
+        scrollEl.focus({ preventScroll: true });
+      }
+    };
+    requestAnimationFrame(tryFocus);
   }
 
   function onFormulaInput(v: string) {
@@ -623,7 +717,12 @@
     bind:this={scrollEl}
     class="flex-1 overflow-auto ods-scroll"
     data-testid="ods-grid-wrap"
+    tabindex="0"
+    role="grid"
+    aria-rowcount={MAX_ROWS}
+    aria-colcount={MAX_COLS}
     onscroll={onGridScroll}
+    onkeydown={onContainerKey}
   >
     {#if status === 'loading'}
       <div class="opacity-60 text-xs p-3">Chargement…</div>
@@ -713,6 +812,11 @@
     color: #1a1a1a;
     font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
     font-size: 0.85rem;
+    outline: none;
+  }
+  .ods-scroll:focus-visible {
+    outline: 2px solid rgba(0, 100, 200, 0.4);
+    outline-offset: -2px;
   }
   .ods-canvas {
     position: relative;

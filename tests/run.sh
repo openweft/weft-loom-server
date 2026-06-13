@@ -296,8 +296,18 @@ node tests/ods-virtualization.mjs
 ODS_VIRT=$?
 
 echo
+echo "----- ODS keyboard navigation suite -----"
+# Excel-style arrow / Tab / Enter / Home / End / PageUp/Down keys
+# always navigate the cell selection, scroll the target into view
+# + keep focus inside the scroll container so subsequent
+# keystrokes keep working even when the target cell briefly leaves
+# the DOM during a virtualized re-render.
+node tests/ods-navigation.mjs
+ODS_NAV=$?
+
+echo
 echo "==============================================="
-if [ $UI -eq 0 ] && [ $LANG -eq 0 ] && [ $PREVIEW -eq 0 ] && [ $UIENTRY -eq 0 ] && [ $THEMEP -eq 0 ] && [ $WYSIWYG -eq 0 ] && [ $WYSIWYG_ODT -eq 0 ] && [ $WYSIWYG_ODT_TB -eq 0 ] && [ $ODT_TPL -eq 0 ] && [ $LATEX_PAL -eq 0 ] && [ $MARP_PIC -eq 0 ] && [ $BIB_PAN -eq 0 ] && [ $INLINE_MATH -eq 0 ] && [ $OUTLINE -eq 0 ] && [ $PDF_VIEW -eq 0 ] && [ $COMMENTS -eq 0 ] && [ $ODT_FIELDS -eq 0 ] && [ $PAGE_VARS -eq 0 ] && [ $ODT_FRAMES -eq 0 ] && [ $ODT_HF -eq 0 ] && [ $RTF_FIELDS -eq 0 ] && [ $LSP -eq 0 ] && [ $ODS -eq 0 ] && [ $ODS_FX -eq 0 ] && [ $ODS_COL -eq 0 ] && [ $INTERACTIONS -eq 0 ] && [ $ODS_VIRT -eq 0 ]; then
+if [ $UI -eq 0 ] && [ $LANG -eq 0 ] && [ $PREVIEW -eq 0 ] && [ $UIENTRY -eq 0 ] && [ $THEMEP -eq 0 ] && [ $WYSIWYG -eq 0 ] && [ $WYSIWYG_ODT -eq 0 ] && [ $WYSIWYG_ODT_TB -eq 0 ] && [ $ODT_TPL -eq 0 ] && [ $LATEX_PAL -eq 0 ] && [ $MARP_PIC -eq 0 ] && [ $BIB_PAN -eq 0 ] && [ $INLINE_MATH -eq 0 ] && [ $OUTLINE -eq 0 ] && [ $PDF_VIEW -eq 0 ] && [ $COMMENTS -eq 0 ] && [ $ODT_FIELDS -eq 0 ] && [ $PAGE_VARS -eq 0 ] && [ $ODT_FRAMES -eq 0 ] && [ $ODT_HF -eq 0 ] && [ $RTF_FIELDS -eq 0 ] && [ $LSP -eq 0 ] && [ $ODS -eq 0 ] && [ $ODS_FX -eq 0 ] && [ $ODS_COL -eq 0 ] && [ $INTERACTIONS -eq 0 ] && [ $ODS_VIRT -eq 0 ] && [ $ODS_NAV -eq 0 ]; then
   echo "  \033[32mALL PASS\033[0m"
   exit 0
 fi
@@ -328,5 +338,6 @@ fi
 [ $ODS_COL -eq 0 ] && echo "  ods-templates-collab : \033[32mPASS\033[0m" || echo "  ods-templates-collab : \033[31mFAIL\033[0m"
 [ $INTERACTIONS -eq 0 ] && echo "  feature-interactions : \033[32mPASS\033[0m" || echo "  feature-interactions : \033[31mFAIL\033[0m"
 [ $ODS_VIRT -eq 0 ] && echo "  ods-virtualization : \033[32mPASS\033[0m" || echo "  ods-virtualization : \033[31mFAIL\033[0m"
+[ $ODS_NAV -eq 0 ] && echo "  ods-navigation     : \033[32mPASS\033[0m" || echo "  ods-navigation     : \033[31mFAIL\033[0m"
 echo "==============================================="
 exit 1
