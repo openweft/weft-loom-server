@@ -67,9 +67,13 @@
     };
     rebuild();
     const fn = () => rebuild();
-    a.observe(fn);
+    // observeDeep so nested Y.Map mutations (toggleResolved flips
+    // 'resolved' via cmap.set()) bubble back through the array and
+    // trigger a rebuild. A plain a.observe() only fires on top-level
+    // insert/delete of the Y.Map entries, missing field-level edits.
+    a.observeDeep(fn);
     ytext.observe(fn);
-    observer = () => { a.unobserve(fn); ytext.unobserve(fn); };
+    observer = () => { a.unobserveDeep(fn); ytext.unobserve(fn); };
     return () => { if (observer) { observer(); observer = undefined; } };
   });
 

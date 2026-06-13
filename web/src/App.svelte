@@ -770,7 +770,10 @@
         if (typeof fn === 'function') fn(ranges);
       };
       rebuild();
-      arr.observe(rebuild);
+      // observeDeep so toggleResolved (cmap.set('resolved', …) inside
+      // CommentsPanel) re-fires the editor's anchor decoration rebuild.
+      // arr.observe() alone misses nested Y.Map field mutations.
+      arr.observeDeep(rebuild);
       ytext.observe(rebuild);
       commentArr = arr;
       commentYText = ytext;
@@ -873,7 +876,7 @@
       try { return await r.json(); } catch { return null; }
     };
     return () => {
-      if (commentArr && commentRebuild) commentArr.unobserve(commentRebuild);
+      if (commentArr && commentRebuild) commentArr.unobserveDeep(commentRebuild);
       if (commentYText && commentRebuild) commentYText.unobserve(commentRebuild);
     };
   });
