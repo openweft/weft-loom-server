@@ -43,6 +43,58 @@
   // HF on every render.
   let hf: HyperFormula | undefined;
   let displayCache = $state<Map<string, string>>(new Map());
+
+  // T9 virtualization : Excel-like virtually infinite grid. Only
+  // cells inside the visible viewport are rendered as DOM nodes ;
+  // the rest is virtual scrollable space. MAX_ROWS / MAX_COLS
+  // match Excel's 2016+ limits so the user effectively never hits
+  // an edge.
+  const MAX_ROWS = 1_048_576;
+  const MAX_COLS = 16_384;
+  const ROW_H = 24;   // px per row
+  const COL_W = 96;   // px per column
+  const HEADER_H = 22;
+  const HEADER_W = 48;
+  // Buffer one viewport's worth of cells off-screen so smooth scrolling
+  // doesn't reveal blank cells before the new render lands.
+  const BUFFER = 4;
+
+  let scrollEl: HTMLDivElement;
+  let viewportW = $state(800);
+  let viewportH = $state(400);
+  let scrollTop = $state(0);
+  let scrollLeft = $state(0);
+
+  function onGridScroll(e: Event) {
+    const el = e.currentTarget as HTMLDivElement;
+    scrollTop = el.scrollTop;
+    scrollLeft = el.scrollLeft;
+  }
+  // ResizeObserver tracks the scroll container's clientWidth /
+  // clientHeight so the visible-window math reacts to splitter
+  // drags + window resizes. ResizeObserver is supported in every
+  // browser loom targets ; no polyfill needed.
+  let resizeObs: ResizeObserver | undefined;
+  $effect(() => {
+    if (!scrollEl) return;
+    viewportW = scrollEl.clientWidth;
+    viewportH = scrollEl.clientHeight;
+    resizeObs?.disconnect();
+    resizeObs = new ResizeObserver(() => {
+      viewportW = scrollEl.clientWidth;
+      viewportH = scrollEl.clientHeight;
+    });
+    resizeObs.observe(scrollEl);
+    return () => resizeObs?.disconnect();
+  });
+
+  // Visible window in cell coordinates ; clamped to MAX_*.
+  const firstVisRow = $derived(Math.max(0, Math.floor(scrollTop / ROW_H) - BUFFER));
+  const lastVisRow  = $derived(Math.min(MAX_ROWS - 1, Math.ceil((scrollTop + viewportH) / ROW_H) + BUFFER));
+  const firstVisCol = $derived(Math.max(0, Math.floor(scrollLeft / COL_W) - BUFFER));
+  const lastVisCol  = $derived(Math.min(MAX_COLS - 1, Math.ceil((scrollLeft + viewportW) / COL_W) + BUFFER));
+  const visRows = $derived(Array.from({ length: lastVisRow - firstVisRow + 1 }, (_, i) => firstVisRow + i));
+  const visCols = $derived(Array.from({ length: lastVisCol - firstVisCol + 1 }, (_, i) => firstVisCol + i));
   // T9 V0.3 : Y.Doc + provider for live multi-user collab. The
   // cells live in a Y.Map keyed by "<sheetIdx>:<row>:<col>" so
   // updates are atomic per-cell ; concurrent edits to different
@@ -303,13 +355,22 @@
   function ensureCell(sheetIdx: number, r: number, c: number) {
     const sh = sheets[sheetIdx];
     while (sh.cells.length <= r) {
-      const cols = sh.cells[0]?.length ?? 10;
+      const cols = sh.cells[0]?.length ?? 1;
       const row: ODSCell[] = [];
       for (let i = 0; i < cols; i++) row.push({ display: '', value: '', type: 'string' });
       sh.cells.push(row);
     }
     const row = sh.cells[r];
     while (row.length <= c) row.push({ display: '', value: '', type: 'string' });
+  }
+
+  // getCell : safe accessor used by the virtualized render path.
+  // Returns an empty cell when the coordinate is past the current
+  // dense storage so the viewport can keep scrolling without
+  // pre-allocating millions of empty rows.
+  function getCell(sheetIdx: number, r: number, c: number): ODSCell {
+    const sh = sheets[sheetIdx];
+    return sh?.cells[r]?.[c] ?? { display: '', value: '', type: 'string' };
   }
 
   function setCell(r: number, c: number, value: string) {
@@ -554,75 +615,168 @@
     </div>
   {/if}
 
-  <!-- Grid -->
-  <div class="flex-1 overflow-auto" data-testid="ods-grid-wrap">
+  <!-- Virtualized grid : the outer div is the scroll container ;
+       the inner canvas reserves the FULL virtual size (1M rows ×
+       16K cols) so the scrollbar can roam anywhere. Visible cells
+       are absolute-positioned div s, recomputed on scroll. -->
+  <div
+    bind:this={scrollEl}
+    class="flex-1 overflow-auto ods-scroll"
+    data-testid="ods-grid-wrap"
+    onscroll={onGridScroll}
+  >
     {#if status === 'loading'}
       <div class="opacity-60 text-xs p-3">Chargement…</div>
     {:else if status === 'error'}
       <div class="text-error text-xs p-3">{errorMessage}</div>
     {:else if sheets[activeSheet]}
-      <table class="ods-grid">
-        <thead>
-          <tr>
-            <th class="ods-corner"></th>
-            {#each Array.from({ length: sheets[activeSheet].cells[0]?.length ?? 0 }, (_, c) => c) as c (c)}
-              <th class="ods-colheader">{columnLabel(c)}</th>
-            {/each}
-          </tr>
-        </thead>
-        <tbody>
-          {#each sheets[activeSheet].cells as row, r (r)}
-            <tr>
-              <th class="ods-rowheader">{r + 1}</th>
-              {#each row as cell, c (r + ',' + c)}
-                <td
-                  contenteditable="true"
-                  class="ods-cell"
-                  class:ods-cell-selected={r === selRow && c === selCol}
-                  class:ods-cell-formula={!!cell.formula}
-                  data-cell="{r},{c}"
-                  data-formula={cell.formula ? '1' : ''}
-                  title={cell.formula ? (typeof cell.value === 'string' ? cell.value : '') : undefined}
-                  onclick={() => selectCell(r, c)}
-                  oninput={(e) => onCellInput(r, c, e)}
-                  onkeydown={(e) => onCellKey(r, c, e)}
-                >{displayValue(activeSheet, r, c, cell)}</td>
-              {/each}
-            </tr>
+      <!-- Canvas : the virtual area. Total size = MAX_COLS·COL_W ×
+           MAX_ROWS·ROW_H. The HEADER_W / HEADER_H offsets keep the
+           sticky headers from overlapping the data. -->
+      <div
+        class="ods-canvas"
+        style="width:{HEADER_W + MAX_COLS * COL_W}px; height:{HEADER_H + MAX_ROWS * ROW_H}px;"
+        data-testid="ods-canvas"
+      >
+        <!-- Top-left corner stays pinned both ways. -->
+        <div
+          class="ods-corner-sticky"
+          style="width:{HEADER_W}px; height:{HEADER_H}px;
+                 transform: translate({scrollLeft}px, {scrollTop}px);"
+        ></div>
+        <!-- Column header strip : sticky to the top of the viewport. -->
+        <div
+          class="ods-colheader-row"
+          style="left:{HEADER_W}px; height:{HEADER_H}px;
+                 width:{MAX_COLS * COL_W}px;
+                 transform: translateY({scrollTop}px);"
+        >
+          {#each visCols as c (c)}
+            <div
+              class="ods-colheader"
+              class:ods-colheader-sel={c === selCol}
+              style="left:{c * COL_W}px; width:{COL_W}px; height:{HEADER_H}px;"
+            >{columnLabel(c)}</div>
           {/each}
-        </tbody>
-      </table>
+        </div>
+        <!-- Row header column : sticky to the left of the viewport. -->
+        <div
+          class="ods-rowheader-col"
+          style="top:{HEADER_H}px; width:{HEADER_W}px;
+                 height:{MAX_ROWS * ROW_H}px;
+                 transform: translateX({scrollLeft}px);"
+        >
+          {#each visRows as r (r)}
+            <div
+              class="ods-rowheader"
+              class:ods-rowheader-sel={r === selRow}
+              style="top:{r * ROW_H}px; height:{ROW_H}px; width:{HEADER_W}px;"
+            >{r + 1}</div>
+          {/each}
+        </div>
+        <!-- Data cells : only the visible window is rendered. The
+             rest of the canvas is empty space the user can scroll
+             over without ever touching a DOM node. -->
+        <div class="ods-cells" style="left:{HEADER_W}px; top:{HEADER_H}px;">
+          {#each visRows as r (r)}
+            {#each visCols as c (r + ':' + c)}
+              {@const cell = getCell(activeSheet, r, c)}
+              <div
+                contenteditable="true"
+                class="ods-cell"
+                class:ods-cell-selected={r === selRow && c === selCol}
+                class:ods-cell-formula={!!cell.formula}
+                data-cell="{r},{c}"
+                data-formula={cell.formula ? '1' : ''}
+                title={cell.formula ? (typeof cell.value === 'string' ? cell.value : '') : undefined}
+                style="left:{c * COL_W}px; top:{r * ROW_H}px;
+                       width:{COL_W}px; height:{ROW_H}px;"
+                onclick={() => selectCell(r, c)}
+                oninput={(e) => onCellInput(r, c, e)}
+                onkeydown={(e) => onCellKey(r, c, e)}
+              >{displayValue(activeSheet, r, c, cell)}</div>
+            {/each}
+          {/each}
+        </div>
+      </div>
     {/if}
   </div>
 </div>
 
 <style>
-  .ods-grid {
-    border-collapse: collapse;
-    font-size: 0.85rem;
+  /* Virtualized grid layout. Excel-like : sticky row + column
+     headers, every cell absolutely-positioned inside an enormous
+     "canvas" div whose size is the full virtual sheet. */
+  .ods-scroll {
+    position: relative;
+    background: white;
+    color: #1a1a1a;
     font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+    font-size: 0.85rem;
   }
-  .ods-grid th, .ods-grid td {
-    border: 1px solid rgba(0,0,0,0.15);
-    padding: 0 0.4em;
-    min-width: 5em;
-    height: 1.6em;
-    text-align: left;
-    vertical-align: middle;
+  .ods-canvas {
+    position: relative;
   }
-  .ods-colheader, .ods-rowheader, .ods-corner {
-    background: rgba(0,0,0,0.05);
+  .ods-corner-sticky {
+    position: absolute;
+    left: 0;
+    top: 0;
+    z-index: 4;
+    background: rgba(0,0,0,0.08);
+    border-right: 1px solid rgba(0,0,0,0.18);
+    border-bottom: 1px solid rgba(0,0,0,0.18);
+  }
+  .ods-colheader-row {
+    position: absolute;
+    top: 0;
+    z-index: 3;
+    background: rgba(0,0,0,0.04);
+    border-bottom: 1px solid rgba(0,0,0,0.18);
+  }
+  .ods-rowheader-col {
+    position: absolute;
+    left: 0;
+    z-index: 3;
+    background: rgba(0,0,0,0.04);
+    border-right: 1px solid rgba(0,0,0,0.18);
+  }
+  .ods-colheader, .ods-rowheader {
+    position: absolute;
+    box-sizing: border-box;
     text-align: center;
     font-weight: 600;
-    user-select: none;
     color: rgba(0,0,0,0.6);
-    font-size: 0.75em;
-    min-width: 2.5em;
+    font-size: 0.7em;
+    user-select: none;
+    border: 1px solid rgba(0,0,0,0.1);
+    background: rgba(0,0,0,0.03);
+    line-height: 22px;
+  }
+  .ods-rowheader { line-height: 22px; }
+  .ods-colheader-sel, .ods-rowheader-sel {
+    background: rgba(0, 100, 200, 0.18);
+    color: rgba(0, 70, 150, 1);
+  }
+  .ods-cells {
+    position: absolute;
   }
   .ods-cell {
+    position: absolute;
+    box-sizing: border-box;
+    border: 1px solid rgba(0,0,0,0.1);
+    padding: 0 0.35em;
+    line-height: 22px;
     outline: none;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    background: white;
   }
-  .ods-cell:focus { background: rgba(0, 130, 220, 0.06); }
+  .ods-cell:focus {
+    background: rgba(0, 130, 220, 0.06);
+    overflow: visible;
+    z-index: 2;
+  }
   .ods-cell-selected { box-shadow: inset 0 0 0 2px rgba(0, 100, 200, 0.5); }
   /* Formula cells get a subtle marker so the user can tell at a
      glance which cells are computed vs literal. */

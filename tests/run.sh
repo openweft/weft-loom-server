@@ -274,8 +274,30 @@ node tests/ods-templates-collab.mjs
 ODS_COL=$?
 
 echo
+echo "----- Cross-feature interactions suite -----"
+# Tests COMBINATIONS the per-feature suites can't catch.
+# Examples : type body content → toggle Continu/Pages → content
+# survives ; insert bookmark + footnote + field together → all
+# three shapes co-exist in saved XML ; LaTeX symbol palette +
+# bibliography both splice at the cursor without mutual
+# interference ; spreadsheet formula survives a sheet-tab
+# round-trip. Catches the kind of state-management bug a single-
+# feature test would miss.
+node tests/feature-interactions.mjs
+INTERACTIONS=$?
+
+echo
+echo "----- ODS virtualization suite -----"
+# Excel-like virtually-infinite grid : the canvas reports the
+# full virtual size (≥1M rows × 16k cols) but only the visible
+# window renders as DOM. Deep scrolls + edits at far-out
+# coordinates round-trip into the saved file.
+node tests/ods-virtualization.mjs
+ODS_VIRT=$?
+
+echo
 echo "==============================================="
-if [ $UI -eq 0 ] && [ $LANG -eq 0 ] && [ $PREVIEW -eq 0 ] && [ $UIENTRY -eq 0 ] && [ $THEMEP -eq 0 ] && [ $WYSIWYG -eq 0 ] && [ $WYSIWYG_ODT -eq 0 ] && [ $WYSIWYG_ODT_TB -eq 0 ] && [ $ODT_TPL -eq 0 ] && [ $LATEX_PAL -eq 0 ] && [ $MARP_PIC -eq 0 ] && [ $BIB_PAN -eq 0 ] && [ $INLINE_MATH -eq 0 ] && [ $OUTLINE -eq 0 ] && [ $PDF_VIEW -eq 0 ] && [ $COMMENTS -eq 0 ] && [ $ODT_FIELDS -eq 0 ] && [ $PAGE_VARS -eq 0 ] && [ $ODT_FRAMES -eq 0 ] && [ $ODT_HF -eq 0 ] && [ $RTF_FIELDS -eq 0 ] && [ $LSP -eq 0 ] && [ $ODS -eq 0 ] && [ $ODS_FX -eq 0 ] && [ $ODS_COL -eq 0 ]; then
+if [ $UI -eq 0 ] && [ $LANG -eq 0 ] && [ $PREVIEW -eq 0 ] && [ $UIENTRY -eq 0 ] && [ $THEMEP -eq 0 ] && [ $WYSIWYG -eq 0 ] && [ $WYSIWYG_ODT -eq 0 ] && [ $WYSIWYG_ODT_TB -eq 0 ] && [ $ODT_TPL -eq 0 ] && [ $LATEX_PAL -eq 0 ] && [ $MARP_PIC -eq 0 ] && [ $BIB_PAN -eq 0 ] && [ $INLINE_MATH -eq 0 ] && [ $OUTLINE -eq 0 ] && [ $PDF_VIEW -eq 0 ] && [ $COMMENTS -eq 0 ] && [ $ODT_FIELDS -eq 0 ] && [ $PAGE_VARS -eq 0 ] && [ $ODT_FRAMES -eq 0 ] && [ $ODT_HF -eq 0 ] && [ $RTF_FIELDS -eq 0 ] && [ $LSP -eq 0 ] && [ $ODS -eq 0 ] && [ $ODS_FX -eq 0 ] && [ $ODS_COL -eq 0 ] && [ $INTERACTIONS -eq 0 ] && [ $ODS_VIRT -eq 0 ]; then
   echo "  \033[32mALL PASS\033[0m"
   exit 0
 fi
@@ -304,5 +326,7 @@ fi
 [ $ODS -eq 0 ] && echo "  ods-roundtrip      : \033[32mPASS\033[0m" || echo "  ods-roundtrip      : \033[31mFAIL\033[0m"
 [ $ODS_FX -eq 0 ] && echo "  ods-formulas       : \033[32mPASS\033[0m" || echo "  ods-formulas       : \033[31mFAIL\033[0m"
 [ $ODS_COL -eq 0 ] && echo "  ods-templates-collab : \033[32mPASS\033[0m" || echo "  ods-templates-collab : \033[31mFAIL\033[0m"
+[ $INTERACTIONS -eq 0 ] && echo "  feature-interactions : \033[32mPASS\033[0m" || echo "  feature-interactions : \033[31mFAIL\033[0m"
+[ $ODS_VIRT -eq 0 ] && echo "  ods-virtualization : \033[32mPASS\033[0m" || echo "  ods-virtualization : \033[31mFAIL\033[0m"
 echo "==============================================="
 exit 1
