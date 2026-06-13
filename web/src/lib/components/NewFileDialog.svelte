@@ -15,6 +15,7 @@
   import { TEMPLATES, findTemplate, type Template } from '../templates';
   import { writeFile } from '../api';
   import { writeODT } from '../odt';
+  import { writeODS, type ODSCell } from '../ods';
   import { MARP_THEMES } from '../marp';
   import { MARP_LANGS, renderMarpDeck, type MarpLang } from '../marp_template';
 
@@ -51,6 +52,7 @@
     zig: 'Zig',
     rtf: 'RTF (Rich Text)',
     odt: 'ODT (OpenDocument)',
+    ods: 'ODS (Spreadsheet)',
   };
 
   // Filter text — typed into a search input above the language
@@ -166,7 +168,19 @@
     creating = true;
     err = null;
     try {
-      if (tpl.mode === 'odt') {
+      if (tpl.mode === 'ods' && tpl.odsSheets) {
+        const sheets = tpl.odsSheets().map(s => ({
+          name: s.name,
+          cells: s.cells.map(row => row.map(c => ({
+            display: c.display,
+            value: c.value,
+            type: c.type,
+            formula: c.formula,
+          })) as ODSCell[]),
+        }));
+        const bytes = await writeODS(sheets, new Date().toISOString());
+        await writeFile(project, path, bytes, 'application/vnd.oasis.opendocument.spreadsheet');
+      } else if (tpl.mode === 'odt') {
         // Today's date interpolation for the few ${date}-bearing
         // templates ; ${title} stays a literal placeholder so the
         // user notices and fills it in.

@@ -265,8 +265,17 @@ node tests/ods-formulas.mjs
 ODS_FX=$?
 
 echo
+echo "----- ODS templates + Y.Map collab suite -----"
+# Regression guard for T9 V0.3 + the ODS starter templates :
+# 4 templates (blank / budget / timesheet / roster) round-trip
+# through writeODS into valid ODF zips, and two browser sessions
+# observe each other's cell edits via the Y.Map provider.
+node tests/ods-templates-collab.mjs
+ODS_COL=$?
+
+echo
 echo "==============================================="
-if [ $UI -eq 0 ] && [ $LANG -eq 0 ] && [ $PREVIEW -eq 0 ] && [ $UIENTRY -eq 0 ] && [ $THEMEP -eq 0 ] && [ $WYSIWYG -eq 0 ] && [ $WYSIWYG_ODT -eq 0 ] && [ $WYSIWYG_ODT_TB -eq 0 ] && [ $ODT_TPL -eq 0 ] && [ $LATEX_PAL -eq 0 ] && [ $MARP_PIC -eq 0 ] && [ $BIB_PAN -eq 0 ] && [ $INLINE_MATH -eq 0 ] && [ $OUTLINE -eq 0 ] && [ $PDF_VIEW -eq 0 ] && [ $COMMENTS -eq 0 ] && [ $ODT_FIELDS -eq 0 ] && [ $PAGE_VARS -eq 0 ] && [ $ODT_FRAMES -eq 0 ] && [ $ODT_HF -eq 0 ] && [ $RTF_FIELDS -eq 0 ] && [ $LSP -eq 0 ] && [ $ODS -eq 0 ] && [ $ODS_FX -eq 0 ]; then
+if [ $UI -eq 0 ] && [ $LANG -eq 0 ] && [ $PREVIEW -eq 0 ] && [ $UIENTRY -eq 0 ] && [ $THEMEP -eq 0 ] && [ $WYSIWYG -eq 0 ] && [ $WYSIWYG_ODT -eq 0 ] && [ $WYSIWYG_ODT_TB -eq 0 ] && [ $ODT_TPL -eq 0 ] && [ $LATEX_PAL -eq 0 ] && [ $MARP_PIC -eq 0 ] && [ $BIB_PAN -eq 0 ] && [ $INLINE_MATH -eq 0 ] && [ $OUTLINE -eq 0 ] && [ $PDF_VIEW -eq 0 ] && [ $COMMENTS -eq 0 ] && [ $ODT_FIELDS -eq 0 ] && [ $PAGE_VARS -eq 0 ] && [ $ODT_FRAMES -eq 0 ] && [ $ODT_HF -eq 0 ] && [ $RTF_FIELDS -eq 0 ] && [ $LSP -eq 0 ] && [ $ODS -eq 0 ] && [ $ODS_FX -eq 0 ] && [ $ODS_COL -eq 0 ]; then
   echo "  \033[32mALL PASS\033[0m"
   exit 0
 fi
@@ -294,5 +303,6 @@ fi
 [ $LSP -eq 0 ] && echo "  lsp-bridge         : \033[32mPASS\033[0m" || echo "  lsp-bridge         : \033[31mFAIL\033[0m"
 [ $ODS -eq 0 ] && echo "  ods-roundtrip      : \033[32mPASS\033[0m" || echo "  ods-roundtrip      : \033[31mFAIL\033[0m"
 [ $ODS_FX -eq 0 ] && echo "  ods-formulas       : \033[32mPASS\033[0m" || echo "  ods-formulas       : \033[31mFAIL\033[0m"
+[ $ODS_COL -eq 0 ] && echo "  ods-templates-collab : \033[32mPASS\033[0m" || echo "  ods-templates-collab : \033[31mFAIL\033[0m"
 echo "==============================================="
 exit 1

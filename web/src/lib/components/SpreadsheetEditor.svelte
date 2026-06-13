@@ -12,6 +12,9 @@
   import { parseODS, writeODS, columnLabel, blankSheet, type ODSSheet, type ODSCell } from '../ods';
   import { writeFile } from '../api';
   import { HyperFormula } from 'hyperformula';
+  import * as Y from 'yjs';
+  import { WebsocketProvider } from 'y-websocket';
+  import { onDestroy } from 'svelte';
 
   interface Props {
     project: string;
@@ -40,6 +43,149 @@
   // HF on every render.
   let hf: HyperFormula | undefined;
   let displayCache = $state<Map<string, string>>(new Map());
+  // T9 V0.3 : Y.Doc + provider for live multi-user collab. The
+  // cells live in a Y.Map keyed by "<sheetIdx>:<row>:<col>" so
+  // updates are atomic per-cell ; concurrent edits to different
+  // cells don't collide. We use the same WS sync endpoint as the
+  // text editors (`/api/projects/<p>/sync`) — the relay doesn't
+  // care about payload semantics, just the doc id.
+  let ydoc: Y.Doc | undefined;
+  let provider: WebsocketProvider | undefined;
+  let cellsMap: Y.Map<{
+    display: string;
+    value: string | number | boolean;
+    type: string;
+    formula?: string;
+  }> | undefined;
+  // `applyingRemote` guards against the observer triggering its own
+  // local change handler when we mutate the local sheets[] in
+  // response to a remote update.
+  let applyingRemote = false;
+
+  function wsURL(p: string): string {
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return proto + '//' + window.location.host + '/api/projects/' + encodeURIComponent(p) + '/sync';
+  }
+
+  function cellKey(sheetIdx: number, r: number, c: number): string {
+    return sheetIdx + ':' + r + ':' + c;
+  }
+
+  function pushCellToYMap(sheetIdx: number, r: number, c: number) {
+    if (!ydoc || !cellsMap) return;
+    const cell = sheets[sheetIdx]?.cells[r]?.[c];
+    if (!cell) return;
+    ydoc.transact(() => {
+      cellsMap!.set(cellKey(sheetIdx, r, c), {
+        display: cell.display,
+        value: cell.value,
+        type: cell.type,
+        formula: cell.formula,
+      });
+    }, 'ods-cell');
+  }
+
+  function applyRemoteCell(key: string, value: {
+    display: string;
+    value: string | number | boolean;
+    type: string;
+    formula?: string;
+  } | undefined) {
+    const parts = key.split(':');
+    if (parts.length !== 3) return;
+    const [si, r, c] = parts.map(Number);
+    if (Number.isNaN(si) || Number.isNaN(r) || Number.isNaN(c)) return;
+    if (!sheets[si]) return;
+    ensureCell(si, r, c);
+    if (value === undefined) {
+      // Remote delete — clear the cell locally.
+      const cell = sheets[si].cells[r][c];
+      cell.display = '';
+      cell.value = '';
+      cell.type = 'string';
+      delete cell.formula;
+    } else {
+      const cell = sheets[si].cells[r][c];
+      cell.display = value.display;
+      cell.value = value.value;
+      cell.type = value.type as ODSCell['type'];
+      if (value.formula) cell.formula = value.formula;
+      else delete cell.formula;
+    }
+    sheets = sheets; // trigger reactivity
+    if (hf) {
+      try {
+        const cell = sheets[si].cells[r][c];
+        const hfValue = cellToHF(cell);
+        hf.setCellContents({ sheet: si, row: r, col: c }, [[hfValue]]);
+        recomputeDisplayCache();
+      } catch { /* ignore */ }
+    }
+  }
+
+  function attachProvider() {
+    if (!file) return;
+    if (provider) return;
+    ydoc = new Y.Doc();
+    provider = new WebsocketProvider(wsURL(project), 'ods:' + file, ydoc);
+    cellsMap = ydoc.getMap('cells');
+    // Seed the Y.Map with our locally-loaded cells the first time
+    // the provider syncs ; if another peer already populated it,
+    // their state wins via Yjs LWW-by-clock semantics.
+    provider.once('sync', () => {
+      if (!cellsMap || !ydoc) return;
+      // If the map is empty, push all local cells. Otherwise, the
+      // observer below will apply remote state when it fires.
+      if (cellsMap.size === 0) {
+        ydoc.transact(() => {
+          sheets.forEach((sh, si) => {
+            sh.cells.forEach((row, r) => {
+              row.forEach((_cell, c) => {
+                pushCellToYMap(si, r, c);
+              });
+            });
+          });
+        }, 'ods-seed');
+      } else {
+        // Pull every entry into local state.
+        applyingRemote = true;
+        try {
+          for (const [k, v] of cellsMap.entries()) applyRemoteCell(k, v);
+        } finally {
+          applyingRemote = false;
+        }
+      }
+    });
+    cellsMap.observe((ev) => {
+      // Apply only what changed, and only when the origin isn't
+      // our own transaction (transact tags via ydoc.transact 2nd arg).
+      if (ev.transaction.origin === 'ods-cell' || ev.transaction.origin === 'ods-seed') return;
+      applyingRemote = true;
+      try {
+        for (const [key, change] of ev.keys) {
+          if (change.action === 'delete') {
+            applyRemoteCell(key, undefined);
+          } else {
+            applyRemoteCell(key, cellsMap!.get(key));
+          }
+        }
+      } finally {
+        applyingRemote = false;
+      }
+    });
+  }
+
+  function detachProvider() {
+    if (provider) { try { provider.destroy(); } catch { /* ignore */ } provider = undefined; }
+    if (ydoc) { try { ydoc.destroy(); } catch { /* ignore */ } ydoc = undefined; }
+    cellsMap = undefined;
+  }
+
+  onDestroy(() => {
+    if (saveTimer) clearTimeout(saveTimer);
+    detachProvider();
+    if (hf) { try { hf.destroy(); } catch { /* ignore */ } hf = undefined; }
+  });
 
   async function load() {
     status = 'loading';
@@ -64,6 +210,9 @@
       // the typed value as the cell content. HF stores formulas
       // natively + computes the cascade of dependents.
       rebuildHF();
+      // T9 V0.3 : attach Yjs provider AFTER the local sheets are
+      // populated so seed-push has something to push.
+      attachProvider();
       status = 'ready';
       dirty = false;
     } catch (e) {
@@ -206,6 +355,11 @@
       } catch { /* ignore */ }
     }
     sheets = sheets; // trigger reactivity
+    // T9 V0.3 : push the cell to the Y.Map for collab peers. Skip
+    // when we're applying a remote update (the observer already
+    // mutated the local cell ; pushing back would echo the value
+    // to every peer and create an update storm).
+    if (!applyingRemote) pushCellToYMap(activeSheet, r, c);
     markDirty();
   }
 

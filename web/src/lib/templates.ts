@@ -22,11 +22,13 @@ export interface Template {
   description: string;
   content: string;
   // For text formats, `content` is the literal file body. For binary
-  // formats (currently just ODT), `mode: 'odt'` means `content` is an
-  // HTML body that NewFileDialog must run through writeODT() before
-  // PUT-ing. RTF is intentionally text-mode — the WysiwygEditor reads
-  // raw RTF source.
-  mode?: 'text' | 'odt';
+  // formats (ODT, ODS), `mode` tells NewFileDialog which writer to
+  // run before PUT-ing. RTF is intentionally text-mode — the
+  // WysiwygEditor reads raw RTF source.
+  mode?: 'text' | 'odt' | 'ods';
+  // ODS templates seed the writer via a static sheets array
+  // (defined alongside the template) rather than an HTML body.
+  odsSheets?: () => { name: string; cells: { display: string; value: string | number | boolean; type: string; formula?: string }[][] }[];
 }
 
 export const TEMPLATES: Template[] = [
@@ -894,6 +896,114 @@ Open the Preview pane to see this rendered.
 <h2>N.6 Conclusion</h2>
 <p>What the chapter establishes ; what the next chapter builds on.</p>
 `,
+  },
+
+  // ---- ODS (OpenDocument Spreadsheet) ----------------------------
+  {
+    id: 'ods-blank',
+    name: 'ODS blank',
+    language: 'ods',
+    suggestedExtension: '.ods',
+    description: 'Empty spreadsheet — opens in the grid editor.',
+    mode: 'ods',
+    content: '',
+    odsSheets: () => [{
+      name: 'Sheet1',
+      cells: Array.from({ length: 20 }, () =>
+        Array.from({ length: 10 }, () => ({
+          display: '', value: '', type: 'string',
+        })),
+      ),
+    }],
+  },
+  {
+    id: 'ods-budget',
+    name: 'ODS — Budget tracker',
+    language: 'ods',
+    suggestedExtension: '.ods',
+    description: 'Monthly income / expense / balance with running totals + a quarterly summary.',
+    mode: 'ods',
+    content: '',
+    odsSheets: () => {
+      const header = ['Month', 'Income', 'Expense', 'Balance'];
+      const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      const cells: { display: string; value: string | number | boolean; type: string; formula?: string }[][] = [
+        header.map(h => ({ display: h, value: h, type: 'string' })),
+      ];
+      for (let i = 0; i < months.length; i++) {
+        const r = i + 2; // row 1 in spreadsheet terms (after header on row 1, this is row 2)
+        cells.push([
+          { display: months[i], value: months[i], type: 'string' },
+          { display: '0', value: 0, type: 'float' },
+          { display: '0', value: 0, type: 'float' },
+          { display: '', value: '=B' + r + '-C' + r, type: 'float', formula: 'of:=B' + r + '-C' + r },
+        ]);
+      }
+      cells.push([
+        { display: 'Total', value: 'Total', type: 'string' },
+        { display: '', value: '=SUM(B2:B13)', type: 'float', formula: 'of:=SUM(B2:B13)' },
+        { display: '', value: '=SUM(C2:C13)', type: 'float', formula: 'of:=SUM(C2:C13)' },
+        { display: '', value: '=SUM(D2:D13)', type: 'float', formula: 'of:=SUM(D2:D13)' },
+      ]);
+      return [{ name: 'Budget', cells }];
+    },
+  },
+  {
+    id: 'ods-timesheet',
+    name: 'ODS — Time sheet',
+    language: 'ods',
+    suggestedExtension: '.ods',
+    description: 'Weekly time-tracking with totals + billable hours.',
+    mode: 'ods',
+    content: '',
+    odsSheets: () => {
+      const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+      const cells: { display: string; value: string | number | boolean; type: string; formula?: string }[][] = [
+        [
+          { display: 'Day',       value: 'Day',       type: 'string' },
+          { display: 'Project',   value: 'Project',   type: 'string' },
+          { display: 'Hours',     value: 'Hours',     type: 'float'  },
+          { display: 'Billable',  value: 'Billable',  type: 'boolean' },
+        ],
+      ];
+      for (let i = 0; i < days.length; i++) {
+        cells.push([
+          { display: days[i], value: days[i], type: 'string' },
+          { display: '', value: '', type: 'string' },
+          { display: '0', value: 0, type: 'float' },
+          { display: 'true', value: true, type: 'boolean' },
+        ]);
+      }
+      cells.push([
+        { display: 'Total', value: 'Total', type: 'string' },
+        { display: '', value: '', type: 'string' },
+        { display: '', value: '=SUM(C2:C8)', type: 'float', formula: 'of:=SUM(C2:C8)' },
+        { display: '', value: '', type: 'string' },
+      ]);
+      return [{ name: 'Hours', cells }];
+    },
+  },
+  {
+    id: 'ods-roster',
+    name: 'ODS — Roster / contact list',
+    language: 'ods',
+    suggestedExtension: '.ods',
+    description: 'Name / Email / Phone / Role contact catalogue with sortable columns.',
+    mode: 'ods',
+    content: '',
+    odsSheets: () => {
+      const header = ['Name', 'Email', 'Phone', 'Role'];
+      const rows = [
+        ['Jane Smith',  'jane@example.org',  '+33 1 02 03 04 05', 'PM'],
+        ['John Doe',    'john@example.org',  '+33 6 07 08 09 10', 'Engineer'],
+        ['Marie Curie', 'marie@example.org', '+33 1 23 45 67 89', 'Researcher'],
+      ];
+      const cells: { display: string; value: string | number | boolean; type: string; formula?: string }[][] = [
+        header.map(h => ({ display: h, value: h, type: 'string' })),
+        ...rows.map(r => r.map(v => ({ display: v, value: v, type: 'string' }))),
+      ];
+      return [{ name: 'Roster', cells }];
+    },
   },
 
   {

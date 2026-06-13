@@ -826,6 +826,9 @@
     // NewFileDialog runs when the user picks "From template".
     import('./lib/templates').then(m => { w.weftLoomTemplates = m; });
     import('./lib/odt').then(m => { w.weftLoomWriteODT = m.writeODT; });
+    import('./lib/ods').then(m => {
+      (w as unknown as { weftLoomWriteODS?: unknown }).weftLoomWriteODS = m.writeODS;
+    });
     // Marp template renderer hook — backs the theme+language
     // picker regression test (marp-picker.mjs).
     import('./lib/marp_template').then(m => {
