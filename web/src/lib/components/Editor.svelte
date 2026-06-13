@@ -58,6 +58,8 @@
   import { citeCompletion } from '../citeAutocomplete';
   import { inlineMathRender } from '../inlineMathRender';
   import { sectionFolding } from '../sectionFolding';
+  import { createLSPClient, fetchAvailableLanguages, type LSPClient } from '../lspClient';
+  import { linter } from '@codemirror/lint';
   import { commentDecorations, setCommentRanges, type CommentRange } from '../commentDecorations';
   import { citeHover } from '../citeHover';
   import { bib } from '../bibStore.svelte';
@@ -373,6 +375,34 @@
     return `${proto}//${window.location.host}/api/projects/${encodeURIComponent(p)}/sync`;
   }
 
+  // T8 LSP : the per-language client lives for the lifetime of
+  // this Editor instance. Opened lazily after the SPA confirms the
+  // host has the binary ; teardown happens in onDestroy.
+  let lspClient: LSPClient | undefined;
+  // The set of languages whose binary is on $PATH (fetched once
+  // from /api/lsp on mount). Empty when the host has no LSPs OR
+  // the endpoint isn't reachable.
+  let lspAvailable: Set<string> | undefined;
+  // Map our internal language ids to the URL slug used by the
+  // server's LSP registry.
+  const LSP_LANG_SLUG: Record<string, string> = {
+    latex: 'latex', go: 'go', python: 'python', rust: 'rust',
+    typescript: 'typescript', javascript: 'javascript',
+  };
+  function lspSlugFor(lang: string): string | null {
+    return LSP_LANG_SLUG[lang] ?? null;
+  }
+  // lspDiagnosticsLinter : a CodeMirror linter source that pulls
+  // from the active lspClient.diagnosticsFor(). Stays present even
+  // when no client is open so the lint extension's compartment
+  // doesn't need to be reconfigured on connect.
+  function lspDiagnosticsLinter() {
+    return linter((view) => {
+      if (!lspClient || !file) return [];
+      return lspClient.diagnosticsFor('file://' + file, view);
+    });
+  }
+
   onMount(() => {
     if (!host) return;
     logEvent('editor', 'mount', { file, project });
@@ -508,6 +538,10 @@
         minimapCompartment.of(minimapExt()),
         vscodeThemeCompartment.of(vscodeThemeExt()),
         lintCompartment.of(lintExtension(language, file)),
+        // T8 LSP : diagnostics published by the LSP server land
+        // here. The linter source closure reads from the lspClient
+        // singleton ; while no client is open it returns [].
+        lspDiagnosticsLinter(),
         EditorView.theme({
           '&': { height: '100%' },
         }),
@@ -728,6 +762,13 @@
         } catch (e) {
           console.error('autosave failed', e);
         }
+        // T8 LSP : push the latest buffer to the language server
+        // so the next publishDiagnostics frame reflects what's on
+        // disk. We piggy-back on the same 250 ms debounce as the
+        // file write — pre-commit diagnostics are rarely useful.
+        if (lspClient) {
+          try { lspClient.didChange('file://' + file, ytext.toString()); } catch { /* ignore */ }
+        }
       }, 250);
     });
 
@@ -796,6 +837,54 @@
     provider?.destroy();
     ydoc?.destroy();
     bib.stop();
+    // T8 LSP : send didClose + tear down the WS so the subprocess
+    // doesn't leak when the user closes the file.
+    if (lspClient && file) {
+      try { lspClient.didClose('file://' + file); } catch { /* ignore */ }
+      try { lspClient.dispose(); } catch { /* ignore */ }
+      lspClient = undefined;
+    }
+  });
+
+  // T8 LSP : open the WS lazily — wait for the SPA to know which
+  // LSPs the host has + only connect for those. The lifecycle is
+  // mirror-of-Editor.mount : we open once per (project, file).
+  $effect(() => {
+    file; language;
+    untrack(async () => {
+      // First-time fetch of the manifest.
+      if (lspAvailable === undefined) lspAvailable = await fetchAvailableLanguages();
+      const slug = lspSlugFor(language);
+      // Tear down a previous client if the language no longer needs
+      // one, OR if we're switching to a different file (so didClose
+      // fires before re-opening with the new uri).
+      if (lspClient) {
+        try { lspClient.dispose(); } catch { /* ignore */ }
+        lspClient = undefined;
+      }
+      if (!slug || !lspAvailable.has(slug) || !file) return;
+      const c = createLSPClient({
+        url: '/api/lsp/' + slug,
+        rootUri: 'file:///' + project,
+        workspaceFolderName: project,
+      });
+      try {
+        await c.ready;
+      } catch {
+        try { c.dispose(); } catch { /* ignore */ }
+        return;
+      }
+      lspClient = c;
+      // Stream the current file content. We re-read from the ytext
+      // so the LSP sees the exact buffer the user is editing.
+      const text = ydoc?.getText('file:' + file).toString() ?? '';
+      c.didOpen('file://' + file, slug, text);
+      // Re-run the lint extension every time the server pushes new
+      // diagnostics so the gutter + tooltip surface them.
+      c.onChange(() => {
+        if (view) view.dispatch({ effects: [] });
+      });
+    });
   });
 </script>
 

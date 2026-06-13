@@ -12,6 +12,7 @@ import (
 
 	"github.com/openweft/weft-loom-server/internal/auth"
 	"github.com/openweft/weft-loom-server/internal/eventbus"
+	loomlsp "github.com/openweft/weft-loom-server/internal/lsp"
 	"github.com/openweft/weft-loom-server/internal/synctex"
 	"github.com/openweft/weft-loom-server/internal/workspace"
 	"github.com/openweft/weft-loom-server/internal/ywebsocket"
@@ -93,6 +94,23 @@ func (s *Server) handleCompileArtifact(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/pdf")
 	w.Header().Set("Content-Disposition", `inline; filename="output.pdf"`)
 	http.ServeFile(w, r, path)
+}
+
+// handleLSP : upgrade to WebSocket + bridge it to the per-language
+// stdio LSP. Authenticated like the rest of the project API ; the
+// lang URL param picks the registered server.
+func (s *Server) handleLSP(w http.ResponseWriter, r *http.Request) {
+	loomlsp.HandleWS(w, r, r.PathValue("lang"), s.opts.Logger)
+}
+
+// handleLSPList : reports which LSP servers are actually resolvable
+// on this host so the SPA can enable LSP-backed features
+// progressively. Returns { available: ["latex", "go", …] }.
+func (s *Server) handleLSPList(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"available": loomlsp.AvailableLanguages(),
+	})
 }
 
 // handleSyncTeX answers SyncTeX queries against the .synctex.gz

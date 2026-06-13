@@ -250,6 +250,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/projects/{name}/compile/{id}", s.requireAuth(s.handleCompileStream))
 	s.mux.HandleFunc("GET /api/projects/{name}/compile/{id}/artifact", s.requireAuth(s.handleCompileArtifact))
 	s.mux.HandleFunc("GET /api/projects/{name}/compile/{id}/synctex", s.requireAuth(s.handleSyncTeX))
+	// T8 LSP : per-language WS proxy to a stdio language server.
+	// `/api/lsp/{lang}` routes to internal/lsp ; we keep the path
+	// outside /api/projects/ since the LSP itself opens the project
+	// dir via initialize's rootUri.
+	s.mux.HandleFunc("GET /api/lsp/{lang}", s.handleLSP)
+	s.mux.HandleFunc("GET /api/lsp", s.handleLSPList)
 	s.mux.HandleFunc("POST /api/projects/{name}/notebook/exec", s.requireAuth(s.handleNotebookExec))
 	s.mux.HandleFunc("GET /api/projects/{name}/sync", s.handleSync)
 	// y-websocket appends "/{roomName}" to the configured WS URL, even
