@@ -39,6 +39,27 @@ const NS = {
 
 export type CellType = 'string' | 'float' | 'int' | 'percentage' | 'date' | 'time' | 'boolean';
 
+export interface ODSCellStyle {
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  // Text colour + cell background — both hex strings ("#rrggbb").
+  color?: string;
+  background?: string;
+  // Paragraph alignment within the cell.
+  align?: 'left' | 'center' | 'right' | 'justify';
+  // Per-cell font face + size (size in pt).
+  fontFamily?: string;
+  fontSize?: string;
+  // Borders : single colour string per side ; missing = no border.
+  borderTop?: string;
+  borderRight?: string;
+  borderBottom?: string;
+  borderLeft?: string;
+  // Number format hint (V0.2 — formatter not wired yet).
+  numberFormat?: string;
+}
+
 export interface ODSCell {
   // Visible text in the cell (what `office:value` resolves to OR the
   // <text:p> content for string cells).
@@ -53,6 +74,10 @@ export interface ODSCell {
   formula?: string;
   colspan?: number;
   rowspan?: number;
+  // T9 V0.4 : per-cell formatting (bold/italic/underline, colours,
+  // alignment, font, borders). Round-tripped to a synthetic
+  // <style:style style:family="table-cell"> in the saved ODS.
+  style?: ODSCellStyle;
 }
 
 export interface ODSSheet {
@@ -99,6 +124,10 @@ function parseMeta(xml: string): ODSParsed['meta'] {
 
 function parseSheets(xml: string): ODSSheet[] {
   const doc = new DOMParser().parseFromString(xml, 'application/xml');
+  // T9 V0.4 : pre-scan <style:style style:family="table-cell"> so
+  // table:style-name references resolve to ODSCellStyle on the
+  // way out of parseCellsInRow.
+  const styles = parseCellStyles(doc);
   const tables = doc.getElementsByTagNameNS(NS.table, 'table');
   const sheets: ODSSheet[] = [];
   for (const table of Array.from(tables)) {
@@ -110,7 +139,7 @@ function parseSheets(xml: string): ODSSheet[] {
       // Skip blank rows at the end (some writers emit big rowRepeat
       // counts on trailing empties — capped at 100 in V0.1).
       const safeRowRepeat = Math.min(rowRepeat, 100);
-      const baseRow = parseCellsInRow(row);
+      const baseRow = parseCellsInRow(row, styles);
       for (let i = 0; i < safeRowRepeat; i++) {
         cells.push(baseRow.map(c => ({ ...c })));
       }
@@ -120,7 +149,57 @@ function parseSheets(xml: string): ODSSheet[] {
   return sheets;
 }
 
-function parseCellsInRow(row: Element): ODSCell[] {
+const NS_STYLE = 'urn:oasis:names:tc:opendocument:xmlns:style:1.0';
+const NS_FO    = 'urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0';
+
+function parseCellStyles(doc: Document): Map<string, ODSCellStyle> {
+  const out = new Map<string, ODSCellStyle>();
+  const els = doc.getElementsByTagNameNS(NS_STYLE, 'style');
+  for (const el of Array.from(els)) {
+    if (el.getAttributeNS(NS_STYLE, 'family') !== 'table-cell') continue;
+    const name = el.getAttributeNS(NS_STYLE, 'name');
+    if (!name) continue;
+    const s: ODSCellStyle = {};
+    const tprops = el.getElementsByTagNameNS(NS_STYLE, 'text-properties')[0];
+    if (tprops) {
+      if (tprops.getAttributeNS(NS_FO, 'font-weight') === 'bold') s.bold = true;
+      if (tprops.getAttributeNS(NS_FO, 'font-style') === 'italic') s.italic = true;
+      const us = tprops.getAttributeNS(NS_STYLE, 'text-underline-style');
+      if (us && us !== 'none') s.underline = true;
+      const col = tprops.getAttributeNS(NS_FO, 'color');
+      if (col) s.color = col.toLowerCase();
+      const ff = tprops.getAttributeNS(NS_FO, 'font-family');
+      if (ff) s.fontFamily = ff;
+      const fz = tprops.getAttributeNS(NS_FO, 'font-size');
+      if (fz) s.fontSize = fz;
+    }
+    const cprops = el.getElementsByTagNameNS(NS_STYLE, 'table-cell-properties')[0];
+    if (cprops) {
+      const bg = cprops.getAttributeNS(NS_FO, 'background-color');
+      if (bg && bg !== 'transparent') s.background = bg.toLowerCase();
+      const bt = cprops.getAttributeNS(NS_FO, 'border-top');
+      if (bt) s.borderTop = bt;
+      const br = cprops.getAttributeNS(NS_FO, 'border-right');
+      if (br) s.borderRight = br;
+      const bb = cprops.getAttributeNS(NS_FO, 'border-bottom');
+      if (bb) s.borderBottom = bb;
+      const bl = cprops.getAttributeNS(NS_FO, 'border-left');
+      if (bl) s.borderLeft = bl;
+    }
+    const pprops = el.getElementsByTagNameNS(NS_STYLE, 'paragraph-properties')[0];
+    if (pprops) {
+      const ta = pprops.getAttributeNS(NS_FO, 'text-align');
+      if (ta === 'left' || ta === 'center' || ta === 'right' || ta === 'justify') {
+        s.align = ta;
+      } else if (ta === 'start') s.align = 'left';
+      else if (ta === 'end') s.align = 'right';
+    }
+    if (Object.keys(s).length) out.set(name, s);
+  }
+  return out;
+}
+
+function parseCellsInRow(row: Element, styles: Map<string, ODSCellStyle> = new Map()): ODSCell[] {
   const out: ODSCell[] = [];
   for (const child of Array.from(row.children)) {
     if (child.localName !== 'table-cell' && child.localName !== 'covered-table-cell') continue;
@@ -144,6 +223,8 @@ function parseCellsInRow(row: Element): ODSCell[] {
       value = v != null ? Number(v) : 0;
     }
     const display = (child.textContent ?? '').trim();
+    const styleName = child.getAttributeNS(NS.table, 'style-name') ?? '';
+    const style = styleName ? styles.get(styleName) : undefined;
     const cell: ODSCell = {
       display,
       value,
@@ -151,8 +232,12 @@ function parseCellsInRow(row: Element): ODSCell[] {
       formula,
       ...(colspan > 1 ? { colspan } : {}),
       ...(rowspan > 1 ? { rowspan } : {}),
+      ...(style ? { style: { ...style } } : {}),
     };
-    for (let i = 0; i < repeat; i++) out.push({ ...cell });
+    for (let i = 0; i < repeat; i++) out.push({
+      ...cell,
+      style: cell.style ? { ...cell.style } : undefined,
+    });
   }
   return out;
 }
@@ -187,7 +272,45 @@ function escapeXML(s: string): string {
     .replace(/"/g, '&quot;');
 }
 
-function emitCell(c: ODSCell): string {
+// styleFingerprint : stable string representation of an
+// ODSCellStyle so identical styles map to the same `ce<N>` name.
+function styleFingerprint(s: ODSCellStyle): string {
+  const keys = Object.keys(s).sort() as Array<keyof ODSCellStyle>;
+  return keys.map(k => k + '=' + String(s[k])).join('|');
+}
+
+function emitCellStyles(seen: Map<string, ODSCellStyle>): string {
+  if (seen.size === 0) return '';
+  let out = '<office:automatic-styles>';
+  let idx = 0;
+  for (const [, s] of seen) {
+    idx++;
+    out += '<style:style style:name="ce' + idx + '" style:family="table-cell">';
+    const tprops: string[] = [];
+    if (s.bold)       tprops.push('fo:font-weight="bold"');
+    if (s.italic)     tprops.push('fo:font-style="italic"');
+    if (s.underline)  tprops.push('style:text-underline-style="solid"');
+    if (s.color)      tprops.push('fo:color="' + escapeXML(s.color) + '"');
+    if (s.fontFamily) tprops.push('fo:font-family="' + escapeXML(s.fontFamily) + '"');
+    if (s.fontSize)   tprops.push('fo:font-size="' + escapeXML(s.fontSize) + '"');
+    if (tprops.length) out += '<style:text-properties ' + tprops.join(' ') + '/>';
+    const cprops: string[] = [];
+    if (s.background)   cprops.push('fo:background-color="' + escapeXML(s.background) + '"');
+    if (s.borderTop)    cprops.push('fo:border-top="' + escapeXML(s.borderTop) + '"');
+    if (s.borderRight)  cprops.push('fo:border-right="' + escapeXML(s.borderRight) + '"');
+    if (s.borderBottom) cprops.push('fo:border-bottom="' + escapeXML(s.borderBottom) + '"');
+    if (s.borderLeft)   cprops.push('fo:border-left="' + escapeXML(s.borderLeft) + '"');
+    if (cprops.length) out += '<style:table-cell-properties ' + cprops.join(' ') + '/>';
+    const pprops: string[] = [];
+    if (s.align) pprops.push('fo:text-align="' + s.align + '"');
+    if (pprops.length) out += '<style:paragraph-properties ' + pprops.join(' ') + '/>';
+    out += '</style:style>';
+  }
+  out += '</office:automatic-styles>';
+  return out;
+}
+
+function emitCell(c: ODSCell, styleName: string | undefined): string {
   const attrs: string[] = [];
   attrs.push('office:value-type="' + escapeXML(c.type) + '"');
   if (c.type === 'string') {
@@ -205,21 +328,42 @@ function emitCell(c: ODSCell): string {
   if (c.formula) attrs.push('table:formula="' + escapeXML(c.formula) + '"');
   if (c.colspan && c.colspan > 1) attrs.push('table:number-columns-spanned="' + c.colspan + '"');
   if (c.rowspan && c.rowspan > 1) attrs.push('table:number-rows-spanned="' + c.rowspan + '"');
+  if (styleName) attrs.push('table:style-name="' + styleName + '"');
   const body = c.display ? '<text:p>' + escapeXML(c.display) + '</text:p>' : '';
   return '<table:table-cell ' + attrs.join(' ') + '>' + body + '</table:table-cell>';
 }
 
 function emitContent(sheets: ODSSheet[]): string {
+  // T9 V0.4 : collect every unique cell style across all sheets so
+  // they share `ce<N>` names.
+  const styleMap = new Map<string, ODSCellStyle>(); // fingerprint → style
+  const fingerprintToIndex = new Map<string, number>(); // fingerprint → ce index (1-based)
+  for (const sh of sheets) {
+    for (const row of sh.cells) {
+      for (const cell of row) {
+        if (!cell.style) continue;
+        const fp = styleFingerprint(cell.style);
+        if (!styleMap.has(fp)) {
+          styleMap.set(fp, cell.style);
+          fingerprintToIndex.set(fp, styleMap.size);
+        }
+      }
+    }
+  }
+  const stylesXML = emitCellStyles(styleMap);
+
   let body = '';
   for (const sh of sheets) {
     let rowXML = '';
-    // Pre-compute the max column count so each row carries a stable
-    // shape ; LibreOffice tolerates ragged rows but Excel doesn't.
     const maxCols = sh.cells.reduce((m, r) => Math.max(m, r.length), 0);
     for (const row of sh.cells) {
       let cells = '';
-      for (const c of row) cells += emitCell(c);
-      // Pad with empty cells to maxCols.
+      for (const c of row) {
+        const sn = c.style
+          ? 'ce' + fingerprintToIndex.get(styleFingerprint(c.style))
+          : undefined;
+        cells += emitCell(c, sn);
+      }
       for (let i = row.length; i < maxCols; i++) {
         cells += '<table:table-cell/>';
       }
@@ -235,7 +379,10 @@ function emitContent(sheets: ODSSheet[]): string {
   xmlns:office="${NS.office}"
   xmlns:table="${NS.table}"
   xmlns:text="${NS.text}"
+  xmlns:style="${NS_STYLE}"
+  xmlns:fo="${NS_FO}"
   office:version="1.2">
+  ${stylesXML}
   <office:body>
     <office:spreadsheet>
       ${body}

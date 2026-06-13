@@ -36,6 +36,129 @@
   let selRow = $state(0);
   let selCol = $state(0);
   let formulaBarValue = $state('');
+  // Range selection : when the user clicks a row/column header
+  // OR drags across cells, every cell in the rectangle gets
+  // highlighted + becomes the target for formatting operations.
+  // Single-cell selection = the rectangle (selRow..selRow, selCol..selCol).
+  let rangeFromRow = $state(0);
+  let rangeFromCol = $state(0);
+  let rangeToRow   = $state(0);
+  let rangeToCol   = $state(0);
+  let rangeKind: 'cell' | 'row' | 'col' | 'all' = $state('cell');
+
+  function inSelectionRange(r: number, c: number): boolean {
+    const r1 = Math.min(rangeFromRow, rangeToRow);
+    const r2 = Math.max(rangeFromRow, rangeToRow);
+    const c1 = Math.min(rangeFromCol, rangeToCol);
+    const c2 = Math.max(rangeFromCol, rangeToCol);
+    return r >= r1 && r <= r2 && c >= c1 && c <= c2;
+  }
+
+  function selectRange(fromRow: number, fromCol: number, toRow: number, toCol: number, kind: 'cell' | 'row' | 'col' | 'all') {
+    rangeFromRow = fromRow;
+    rangeFromCol = fromCol;
+    rangeToRow = toRow;
+    rangeToCol = toCol;
+    rangeKind = kind;
+    selRow = fromRow;
+    selCol = fromCol;
+    const cell = sheets[activeSheet]?.cells[selRow]?.[selCol];
+    formulaBarValue = cell?.formula
+      ? (typeof cell.value === 'string' ? cell.value : String(cell.value))
+      : (cell?.display ?? '');
+  }
+
+  function selectWholeColumn(c: number) {
+    selectRange(0, c, MAX_ROWS - 1, c, 'col');
+  }
+  function selectWholeRow(r: number) {
+    selectRange(r, 0, r, MAX_COLS - 1, 'row');
+  }
+  function selectWholeSheet() {
+    selectRange(0, 0, MAX_ROWS - 1, MAX_COLS - 1, 'all');
+  }
+
+  // T9 V0.4 : apply a style mutation to every cell in the current
+  // range. The mutator receives a draft ODSCellStyle and returns
+  // the new one (or undefined to clear styling). For row / col /
+  // all selections we clamp the row/col bounds to what's currently
+  // dense so we don't materialise 1M rows × 16K cols of style.
+  function applyStyleToRange(mutator: (cur: import('../ods').ODSCellStyle) => import('../ods').ODSCellStyle | undefined) {
+    const sh = sheets[activeSheet];
+    if (!sh) return;
+    const r1 = Math.min(rangeFromRow, rangeToRow);
+    const r2 = rangeKind === 'cell' ? r1 : Math.max(rangeFromRow, rangeToRow);
+    const c1 = Math.min(rangeFromCol, rangeToCol);
+    const c2 = rangeKind === 'cell' ? c1 : Math.max(rangeFromCol, rangeToCol);
+    // Clamp to dense storage for row/col/all so we don't churn
+    // millions of empty cells. The dense matrix already covers the
+    // populated area ; styled-empty cells outside it are a V0.5
+    // concern.
+    const maxRow = Math.min(r2, sh.cells.length - 1);
+    const maxCol = Math.min(c2, sh.cells.reduce((m, r) => Math.max(m, r.length), 0) - 1);
+    for (let r = r1; r <= maxRow; r++) {
+      const row = sh.cells[r];
+      if (!row) continue;
+      for (let c = c1; c <= maxCol; c++) {
+        const cell = row[c];
+        if (!cell) continue;
+        const next = mutator(cell.style ? { ...cell.style } : {});
+        if (next && Object.keys(next).length > 0) cell.style = next;
+        else delete cell.style;
+      }
+    }
+    sheets = sheets;
+    markDirty();
+  }
+  function toggleBold()      { applyStyleToRange(s => { s.bold = !s.bold; return s; }); }
+  function toggleItalic()    { applyStyleToRange(s => { s.italic = !s.italic; return s; }); }
+  function toggleUnderline() { applyStyleToRange(s => { s.underline = !s.underline; return s; }); }
+  function setAlign(a: 'left' | 'center' | 'right' | 'justify') {
+    applyStyleToRange(s => { s.align = a; return s; });
+  }
+  function setTextColor(hex: string)  { applyStyleToRange(s => { s.color = hex; return s; }); }
+  function setBackground(hex: string) { applyStyleToRange(s => { s.background = hex; return s; }); }
+  function setFontFamily(name: string) {
+    applyStyleToRange(s => { s.fontFamily = name; return s; });
+  }
+  function setFontSize(size: string) {
+    applyStyleToRange(s => { s.fontSize = size; return s; });
+  }
+  function setAllBorders(hex: string) {
+    const v = '1pt solid ' + hex;
+    applyStyleToRange(s => {
+      s.borderTop = v; s.borderRight = v; s.borderBottom = v; s.borderLeft = v;
+      return s;
+    });
+  }
+  function clearFormatting() {
+    applyStyleToRange(() => undefined);
+  }
+
+  // cellInlineStyle : translate ODSCellStyle → CSS declarations the
+  // virtualized cell div can carry inline. Kept narrow : the
+  // declarations don't conflict with the position/size already on
+  // the same `style` attribute.
+  function cellInlineStyle(c: import('../ods').ODSCell): string {
+    const s = c.style;
+    if (!s) return '';
+    const parts: string[] = [];
+    if (s.bold)      parts.push('font-weight: bold');
+    if (s.italic)    parts.push('font-style: italic');
+    if (s.underline) parts.push('text-decoration: underline');
+    if (s.color)     parts.push('color: ' + s.color);
+    if (s.background) parts.push('background-color: ' + s.background);
+    if (s.align)     parts.push('text-align: ' + s.align);
+    if (s.fontFamily) parts.push('font-family: ' + s.fontFamily);
+    if (s.fontSize)  parts.push('font-size: ' + s.fontSize);
+    // Borders : ODF border syntax is "1pt solid #rrggbb" — we pass
+    // it through verbatim since CSS accepts the same shape.
+    if (s.borderTop)    parts.push('border-top: ' + s.borderTop);
+    if (s.borderRight)  parts.push('border-right: ' + s.borderRight);
+    if (s.borderBottom) parts.push('border-bottom: ' + s.borderBottom);
+    if (s.borderLeft)   parts.push('border-left: ' + s.borderLeft);
+    return parts.join('; ');
+  }
   // T9 V0.2 : HyperFormula engine. One instance for the whole
   // workbook ; sheets are added/removed as the user toggles them.
   // `displayCache` mirrors HF's computed values so the grid can
@@ -427,6 +550,12 @@
   function selectCell(r: number, c: number) {
     selRow = r;
     selCol = c;
+    // Reset the selection range to the single cell.
+    rangeFromRow = r;
+    rangeFromCol = c;
+    rangeToRow = r;
+    rangeToCol = c;
+    rangeKind = 'cell';
     const cell = sheets[activeSheet]?.cells[r]?.[c];
     // Formula cells : show the source in the formula bar (so the
     // user can edit the expression) ; literal cells show their
@@ -652,6 +781,61 @@
     <button class="btn btn-ghost btn-xs" onclick={() => addColumn()} title="Add a column on the right">+ Col</button>
     <button class="btn btn-ghost btn-xs" onclick={() => addSheet()} title="Add a new sheet">+ Sheet</button>
     <span class="divider divider-horizontal mx-0"></span>
+    <!-- T9 V0.4 : Excel-style formatting cluster. Each button
+         applies to the current selection (cell, row, column, or
+         whole sheet). -->
+    <button type="button" title="Bold (Cmd/Ctrl+B)" class="btn btn-ghost btn-xs font-bold" onclick={toggleBold} data-testid="ods-bold">B</button>
+    <button type="button" title="Italic (Cmd/Ctrl+I)" class="btn btn-ghost btn-xs italic" onclick={toggleItalic} data-testid="ods-italic">I</button>
+    <button type="button" title="Underline (Cmd/Ctrl+U)" class="btn btn-ghost btn-xs underline" onclick={toggleUnderline} data-testid="ods-underline">U</button>
+    <label class="btn btn-ghost btn-xs px-1 inline-flex items-center gap-1" title="Text colour">
+      <span class="font-bold">A</span>
+      <input type="color" value="#000000" class="w-4 h-4 p-0 border-0 bg-transparent cursor-pointer"
+             oninput={(e) => setTextColor((e.currentTarget as HTMLInputElement).value)}
+             data-testid="ods-text-color" />
+    </label>
+    <label class="btn btn-ghost btn-xs px-1 inline-flex items-center gap-1" title="Cell background">
+      <span>▮</span>
+      <input type="color" value="#ffff00" class="w-4 h-4 p-0 border-0 bg-transparent cursor-pointer"
+             oninput={(e) => setBackground((e.currentTarget as HTMLInputElement).value)}
+             data-testid="ods-bg-color" />
+    </label>
+    <label class="btn btn-ghost btn-xs px-1 inline-flex items-center gap-1" title="Border colour">
+      <span>▦</span>
+      <input type="color" value="#000000" class="w-4 h-4 p-0 border-0 bg-transparent cursor-pointer"
+             oninput={(e) => setAllBorders((e.currentTarget as HTMLInputElement).value)}
+             data-testid="ods-border-color" />
+    </label>
+    <span class="divider divider-horizontal mx-0"></span>
+    <button type="button" title="Align left"   class="btn btn-ghost btn-xs" onclick={() => setAlign('left')}>⇤</button>
+    <button type="button" title="Align centre" class="btn btn-ghost btn-xs" onclick={() => setAlign('center')}>≡</button>
+    <button type="button" title="Align right"  class="btn btn-ghost btn-xs" onclick={() => setAlign('right')}>⇥</button>
+    <button type="button" title="Justify"      class="btn btn-ghost btn-xs" onclick={() => setAlign('justify')}>☰</button>
+    <select
+      class="select select-bordered select-xs"
+      title="Font family"
+      onchange={(e) => { const v = (e.currentTarget as HTMLSelectElement).value; if (v) setFontFamily(v); (e.currentTarget as HTMLSelectElement).value = ''; }}
+    >
+      <option value="" disabled selected>Font…</option>
+      <option>Arial</option>
+      <option>Helvetica</option>
+      <option>Times New Roman</option>
+      <option>Georgia</option>
+      <option>Courier New</option>
+      <option>Verdana</option>
+      <option>Calibri</option>
+    </select>
+    <select
+      class="select select-bordered select-xs"
+      title="Font size"
+      onchange={(e) => { const v = (e.currentTarget as HTMLSelectElement).value; if (v) setFontSize(v); (e.currentTarget as HTMLSelectElement).value = ''; }}
+    >
+      <option value="" disabled selected>Size…</option>
+      {#each ['8pt','9pt','10pt','11pt','12pt','14pt','16pt','18pt','24pt','36pt'] as s}
+        <option value={s}>{s.replace('pt','')}</option>
+      {/each}
+    </select>
+    <button type="button" title="Clear formatting" class="btn btn-ghost btn-xs" onclick={clearFormatting}>⌫</button>
+    <span class="divider divider-horizontal mx-0"></span>
     <button
       type="button"
       class="btn btn-xs gap-1"
@@ -737,11 +921,16 @@
         style="width:{HEADER_W + MAX_COLS * COL_W}px; height:{HEADER_H + MAX_ROWS * ROW_H}px;"
         data-testid="ods-canvas"
       >
-        <!-- Top-left corner stays pinned both ways. -->
+        <!-- Top-left corner stays pinned both ways. Click selects
+             the entire sheet (Excel's "Select All" trick). -->
         <div
           class="ods-corner-sticky"
+          role="button"
+          tabindex="-1"
+          title="Tout sélectionner"
           style="width:{HEADER_W}px; height:{HEADER_H}px;
                  transform: translate({scrollLeft}px, {scrollTop}px);"
+          onclick={() => selectWholeSheet()}
         ></div>
         <!-- Column header strip : sticky to the top of the viewport. -->
         <div
@@ -753,8 +942,13 @@
           {#each visCols as c (c)}
             <div
               class="ods-colheader"
-              class:ods-colheader-sel={c === selCol}
+              class:ods-colheader-sel={(rangeKind === 'col' || rangeKind === 'all') && c >= Math.min(rangeFromCol, rangeToCol) && c <= Math.max(rangeFromCol, rangeToCol) || c === selCol}
+              role="button"
+              tabindex="-1"
+              data-colheader={c}
+              title="Sélectionner la colonne {columnLabel(c)}"
               style="left:{c * COL_W}px; width:{COL_W}px; height:{HEADER_H}px;"
+              onclick={() => selectWholeColumn(c)}
             >{columnLabel(c)}</div>
           {/each}
         </div>
@@ -768,8 +962,13 @@
           {#each visRows as r (r)}
             <div
               class="ods-rowheader"
-              class:ods-rowheader-sel={r === selRow}
+              class:ods-rowheader-sel={(rangeKind === 'row' || rangeKind === 'all') && r >= Math.min(rangeFromRow, rangeToRow) && r <= Math.max(rangeFromRow, rangeToRow) || r === selRow}
+              role="button"
+              tabindex="-1"
+              data-rowheader={r}
+              title="Sélectionner la ligne {r + 1}"
               style="top:{r * ROW_H}px; height:{ROW_H}px; width:{HEADER_W}px;"
+              onclick={() => selectWholeRow(r)}
             >{r + 1}</div>
           {/each}
         </div>
@@ -784,12 +983,14 @@
                 contenteditable="true"
                 class="ods-cell"
                 class:ods-cell-selected={r === selRow && c === selCol}
+                class:ods-cell-range={rangeKind !== 'cell' && inSelectionRange(r, c) && !(r === selRow && c === selCol)}
                 class:ods-cell-formula={!!cell.formula}
                 data-cell="{r},{c}"
                 data-formula={cell.formula ? '1' : ''}
                 title={cell.formula ? (typeof cell.value === 'string' ? cell.value : '') : undefined}
                 style="left:{c * COL_W}px; top:{r * ROW_H}px;
-                       width:{COL_W}px; height:{ROW_H}px;"
+                       width:{COL_W}px; height:{ROW_H}px;
+                       {cellInlineStyle(cell)}"
                 onclick={() => selectCell(r, c)}
                 oninput={(e) => onCellInput(r, c, e)}
                 onkeydown={(e) => onCellKey(r, c, e)}
@@ -885,6 +1086,11 @@
     z-index: 2;
   }
   .ods-cell-selected { box-shadow: inset 0 0 0 2px rgba(0, 100, 200, 0.5); }
+  /* Cells inside a row/column/all-sheet selection get a light
+     blue overlay so the user sees the range at a glance. Uses
+     inset box-shadow (not background-color) so it stacks ABOVE
+     any user-applied cell background without clobbering it. */
+  .ods-cell-range { box-shadow: inset 0 0 0 9999px rgba(0, 100, 200, 0.08); }
   /* Formula cells get a subtle marker so the user can tell at a
      glance which cells are computed vs literal. */
   .ods-cell-formula { background: rgba(0, 200, 100, 0.04); }
