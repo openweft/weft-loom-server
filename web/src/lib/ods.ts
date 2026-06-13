@@ -78,6 +78,20 @@ export interface ODSCell {
   // alignment, font, borders). Round-tripped to a synthetic
   // <style:style style:family="table-cell"> in the saved ODS.
   style?: ODSCellStyle;
+  // <table:covered-table-cell/> marker. Cells covered by a colspan/
+  // rowspan above/left keep their slot in the dense grid but emit
+  // back as <table:covered-table-cell/> rather than <table:table-cell/>.
+  covered?: boolean;
+  // Column-repeat spacer : an empty cell that originally carried
+  // `table:number-columns-repeated="N"`. We keep ONE cell entry to
+  // avoid materialising thousands of phantom slots, and re-emit it
+  // as a single repeated cell on write.
+  repeat?: number;
+  // Row-repeat marker on the FIRST cell of a row that was originally
+  // emitted as `<table:table-row table:number-rows-repeated="N">`.
+  // The row appears once in `cells[]`; on write we restore the
+  // number-rows-repeated attribute.
+  rowRepeat?: number;
 }
 
 export interface ODSSheet {
@@ -122,12 +136,18 @@ function parseMeta(xml: string): ODSParsed['meta'] {
   return out;
 }
 
+// numberFormatsRegistry : populated during parse, drained during write
+// so emitContent can re-emit the captured number-format XML once per
+// unique data-style-name.
+let lastParsedNumberFormats: Map<string, string> = new Map();
+
 function parseSheets(xml: string): ODSSheet[] {
   const doc = new DOMParser().parseFromString(xml, 'application/xml');
   // T9 V0.4 : pre-scan <style:style style:family="table-cell"> so
   // table:style-name references resolve to ODSCellStyle on the
   // way out of parseCellsInRow.
-  const styles = parseCellStyles(doc);
+  const scan = parseCellStyles(doc);
+  lastParsedNumberFormats = scan.numberFormats;
   const tables = doc.getElementsByTagNameNS(NS.table, 'table');
   const sheets: ODSSheet[] = [];
   for (const table of Array.from(tables)) {
@@ -136,12 +156,18 @@ function parseSheets(xml: string): ODSSheet[] {
     const cells: ODSCell[][] = [];
     for (const row of Array.from(rows)) {
       const rowRepeat = Number(row.getAttributeNS(NS.table, 'number-rows-repeated') ?? '1');
-      // Skip blank rows at the end (some writers emit big rowRepeat
-      // counts on trailing empties — capped at 100 in V0.1).
-      const safeRowRepeat = Math.min(rowRepeat, 100);
-      const baseRow = parseCellsInRow(row, styles);
-      for (let i = 0; i < safeRowRepeat; i++) {
-        cells.push(baseRow.map(c => ({ ...c })));
+      const baseRow = parseCellsInRow(row, scan.styles);
+      const empty = isEmptyRow(baseRow);
+      if (empty && rowRepeat > 1) {
+        // Collapse N empty rows into one with rowRepeat — avoids
+        // materialising the 1024-empty-row trailers some writers emit.
+        const cloned = baseRow.map(c => ({ ...c, style: c.style ? { ...c.style } : undefined }));
+        if (cloned.length > 0) cloned[0].rowRepeat = rowRepeat;
+        cells.push(cloned);
+      } else {
+        for (let i = 0; i < rowRepeat; i++) {
+          cells.push(baseRow.map(c => ({ ...c, style: c.style ? { ...c.style } : undefined })));
+        }
       }
     }
     sheets.push({ name, cells });
@@ -149,11 +175,51 @@ function parseSheets(xml: string): ODSSheet[] {
   return sheets;
 }
 
-const NS_STYLE = 'urn:oasis:names:tc:opendocument:xmlns:style:1.0';
-const NS_FO    = 'urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0';
+function isEmptyCell(c: ODSCell): boolean {
+  if (c.formula) return false;
+  if (c.style) return false;
+  if (c.covered) return false;
+  if (c.type === 'string') return c.display === '' && c.value === '';
+  if (c.type === 'boolean') return c.value === false;
+  return c.value === '' || c.value === 0;
+}
 
-function parseCellStyles(doc: Document): Map<string, ODSCellStyle> {
+function isEmptyRow(cells: ODSCell[]): boolean {
+  for (const c of cells) if (!isEmptyCell(c)) return false;
+  return true;
+}
+
+const NS_STYLE  = 'urn:oasis:names:tc:opendocument:xmlns:style:1.0';
+const NS_FO     = 'urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0';
+const NS_NUMBER = 'urn:oasis:names:tc:opendocument:xmlns:datastyle:1.0';
+
+const NUMBER_FORMAT_TAGS = [
+  'date-style', 'currency-style', 'number-style',
+  'percentage-style', 'time-style', 'text-style', 'boolean-style',
+];
+
+interface CellStylesScan {
+  styles: Map<string, ODSCellStyle>;
+  // styleName → raw XML of a number:*-style element, for round-trip.
+  numberFormats: Map<string, string>;
+  // table-cell style name → data-style-name (the linked number format).
+  dataStyleByCellStyle: Map<string, string>;
+}
+
+function parseCellStyles(doc: Document): CellStylesScan {
   const out = new Map<string, ODSCellStyle>();
+  const numberFormats = new Map<string, string>();
+  const dataStyleByCellStyle = new Map<string, string>();
+  // First pass : collect every number:*-style block in both
+  // <office:automatic-styles> and <office:styles> by their style:name.
+  for (const tag of NUMBER_FORMAT_TAGS) {
+    const els = doc.getElementsByTagNameNS(NS_NUMBER, tag);
+    for (const el of Array.from(els)) {
+      const name = el.getAttributeNS(NS_STYLE, 'name');
+      if (!name) continue;
+      numberFormats.set(name, serializeElement(el));
+    }
+  }
   const els = doc.getElementsByTagNameNS(NS_STYLE, 'style');
   for (const el of Array.from(els)) {
     if (el.getAttributeNS(NS_STYLE, 'family') !== 'table-cell') continue;
@@ -194,35 +260,52 @@ function parseCellStyles(doc: Document): Map<string, ODSCellStyle> {
       } else if (ta === 'start') s.align = 'left';
       else if (ta === 'end') s.align = 'right';
     }
+    const dataStyle = el.getAttributeNS(NS_STYLE, 'data-style-name');
+    if (dataStyle) {
+      dataStyleByCellStyle.set(name, dataStyle);
+      if (numberFormats.has(dataStyle)) s.numberFormat = dataStyle;
+    }
     if (Object.keys(s).length) out.set(name, s);
   }
-  return out;
+  return { styles: out, numberFormats, dataStyleByCellStyle };
+}
+
+function serializeElement(el: Element): string {
+  try {
+    return new XMLSerializer().serializeToString(el);
+  } catch {
+    return el.outerHTML ?? '';
+  }
 }
 
 function parseCellsInRow(row: Element, styles: Map<string, ODSCellStyle> = new Map()): ODSCell[] {
   const out: ODSCell[] = [];
   for (const child of Array.from(row.children)) {
     if (child.localName !== 'table-cell' && child.localName !== 'covered-table-cell') continue;
-    const repeat = Math.min(Number(child.getAttributeNS(NS.table, 'number-columns-repeated') ?? '1'), 256);
+    const covered = child.localName === 'covered-table-cell';
+    const repeat = Number(child.getAttributeNS(NS.table, 'number-columns-repeated') ?? '1');
     const colspan = Number(child.getAttributeNS(NS.table, 'number-columns-spanned') ?? '1');
     const rowspan = Number(child.getAttributeNS(NS.table, 'number-rows-spanned') ?? '1');
     const valueType = (child.getAttributeNS(NS.office, 'value-type') ?? 'string') as CellType;
     const formula = child.getAttributeNS(NS.table, 'formula') ?? undefined;
+    // Pull the visible text out of <text:p> children honoring
+    // <text:line-break/> (\n inside a paragraph) and joining
+    // separate paragraphs with \n.
+    const display = readCellText(child);
     let value: ODSCell['value'] = '';
     if (valueType === 'string') {
-      value = child.textContent ?? '';
+      value = display;
     } else if (valueType === 'boolean') {
       value = child.getAttributeNS(NS.office, 'boolean-value') === 'true';
     } else if (valueType === 'date' || valueType === 'time') {
       value = child.getAttributeNS(NS.office, 'date-value')
            ?? child.getAttributeNS(NS.office, 'time-value')
-           ?? child.textContent ?? '';
+           ?? display;
     } else {
       // numeric / percentage / currency
       const v = child.getAttributeNS(NS.office, 'value');
       value = v != null ? Number(v) : 0;
     }
-    const display = (child.textContent ?? '').trim();
     const styleName = child.getAttributeNS(NS.table, 'style-name') ?? '';
     const style = styleName ? styles.get(styleName) : undefined;
     const cell: ODSCell = {
@@ -230,14 +313,64 @@ function parseCellsInRow(row: Element, styles: Map<string, ODSCellStyle> = new M
       value,
       type: valueType,
       formula,
+      ...(covered ? { covered: true } : {}),
       ...(colspan > 1 ? { colspan } : {}),
       ...(rowspan > 1 ? { rowspan } : {}),
       ...(style ? { style: { ...style } } : {}),
     };
-    for (let i = 0; i < repeat; i++) out.push({
-      ...cell,
-      style: cell.style ? { ...cell.style } : undefined,
-    });
+    if (repeat > 1) {
+      // Collapse runs of empty cells into a single spacer so a
+      // `number-columns-repeated="1024"` trailer doesn't blow up
+      // memory. Non-empty cells still expand.
+      if (isEmptyCell(cell) && !formula) {
+        const spacer: ODSCell = { ...cell, repeat };
+        out.push(spacer);
+      } else {
+        for (let i = 0; i < repeat; i++) out.push({
+          ...cell,
+          style: cell.style ? { ...cell.style } : undefined,
+        });
+      }
+    } else {
+      out.push(cell);
+    }
+  }
+  return out;
+}
+
+function readCellText(cell: Element): string {
+  // Join the <text:p> children with '\n', and convert
+  // <text:line-break/> inside a paragraph to '\n'. If no <text:p>
+  // children exist (some writers stuff bare text), fall back to
+  // textContent verbatim.
+  const paras = Array.from(cell.children).filter(c =>
+    c.namespaceURI === NS.text && c.localName === 'p');
+  if (paras.length === 0) return cell.textContent ?? '';
+  const parts: string[] = [];
+  for (const p of paras) parts.push(readParagraphText(p));
+  return parts.join('\n');
+}
+
+function readParagraphText(p: Element): string {
+  let out = '';
+  for (const node of Array.from(p.childNodes)) {
+    if (node.nodeType === 3 /* text */) {
+      out += node.nodeValue ?? '';
+    } else if (node.nodeType === 1 /* element */) {
+      const el = node as Element;
+      if (el.namespaceURI === NS.text && el.localName === 'line-break') {
+        out += '\n';
+      } else if (el.namespaceURI === NS.text && el.localName === 'tab') {
+        out += '\t';
+      } else if (el.namespaceURI === NS.text && el.localName === 's') {
+        const cnt = Number(el.getAttributeNS(NS.text, 'c') ?? '1');
+        out += ' '.repeat(cnt > 0 ? cnt : 1);
+      } else {
+        // Spans + other text containers : recurse so nested
+        // line-breaks still surface as \n.
+        out += readParagraphText(el);
+      }
+    }
   }
   return out;
 }
@@ -279,13 +412,21 @@ function styleFingerprint(s: ODSCellStyle): string {
   return keys.map(k => k + '=' + String(s[k])).join('|');
 }
 
-function emitCellStyles(seen: Map<string, ODSCellStyle>): string {
-  if (seen.size === 0) return '';
+function emitCellStyles(seen: Map<string, ODSCellStyle>, numberFormats: Map<string, string>): string {
+  if (seen.size === 0 && numberFormats.size === 0) return '';
   let out = '<office:automatic-styles>';
+  // Re-emit captured number-format blocks (date/currency/number/...)
+  // once each. Their inner XML already carries the style:name so
+  // table-cell styles can reference them via style:data-style-name.
+  for (const raw of numberFormats.values()) out += raw;
   let idx = 0;
   for (const [, s] of seen) {
     idx++;
-    out += '<style:style style:name="ce' + idx + '" style:family="table-cell">';
+    out += '<style:style style:name="ce' + idx + '" style:family="table-cell"';
+    if (s.numberFormat) {
+      out += ' style:data-style-name="' + escapeXML(s.numberFormat) + '"';
+    }
+    out += '>';
     const tprops: string[] = [];
     if (s.bold)       tprops.push('fo:font-weight="bold"');
     if (s.italic)     tprops.push('fo:font-style="italic"');
@@ -311,33 +452,53 @@ function emitCellStyles(seen: Map<string, ODSCellStyle>): string {
 }
 
 function emitCell(c: ODSCell, styleName: string | undefined): string {
+  const tag = c.covered ? 'table:covered-table-cell' : 'table:table-cell';
   const attrs: string[] = [];
-  attrs.push('office:value-type="' + escapeXML(c.type) + '"');
-  if (c.type === 'string') {
-    // No office:value attribute for strings — the <text:p> body
-    // carries the value.
-  } else if (c.type === 'boolean') {
-    attrs.push('office:boolean-value="' + (c.value ? 'true' : 'false') + '"');
-  } else if (c.type === 'date') {
-    attrs.push('office:date-value="' + escapeXML(String(c.value)) + '"');
-  } else if (c.type === 'time') {
-    attrs.push('office:time-value="' + escapeXML(String(c.value)) + '"');
-  } else {
-    attrs.push('office:value="' + escapeXML(String(c.value)) + '"');
+  // Spacer cells (empty + repeat>1) skip the typed value attrs and
+  // emit a bare repeated cell.
+  const isSpacer = c.repeat && c.repeat > 1 && isEmptyCell(c);
+  if (!isSpacer) {
+    attrs.push('office:value-type="' + escapeXML(c.type) + '"');
+    if (c.type === 'string') {
+      // No office:value attribute for strings — the <text:p> body
+      // carries the value.
+    } else if (c.type === 'boolean') {
+      attrs.push('office:boolean-value="' + (c.value ? 'true' : 'false') + '"');
+    } else if (c.type === 'date') {
+      attrs.push('office:date-value="' + escapeXML(String(c.value)) + '"');
+    } else if (c.type === 'time') {
+      attrs.push('office:time-value="' + escapeXML(String(c.value)) + '"');
+    } else {
+      attrs.push('office:value="' + escapeXML(String(c.value)) + '"');
+    }
   }
   if (c.formula) attrs.push('table:formula="' + escapeXML(c.formula) + '"');
+  if (c.repeat && c.repeat > 1) attrs.push('table:number-columns-repeated="' + c.repeat + '"');
   if (c.colspan && c.colspan > 1) attrs.push('table:number-columns-spanned="' + c.colspan + '"');
   if (c.rowspan && c.rowspan > 1) attrs.push('table:number-rows-spanned="' + c.rowspan + '"');
   if (styleName) attrs.push('table:style-name="' + styleName + '"');
-  const body = c.display ? '<text:p>' + escapeXML(c.display) + '</text:p>' : '';
-  return '<table:table-cell ' + attrs.join(' ') + '>' + body + '</table:table-cell>';
+  const body = isSpacer ? '' : emitCellBody(c.display);
+  if (!body) return '<' + tag + (attrs.length ? ' ' + attrs.join(' ') : '') + '/>';
+  return '<' + tag + ' ' + attrs.join(' ') + '>' + body + '</' + tag + '>';
+}
+
+function emitCellBody(display: string): string {
+  if (!display) return '';
+  // Multi-paragraph : split on '\n' and emit one <text:p> per chunk.
+  if (display.includes('\n')) {
+    return display.split('\n').map(p => '<text:p>' + escapeXML(p) + '</text:p>').join('');
+  }
+  return '<text:p>' + escapeXML(display) + '</text:p>';
 }
 
 function emitContent(sheets: ODSSheet[]): string {
   // T9 V0.4 : collect every unique cell style across all sheets so
-  // they share `ce<N>` names.
+  // they share `ce<N>` names. Also collect the data-style-names
+  // referenced by those cell styles so we can re-emit the captured
+  // number-format blocks once each.
   const styleMap = new Map<string, ODSCellStyle>(); // fingerprint → style
   const fingerprintToIndex = new Map<string, number>(); // fingerprint → ce index (1-based)
+  const referencedFormats = new Map<string, string>(); // data-style-name → raw XML
   for (const sh of sheets) {
     for (const row of sh.cells) {
       for (const cell of row) {
@@ -347,27 +508,44 @@ function emitContent(sheets: ODSSheet[]): string {
           styleMap.set(fp, cell.style);
           fingerprintToIndex.set(fp, styleMap.size);
         }
+        const nf = cell.style.numberFormat;
+        if (nf && !referencedFormats.has(nf)) {
+          const raw = lastParsedNumberFormats.get(nf);
+          if (raw) referencedFormats.set(nf, raw);
+        }
       }
     }
   }
-  const stylesXML = emitCellStyles(styleMap);
+  const stylesXML = emitCellStyles(styleMap, referencedFormats);
 
   let body = '';
   for (const sh of sheets) {
     let rowXML = '';
-    const maxCols = sh.cells.reduce((m, r) => Math.max(m, r.length), 0);
+    const maxCols = sh.cells.reduce((m, r) => Math.max(m, rowWidth(r)), 0);
     for (const row of sh.cells) {
       let cells = '';
+      let used = 0;
       for (const c of row) {
         const sn = c.style
           ? 'ce' + fingerprintToIndex.get(styleFingerprint(c.style))
           : undefined;
         cells += emitCell(c, sn);
+        used += (c.repeat && c.repeat > 1) ? c.repeat : 1;
       }
-      for (let i = row.length; i < maxCols; i++) {
+      // Pad trailing empties with a single repeated cell — never K
+      // separate <table:table-cell/> elements (that's what caused
+      // the 256-phantom-cell explosion).
+      const pad = maxCols - used;
+      if (pad === 1) {
         cells += '<table:table-cell/>';
+      } else if (pad > 1) {
+        cells += '<table:table-cell table:number-columns-repeated="' + pad + '"/>';
       }
-      rowXML += '<table:table-row>' + cells + '</table:table-row>';
+      // Restore the original number-rows-repeated annotation when set
+      // on the first cell of an empty-row group.
+      const rr = row[0]?.rowRepeat;
+      const rowAttr = rr && rr > 1 ? ' table:number-rows-repeated="' + rr + '"' : '';
+      rowXML += '<table:table-row' + rowAttr + '>' + cells + '</table:table-row>';
     }
     body += '<table:table table:name="' + escapeXML(sh.name) + '">'
          + (maxCols > 0 ? '<table:table-column table:number-columns-repeated="' + maxCols + '"/>' : '')
@@ -381,6 +559,7 @@ function emitContent(sheets: ODSSheet[]): string {
   xmlns:text="${NS.text}"
   xmlns:style="${NS_STYLE}"
   xmlns:fo="${NS_FO}"
+  xmlns:number="${NS_NUMBER}"
   office:version="1.2">
   ${stylesXML}
   <office:body>
@@ -390,6 +569,12 @@ function emitContent(sheets: ODSSheet[]): string {
   </office:body>
 </office:document-content>
 `;
+}
+
+function rowWidth(row: ODSCell[]): number {
+  let n = 0;
+  for (const c of row) n += (c.repeat && c.repeat > 1) ? c.repeat : 1;
+  return n;
 }
 
 export async function writeODS(sheets: ODSSheet[], now: string = new Date().toISOString()): Promise<Uint8Array> {
