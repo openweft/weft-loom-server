@@ -60,6 +60,8 @@
   import { sectionFolding } from '../sectionFolding';
   import { createLSPClient, fetchAvailableLanguages, type LSPClient } from '../lspClient';
   import { linter } from '@codemirror/lint';
+  import { hoverTooltip } from '@codemirror/view';
+  import type { CompletionContext, CompletionResult } from '@codemirror/autocomplete';
   import { commentDecorations, setCommentRanges, type CommentRange } from '../commentDecorations';
   import { citeHover } from '../citeHover';
   import { bib } from '../bibStore.svelte';
@@ -403,6 +405,120 @@
     });
   }
 
+  // posFromOffset / offsetFromPos : convert between CodeMirror's
+  // absolute offset + LSP's {line, character} positions. LSP uses
+  // 0-based line + UTF-16 character offsets within the line ; CM's
+  // line numbers are 1-based so we subtract 1.
+  function posFromOffset(view: EditorView, offset: number): { line: number; character: number } {
+    const line = view.state.doc.lineAt(offset);
+    return { line: line.number - 1, character: offset - line.from };
+  }
+  function offsetFromPos(view: EditorView, line: number, character: number): number {
+    const doc = view.state.doc;
+    const cmLine = Math.min(doc.lines, Math.max(1, line + 1));
+    const lineObj = doc.line(cmLine);
+    return Math.min(doc.length, lineObj.from + character);
+  }
+
+  // lspCompletionSource : CodeMirror autocomplete override that
+  // asks the LSP server for completion items at the cursor. Falls
+  // through (returns null) when no client is open OR when the
+  // server has nothing to offer — the static sources keep working.
+  async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionResult | null> {
+    if (!lspClient || !file) return null;
+    // Conservative trigger : only fire after explicit Cmd+space OR
+    // after the user has typed a wordy char so we don't slam the
+    // server on every keystroke. CM's `explicit` flag covers the
+    // first case ; `matchBefore` the second.
+    const word = ctx.matchBefore(/[\w.\\]+/);
+    if (!ctx.explicit && (!word || (word.to - word.from === 0 && !ctx.explicit))) return null;
+    const pos = posFromOffset(ctx.view, ctx.pos);
+    const items = await lspClient.completion('file://' + file, pos.line, pos.character);
+    if (!items || items.length === 0) return null;
+    return {
+      from: word ? word.from : ctx.pos,
+      options: items.slice(0, 256).map(it => ({
+        label: it.label,
+        detail: it.detail,
+        info: typeof it.documentation === 'string'
+          ? it.documentation
+          : it.documentation?.value,
+        apply: it.insertText ?? it.label,
+      })),
+      validFor: /^[\w]*$/,
+    };
+  }
+
+  // lspHoverTooltip : CodeMirror hoverTooltip source that asks the
+  // LSP for the symbol info under the pointer. Result is rendered
+  // as plain text in a small floating box.
+  const lspHoverTooltip = hoverTooltip(async (view, pos) => {
+    if (!lspClient || !file) return null;
+    const p = posFromOffset(view, pos);
+    const result = await lspClient.hover('file://' + file, p.line, p.character);
+    if (!result) return null;
+    return {
+      pos,
+      end: pos,
+      above: true,
+      create() {
+        const dom = document.createElement('div');
+        dom.className = 'cm-lsp-hover';
+        dom.style.maxWidth = '32em';
+        dom.style.padding = '0.4em 0.6em';
+        dom.style.background = 'var(--fallback-b1, #1e1e1e)';
+        dom.style.border = '1px solid rgba(0,0,0,0.2)';
+        dom.style.borderRadius = '4px';
+        dom.style.fontSize = '0.8em';
+        dom.style.whiteSpace = 'pre-wrap';
+        dom.textContent = result.contents;
+        return { dom };
+      },
+    };
+  });
+
+  // gotoDefinition : F12 / Cmd+click → ask LSP for the def location
+  // + jump to it. When the target lives in another file we open it
+  // via the App-level hook ; same-file jumps re-position the caret.
+  async function gotoDefinition() {
+    if (!lspClient || !view || !file) return false;
+    const sel = view.state.selection.main;
+    const p = posFromOffset(view, sel.head);
+    const locs = await lspClient.definition('file://' + file, p.line, p.character);
+    if (!locs || locs.length === 0) return false;
+    const loc = locs[0];
+    // Convert the LSP uri back to a project-relative path.
+    let target = loc.uri.replace(/^file:\/\//, '');
+    if (target.startsWith('/')) {
+      const sep = '/' + project + '/';
+      const cut = target.indexOf(sep);
+      if (cut >= 0) target = target.slice(cut + sep.length);
+      else target = target.split('/').pop() ?? target;
+    }
+    if (target && target !== file) {
+      const openFn = (window as unknown as {
+        weftLoomOpenFile?: (p: string) => void;
+      }).weftLoomOpenFile;
+      openFn?.(target);
+      // After the new file mounts, defer the jump.
+      setTimeout(() => {
+        const w = (window as unknown as { weftLoomJumpToOffset?: (f: number, t: number) => void });
+        if (w.weftLoomJumpToOffset && view) {
+          const off = offsetFromPos(view, loc.range.start.line, loc.range.start.character);
+          w.weftLoomJumpToOffset(off, off);
+        }
+      }, 250);
+    } else if (view) {
+      const off = offsetFromPos(view, loc.range.start.line, loc.range.start.character);
+      view.dispatch({
+        selection: { anchor: off, head: off },
+        effects: EditorView.scrollIntoView(off, { y: 'center' }),
+      });
+      view.focus();
+    }
+    return true;
+  }
+
   onMount(() => {
     if (!host) return;
     logEvent('editor', 'mount', { file, project });
@@ -447,6 +563,11 @@
           ...foldKeymap,
           // LaTeX-mode shortcuts : Bold / Italic / Math match the
           // bindings every word-processor + Overleaf user expects.
+          // T8 V0.2 : F12 → go-to-definition (also wired on
+          // Mod-Alt-d for keyboards without F-keys). Falls through
+          // when no LSP is connected.
+          { key: 'F12', run: () => { void gotoDefinition(); return true; } },
+          { key: 'Mod-Alt-d', run: () => { void gotoDefinition(); return true; } },
           { key: 'Mod-b', run: (v) => { if (language === 'latex') { applyLatexCommand(v, 'textbf'); return true; } return false; } },
           { key: 'Mod-i', run: (v) => { if (language === 'latex') { applyLatexCommand(v, 'textit'); return true; } return false; } },
           { key: 'Mod-m', run: (v) => { if (language === 'latex') { applyLatexCommand(v, 'inline-math'); return true; } return false; } },
@@ -499,10 +620,14 @@
         // markdown front-matter, Python keywords, etc.). closeBrackets
         // auto-pairs `(`, `[`, `{`, `"`, `'`.
         autocompletion({
-          override: [marpMetadataCompletion, codeblockLanguageCompletion, citeCompletion],
+          override: [marpMetadataCompletion, codeblockLanguageCompletion, citeCompletion, lspCompletionSource],
           activateOnTyping: true,
           closeOnBlur: false,
         }),
+        // T8 V0.2 : LSP-backed hover tooltip alongside citeHover.
+        // Returns null when no LSP client is open ; citeHover keeps
+        // working for the static LaTeX paths.
+        lspHoverTooltip,
         closeBrackets(),
         // Find / replace (Cmd+F to open, Cmd+G to next, Cmd+Shift+G prev).
         search({ top: true }),

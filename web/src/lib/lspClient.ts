@@ -21,6 +21,26 @@ export interface LSPDiagnostic {
   source?: string;
 }
 
+export interface LSPCompletionItem {
+  label: string;
+  detail?: string;
+  documentation?: string | { kind: string; value: string };
+  insertText?: string;
+  filterText?: string;
+  kind?: number;
+  sortText?: string;
+}
+
+export interface LSPHoverResult {
+  contents: string;
+  range?: { start: { line: number; character: number }; end: { line: number; character: number } };
+}
+
+export interface LSPLocation {
+  uri: string;
+  range: { start: { line: number; character: number }; end: { line: number; character: number } };
+}
+
 export interface LSPClient {
   ready: Promise<void>;
   // Open / close docs as the user navigates between files. The
@@ -37,6 +57,11 @@ export interface LSPClient {
   // Observer set : the lint source subscribes here so it re-runs
   // when the server pushes a fresh publishDiagnostics frame.
   onChange(listener: () => void): () => void;
+  // V0.2 : interactive requests. Each returns null on error or
+  // when the server has nothing to say at that position.
+  completion(uri: string, line: number, character: number): Promise<LSPCompletionItem[] | null>;
+  hover(uri: string, line: number, character: number): Promise<LSPHoverResult | null>;
+  definition(uri: string, line: number, character: number): Promise<LSPLocation[] | null>;
 }
 
 type RPCResponse = {
@@ -186,6 +211,50 @@ export function createLSPClient(opts: {
     onChange(fn) {
       observers.add(fn);
       return () => observers.delete(fn);
+    },
+    async completion(uri, line, character) {
+      try {
+        const r = await request<{ items?: LSPCompletionItem[] } | LSPCompletionItem[] | null>(
+          'textDocument/completion',
+          { textDocument: { uri }, position: { line, character } },
+        );
+        if (!r) return null;
+        if (Array.isArray(r)) return r;
+        return r.items ?? null;
+      } catch { return null; }
+    },
+    async hover(uri, line, character) {
+      try {
+        const r = await request<{ contents?: unknown; range?: LSPHoverResult['range'] } | null>(
+          'textDocument/hover',
+          { textDocument: { uri }, position: { line, character } },
+        );
+        if (!r) return null;
+        // contents can be string | { kind, value } | (string | { kind, value })[]
+        const c = r.contents;
+        let text = '';
+        if (typeof c === 'string') text = c;
+        else if (c && typeof c === 'object') {
+          const obj = c as { kind?: string; value?: string } | { kind?: string; value?: string }[];
+          if (Array.isArray(obj)) {
+            text = obj.map(p => typeof p === 'string' ? p : (p.value ?? '')).join('\n\n');
+          } else {
+            text = obj.value ?? '';
+          }
+        }
+        if (!text) return null;
+        return { contents: text, range: r.range };
+      } catch { return null; }
+    },
+    async definition(uri, line, character) {
+      try {
+        const r = await request<LSPLocation | LSPLocation[] | null>(
+          'textDocument/definition',
+          { textDocument: { uri }, position: { line, character } },
+        );
+        if (!r) return null;
+        return Array.isArray(r) ? r : [r];
+      } catch { return null; }
     },
   };
 }
