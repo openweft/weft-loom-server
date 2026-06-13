@@ -166,8 +166,18 @@ node tests/inline-math.mjs
 INLINE_MATH=$?
 
 echo
+echo "----- Outline depth + section folding suite -----"
+# Regression guard for the OutlinePanel depth filter + the
+# section-aware foldService : a .tex with chapter…paragraph
+# headings must surface in the outline, the depth dropdown must
+# narrow the list, and the CodeMirror fold gutter must offer
+# foldable regions on each heading line.
+node tests/outline-depth.mjs
+OUTLINE=$?
+
+echo
 echo "==============================================="
-if [ $UI -eq 0 ] && [ $LANG -eq 0 ] && [ $PREVIEW -eq 0 ] && [ $UIENTRY -eq 0 ] && [ $THEMEP -eq 0 ] && [ $WYSIWYG -eq 0 ] && [ $WYSIWYG_ODT -eq 0 ] && [ $WYSIWYG_ODT_TB -eq 0 ] && [ $ODT_TPL -eq 0 ] && [ $LATEX_PAL -eq 0 ] && [ $MARP_PIC -eq 0 ] && [ $BIB_PAN -eq 0 ] && [ $INLINE_MATH -eq 0 ]; then
+if [ $UI -eq 0 ] && [ $LANG -eq 0 ] && [ $PREVIEW -eq 0 ] && [ $UIENTRY -eq 0 ] && [ $THEMEP -eq 0 ] && [ $WYSIWYG -eq 0 ] && [ $WYSIWYG_ODT -eq 0 ] && [ $WYSIWYG_ODT_TB -eq 0 ] && [ $ODT_TPL -eq 0 ] && [ $LATEX_PAL -eq 0 ] && [ $MARP_PIC -eq 0 ] && [ $BIB_PAN -eq 0 ] && [ $INLINE_MATH -eq 0 ] && [ $OUTLINE -eq 0 ]; then
   echo "  \033[32mALL PASS\033[0m"
   exit 0
 fi
@@ -184,5 +194,6 @@ fi
 [ $MARP_PIC -eq 0 ] && echo "  marp-picker        : \033[32mPASS\033[0m" || echo "  marp-picker        : \033[31mFAIL\033[0m"
 [ $BIB_PAN -eq 0 ] && echo "  bib-panel          : \033[32mPASS\033[0m" || echo "  bib-panel          : \033[31mFAIL\033[0m"
 [ $INLINE_MATH -eq 0 ] && echo "  inline-math        : \033[32mPASS\033[0m" || echo "  inline-math        : \033[31mFAIL\033[0m"
+[ $OUTLINE -eq 0 ] && echo "  outline-depth      : \033[32mPASS\033[0m" || echo "  outline-depth      : \033[31mFAIL\033[0m"
 echo "==============================================="
 exit 1

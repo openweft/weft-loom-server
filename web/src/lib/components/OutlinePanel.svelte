@@ -49,6 +49,21 @@
   let lastSig = '';
   let loading = $state(false);
   let poll: ReturnType<typeof setInterval> | undefined;
+  // T7 : depth filter. 5 = "show everything", 0 = chapters only.
+  // Persisted in localStorage so the user's preference survives a
+  // reload.
+  const DEPTH_KEY = 'weft-loom-outline-depth';
+  let maxDepth = $state<number>((() => {
+    if (typeof localStorage === 'undefined') return 5;
+    const v = Number(localStorage.getItem(DEPTH_KEY) ?? '5');
+    return Number.isFinite(v) && v >= 0 && v <= 5 ? v : 5;
+  })());
+  $effect(() => {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(DEPTH_KEY, String(maxDepth));
+    }
+  });
+  const visibleEntries = $derived(entries.filter(e => e.depth <= maxDepth));
 
   // Collapsed (accordion) state is OWNED by App.svelte so the
   // parent wrapper can shrink to just the header row when collapsed.
@@ -252,8 +267,25 @@
   {:else if entries.length === 0}
     <p class="px-3 py-2 opacity-50 italic">No headings yet.</p>
   {:else}
+    <div class="flex items-center gap-2 px-3 py-1 border-b border-base-300 text-[10px] uppercase opacity-60">
+      <span>Depth</span>
+      <select
+        bind:value={maxDepth}
+        class="select select-bordered select-xs h-6 min-h-0 px-1"
+        title="Maximum heading depth to show"
+        data-testid="outline-depth"
+      >
+        <option value={0}>Chapter</option>
+        <option value={1}>+ Section</option>
+        <option value={2}>+ Subsection</option>
+        <option value={3}>+ Subsubsection</option>
+        <option value={4}>+ Paragraph</option>
+        <option value={5}>All</option>
+      </select>
+      <span class="ml-auto opacity-50">{visibleEntries.length}/{entries.length}</span>
+    </div>
     <ul class="overflow-auto flex-1 py-1">
-      {#each entries as e (e.line)}
+      {#each visibleEntries as e (e.line)}
         <li>
           <button
             type="button"

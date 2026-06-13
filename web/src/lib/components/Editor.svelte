@@ -20,6 +20,8 @@
     indentOnInput,
     bracketMatching,
     StreamLanguage,
+    foldGutter,
+    foldKeymap,
   } from '@codemirror/language';
   import { tags as t } from '@lezer/highlight';
   import { markdown } from '@codemirror/lang-markdown';
@@ -55,6 +57,7 @@
   import { showMinimap } from '@replit/codemirror-minimap';
   import { citeCompletion } from '../citeAutocomplete';
   import { inlineMathRender } from '../inlineMathRender';
+  import { sectionFolding } from '../sectionFolding';
   import { citeHover } from '../citeHover';
   import { bib } from '../bibStore.svelte';
   import { search, searchKeymap } from '@codemirror/search';
@@ -410,6 +413,7 @@
         keymap.of([
           ...defaultKeymap,
           ...historyKeymap,
+          ...foldKeymap,
           // LaTeX-mode shortcuts : Bold / Italic / Math match the
           // bindings every word-processor + Overleaf user expects.
           { key: 'Mod-b', run: (v) => { if (language === 'latex') { applyLatexCommand(v, 'textbf'); return true; } return false; } },
@@ -487,6 +491,12 @@
         // render live while the cursor is outside them ; entering
         // the segment swaps back to raw source so it can be edited.
         ...((language === 'latex' || language === 'markdown') ? [inlineMathRender()] : []),
+        // T7 : section-aware fold ranges. foldGutter renders the
+        // chevron markers in the gutter ; foldKeymap binds Cmd+Alt+[
+        // / Cmd+Alt+] to fold/unfold ; sectionFolding teaches CM
+        // about \section + # heading regions for LaTeX/Markdown.
+        ...((language === 'latex' || language === 'markdown') ? [foldGutter()] : []),
+        ...sectionFolding(language),
         fontCompartment.of(fontExt()),
         tabCompartment.of(tabExt()),
         wordWrapCompartment.of(wordWrapExt()),
