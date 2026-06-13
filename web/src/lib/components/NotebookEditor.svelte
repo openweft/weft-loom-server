@@ -52,8 +52,12 @@
   // Suppress save during initial load — the file read writes nb,
   // which would otherwise fire $effect → save the file we just read.
   let dirty = $state(false);
+  // Bumped on every load() entry ; awaited fetches that resolve after
+  // a newer load started bail before mutating nb/dirty (rapid file switch).
+  let loadSeq = 0;
 
   async function load() {
+    const seq = ++loadSeq;
     // Reset state so the spinner overlay shows while the fetch is
     // in flight. Without this, switching from notebook A → B kept
     // A's cells rendered until B's parse finished — no perceptible
@@ -64,11 +68,14 @@
       const r = await fetch(
         '/api/projects/' + encodeURIComponent(project) + '/files/' + encodeURIComponent(file),
       );
+      if (seq !== loadSeq) return;
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const raw = await r.text();
+      if (seq !== loadSeq) return;
       nb = parseNotebook(raw);
       dirty = false;
     } catch (e) {
+      if (seq !== loadSeq) return;
       loadErr = String(e);
     }
   }
@@ -102,9 +109,17 @@
     saveDebounce = setTimeout(save, 800);
   }
 
-  onMount(load);
+  function flushOnUnload() {
+    if (dirty) void save();
+  }
+
+  onMount(() => {
+    window.addEventListener('beforeunload', flushOnUnload);
+  });
   onDestroy(() => {
+    window.removeEventListener('beforeunload', flushOnUnload);
     if (saveDebounce) clearTimeout(saveDebounce);
+    if (dirty) void save();
   });
 
   // Reload on file change (user opens a different .ipynb).
