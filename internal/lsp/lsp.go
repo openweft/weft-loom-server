@@ -65,6 +65,12 @@ var Servers = map[string]LanguageServer{
 	"typescript": {Lang: "typescript", Binary: "typescript-language-server", EnvOverride: "WEFT_LOOM_LSP_TS", Args: []string{"--stdio"}},
 	"javascript": {Lang: "javascript", Binary: "typescript-language-server", EnvOverride: "WEFT_LOOM_LSP_TS", Args: []string{"--stdio"}},
 	"rust":   {Lang: "rust", Binary: "rust-analyzer", EnvOverride: "WEFT_LOOM_LSP_RUSTANALYZER"},
+	// "fake" : deterministic LSP stub bundled as cmd/fake-lsp ; only
+	// wired through when WEFT_LOOM_LSP_FAKE points at a built binary.
+	// Used by tests so the full WS→subprocess→WS round-trip can run
+	// without depending on texlab / gopls being installed on the
+	// host.
+	"fake": {Lang: "fake", Binary: "fake-lsp-not-on-path", EnvOverride: "WEFT_LOOM_LSP_FAKE"},
 }
 
 // resolveBinary returns the resolved executable path for a language
