@@ -35,6 +35,7 @@
   import hljs from 'highlight.js';
   import 'highlight.js/styles/github-dark.css';
   import NotebookPreview from './NotebookPreview.svelte';
+  import PdfViewer from './PdfViewer.svelte';
   import { parseRTF } from '../rtf';
   import { marpThemeStyle } from '../marp';
   import { expandTemplate } from '../templateExpr';
@@ -384,19 +385,20 @@
   {/if}
 
   {#if pdfURL && language === 'latex' && showPDF}
-    <!-- Browser-native PDF render in the WebView : no PDF.js bundle,
-         no Cmd+S download flow. Works in macOS WKWebView (the
-         weft-app-osx shell) + every modern browser.
-         The `#view=FitH` URL fragment is the Adobe-spec hint for
-         "fit page width to viewport" — Chromium + Safari + Firefox
-         all honour it, so the first frame already zooms to fill
-         the panel instead of the default 100 % which often shows
-         half a page at this column width. -->
-    <embed
-      class="flex-1 w-full"
-      type="application/pdf"
-      src={pdfURL + '#view=FitH&zoom=page-width&toolbar=1'}
-      title="Compiled PDF"
+    <!-- T5b : PDF.js-backed viewer replaces the browser-native
+         <embed> so we can intercept clicks + send (page, x, y) to
+         the SyncTeX endpoint, then jump to the matching source
+         line via window.weftLoomSyncTeXBackward (set in App.svelte).
+         The viewer also honours `#page=N` fragments the forward
+         SyncTeX path leaves on pdfURL. -->
+    <PdfViewer
+      src={pdfURL}
+      onClickPage={(page, x, y) => {
+        const fn = (window as unknown as {
+          weftLoomSyncTeXBackward?: (p: number, x: number, y: number) => Promise<unknown>;
+        }).weftLoomSyncTeXBackward;
+        if (typeof fn === 'function') void fn(page, x, y);
+      }}
     />
   {:else}
     <div class="flex-1 relative overflow-hidden" data-pdf-source>

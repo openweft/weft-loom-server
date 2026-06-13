@@ -729,6 +729,43 @@
       weftLoomWriteODT?: unknown;
     };
     w.weftLoomOpenFile = openFileByPath;
+    // T5b SyncTeX backward : PDF click (page + x + y in synctex sp)
+    // → source file + line. The hook OPENS the source file (via
+    // weftLoomOpenFile) AND jumps to the line (via jumpToLine state).
+    (w as unknown as {
+      weftLoomSyncTeXBackward?: (page: number, x: number, y: number) => Promise<unknown>;
+    }).weftLoomSyncTeXBackward = async (page: number, x: number, y: number) => {
+      if (!artifactURL) return null;
+      const m = /\/compile\/([^/]+)\/artifact/.exec(artifactURL);
+      if (!m) return null;
+      const id = m[1];
+      const url = '/api/projects/' + encodeURIComponent(project)
+        + '/compile/' + encodeURIComponent(id) + '/synctex'
+        + '?page=' + encodeURIComponent(String(page))
+        + '&x=' + encodeURIComponent(String(x))
+        + '&y=' + encodeURIComponent(String(y));
+      try {
+        const r = await fetch(url);
+        if (!r.ok) return null;
+        const data = await r.json();
+        if (!data.found) return null;
+        // The server returns the absolute path SyncTeX recorded
+        // (under the compile workdir). Strip the workdir prefix so
+        // the editor's file API resolves it.
+        let relPath: string = data.source;
+        const cut = relPath.indexOf('/' + project + '/');
+        if (cut >= 0) relPath = relPath.slice(cut + project.length + 2);
+        // Worst-case fallback : keep the basename.
+        if (relPath.startsWith('/')) relPath = relPath.split('/').pop() ?? relPath;
+        openFileByPath(relPath);
+        // Defer the line-jump effect — Editor needs a tick to mount
+        // after openFileByPath swaps the file binding.
+        setTimeout(() => { jumpToLine = data.line; }, 200);
+        return data;
+      } catch {
+        return null;
+      }
+    };
     // T5 SyncTeX forward : source line → PDF page. Derives the
     // compile id from the current artifactURL ; returns null when
     // there's no active artifact or the .synctex.gz isn't there.
