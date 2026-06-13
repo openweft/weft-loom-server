@@ -821,28 +821,31 @@
   .ods-canvas {
     position: relative;
   }
+  /* Headers are OPAQUE so the data canvas never shows through
+     them when the user scrolls. Solid backgrounds + z-index above
+     the cell layer (z-index: 2 when focused). */
   .ods-corner-sticky {
     position: absolute;
     left: 0;
     top: 0;
-    z-index: 4;
-    background: rgba(0,0,0,0.08);
+    z-index: 5;
+    background: #e9ecef;
     border-right: 1px solid rgba(0,0,0,0.18);
     border-bottom: 1px solid rgba(0,0,0,0.18);
   }
   .ods-colheader-row {
     position: absolute;
     top: 0;
-    z-index: 3;
-    background: rgba(0,0,0,0.04);
-    border-bottom: 1px solid rgba(0,0,0,0.18);
+    z-index: 4;
+    background: #f1f3f5;
+    border-bottom: 1px solid rgba(0,0,0,0.25);
   }
   .ods-rowheader-col {
     position: absolute;
     left: 0;
-    z-index: 3;
-    background: rgba(0,0,0,0.04);
-    border-right: 1px solid rgba(0,0,0,0.18);
+    z-index: 4;
+    background: #f1f3f5;
+    border-right: 1px solid rgba(0,0,0,0.25);
   }
   .ods-colheader, .ods-rowheader {
     position: absolute;
@@ -852,13 +855,13 @@
     color: rgba(0,0,0,0.6);
     font-size: 0.7em;
     user-select: none;
-    border: 1px solid rgba(0,0,0,0.1);
-    background: rgba(0,0,0,0.03);
+    border: 1px solid rgba(0,0,0,0.15);
+    background: #f1f3f5;
     line-height: 22px;
   }
   .ods-rowheader { line-height: 22px; }
   .ods-colheader-sel, .ods-rowheader-sel {
-    background: rgba(0, 100, 200, 0.18);
+    background: #cfe2ff;
     color: rgba(0, 70, 150, 1);
   }
   .ods-cells {
@@ -885,14 +888,16 @@
   /* Formula cells get a subtle marker so the user can tell at a
      glance which cells are computed vs literal. */
   .ods-cell-formula { background: rgba(0, 200, 100, 0.04); }
+  /* ∑ marker for formula cells. The cell itself is already
+     position:absolute (above), so the ::after pseudo-element
+     anchors to the cell's box. */
   .ods-cell-formula::after {
     content: '∑';
     position: absolute;
-    margin-left: -1.1em;
-    margin-top: -0.3em;
+    top: 1px;
+    right: 2px;
     font-size: 0.55em;
     color: rgba(0, 130, 60, 0.6);
     pointer-events: none;
   }
-  .ods-cell { position: relative; }
 </style>
