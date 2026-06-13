@@ -31,6 +31,9 @@
   import WysiwygEditor from './lib/components/WysiwygEditor.svelte';
   import LatexSymbolPalette from './lib/components/LatexSymbolPalette.svelte';
   import BibliographyPanel from './lib/components/BibliographyPanel.svelte';
+  import CommentsPanel from './lib/components/CommentsPanel.svelte';
+  import { commentsArray, resolveAnchors } from './lib/comments';
+  import type { CommentRange } from './lib/commentDecorations';
   import TabBar from './lib/components/TabBar.svelte';
   import NewFileDialog from './lib/components/NewFileDialog.svelte';
   import AIChatPanel from './lib/components/AIChatPanel.svelte';
@@ -729,6 +732,28 @@
       weftLoomWriteODT?: unknown;
     };
     w.weftLoomOpenFile = openFileByPath;
+    // T6 : keep the editor's comment decorations in sync with the
+    // ydoc's comments Y.Array. Re-resolves anchors on every Yjs
+    // observe tick so concurrent edits rebase the highlighted
+    // ranges automatically.
+    if (ydoc && currentFile) {
+      const arr = commentsArray(ydoc, currentFile);
+      const ytext = ydoc.getText('file:' + currentFile);
+      const rebuild = () => {
+        const ranges: CommentRange[] = [];
+        for (const c of arr.toArray()) {
+          const r = resolveAnchors(ydoc!, ytext, c);
+          if (r) ranges.push({ id: c.id, from: r.from, to: r.to, resolved: c.resolved });
+        }
+        const fn = (window as unknown as {
+          weftLoomSetCommentRanges?: (r: CommentRange[]) => void;
+        }).weftLoomSetCommentRanges;
+        if (typeof fn === 'function') fn(ranges);
+      };
+      rebuild();
+      arr.observe(rebuild);
+      ytext.observe(rebuild);
+    }
     // T5b SyncTeX backward : PDF click (page + x + y in synctex sp)
     // → source file + line. The hook OPENS the source file (via
     // weftLoomOpenFile) AND jumps to the line (via jumpToLine state).
@@ -1057,6 +1082,18 @@
                 {/key}
                 <LatexSymbolPalette visible={language === 'latex'} />
                 <BibliographyPanel visible={language === 'latex'} />
+                <CommentsPanel
+                  {ydoc}
+                  file={currentFile}
+                  {identity}
+                  visible={!!currentFile}
+                  onJumpToOffset={(from, to) => {
+                    const fn = (window as unknown as {
+                      weftLoomJumpToOffset?: (f: number, t: number) => void;
+                    }).weftLoomJumpToOffset;
+                    if (typeof fn === 'function') fn(from, to);
+                  }}
+                />
               {/if}
             {:else}
               <div class="h-full flex items-center justify-center opacity-50 text-sm">

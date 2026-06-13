@@ -58,6 +58,7 @@
   import { citeCompletion } from '../citeAutocomplete';
   import { inlineMathRender } from '../inlineMathRender';
   import { sectionFolding } from '../sectionFolding';
+  import { commentDecorations, setCommentRanges, type CommentRange } from '../commentDecorations';
   import { citeHover } from '../citeHover';
   import { bib } from '../bibStore.svelte';
   import { search, searchKeymap } from '@codemirror/search';
@@ -497,6 +498,10 @@
         // about \section + # heading regions for LaTeX/Markdown.
         ...((language === 'latex' || language === 'markdown') ? [foldGutter()] : []),
         ...sectionFolding(language),
+        // T6 : decorations for commented text ranges (yellow dotted
+        // underline). The ranges are pushed via the StateEffect
+        // below — driven by the comments Y.Array observer.
+        commentDecorations(),
         fontCompartment.of(fontExt()),
         tabCompartment.of(tabExt()),
         wordWrapCompartment.of(wordWrapExt()),
@@ -506,9 +511,23 @@
         EditorView.theme({
           '&': { height: '100%' },
         }),
-        // Cursor + selection + word-count → StatusBar slot.
+        // Cursor + selection + word-count → StatusBar slot. The
+        // selection report also drives the CommentsPanel : when the
+        // user types in the editor + the panel's input has body, the
+        // panel reads the latest selection range to anchor a new
+        // comment.
         EditorView.updateListener.of((u) => {
-          if (u.docChanged || u.selectionSet) updateCursorStats();
+          if (u.docChanged || u.selectionSet) {
+            updateCursorStats();
+            const sel = u.state.selection.main;
+            const text = u.state.doc.sliceString(sel.from, sel.to);
+            const fn = (window as unknown as {
+              weftLoomReportSelection?: (s: { from: number; to: number; text: string } | null) => void;
+            }).weftLoomReportSelection;
+            if (typeof fn === 'function') {
+              fn(sel.from === sel.to ? null : { from: sel.from, to: sel.to, text });
+            }
+          }
         }),
       ],
     });
@@ -525,6 +544,26 @@
     // `placeCursorOffset` (optional) lets the palette put the
     // caret at a useful position inside the inserted snippet — e.g.
     // \\frac{|}{} parks at the numerator stub.
+    // T6 : setter for comment-range decorations. CommentsPanel
+    // resolves Yjs RelativePositions to absolute offsets + pushes
+    // them here so the editor paints the dotted-underline marks.
+    (window as unknown as {
+      weftLoomSetCommentRanges?: (ranges: CommentRange[]) => void;
+      weftLoomJumpToOffset?: (from: number, to: number) => void;
+    }).weftLoomSetCommentRanges = (ranges: CommentRange[]) => {
+      if (!view) return;
+      view.dispatch({ effects: setCommentRanges.of(ranges) });
+    };
+    (window as unknown as {
+      weftLoomJumpToOffset?: (from: number, to: number) => void;
+    }).weftLoomJumpToOffset = (from: number, to: number) => {
+      if (!view) return;
+      view.dispatch({
+        selection: { anchor: from, head: to },
+        effects: EditorView.scrollIntoView(from, { y: 'center' }),
+      });
+      view.focus();
+    };
     (window as unknown as {
       weftLoomInsertAtCursor?: (s: string, placeCursorOffset?: number) => void;
     }).weftLoomInsertAtCursor = (s: string, placeCursorOffset?: number) => {
