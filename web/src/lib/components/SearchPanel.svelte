@@ -143,7 +143,16 @@
   function highlight(line: string): string {
     const re = makeRegex();
     if (!re) return escape(line);
-    return line.replace(re, (m) => `<mark class="bg-warning/40 text-base-content">${escape(m)}</mark>`);
+    // Use placeholder sentinels so we can HTML-escape the full line
+    // (matched bytes included) AFTER tagging match positions, then
+    // swap the placeholders for the real <mark> wrappers.
+    const OPEN = '\u0001';
+    const CLOSE = '\u0002';
+    const tagged = line.replace(re, (m) => OPEN + m + CLOSE);
+    const escaped = escape(tagged);
+    return escaped
+      .split(OPEN).join('<mark class="bg-warning/40 text-base-content">')
+      .split(CLOSE).join('</mark>');
   }
   function escape(s: string): string {
     return s

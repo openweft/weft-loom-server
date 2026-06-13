@@ -345,8 +345,9 @@
     <p class="px-3 py-2 opacity-50 italic">No headings yet.</p>
   {:else}
     <div class="flex items-center gap-2 px-3 py-1 border-b border-base-300 text-[10px] uppercase opacity-60">
-      <span>Depth</span>
+      <label for="outline-depth-filter">Depth</label>
       <select
+        id="outline-depth-filter"
         bind:value={maxDepth}
         class="select select-bordered select-xs h-6 min-h-0 px-1"
         title="Maximum heading depth to show"
@@ -364,11 +365,15 @@
     <ul class="overflow-auto flex-1 py-1">
       {#each visibleEntries as e (e.line)}
         <li>
+          <!-- TODO: thread the editor's currentLine through a prop and
+               set aria-current="location" on the matching entry so
+               assistive tech announces the active heading. -->
           <button
             type="button"
             class="w-full text-left px-2 py-0.5 hover:bg-base-200 font-mono truncate"
             style="padding-left: {e.depth * 0.75 + 0.5}rem"
             onclick={() => onJump?.(e.line)}
+            aria-current={undefined}
             title={`L${e.line} · ${e.label}`}
           >
             <span class="opacity-50 mr-1">

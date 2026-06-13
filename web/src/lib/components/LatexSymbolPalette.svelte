@@ -69,7 +69,7 @@
             <div class="text-sm font-semibold">LaTeX symbols</div>
             <button class="btn btn-ghost btn-xs" onclick={() => (open = false)} aria-label="Close palette">×</button>
           </div>
-          <div class="tabs tabs-boxed mb-2 flex-wrap">
+          <div class="tabs tabs-box mb-2 flex-wrap">
             {#each CATEGORIES as c}
               <button
                 class="tab tab-sm"

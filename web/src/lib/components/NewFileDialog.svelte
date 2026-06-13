@@ -28,6 +28,36 @@
 
   let { open = $bindable(), project, onClose, onCreated }: Props = $props();
 
+  // Native <dialog> handle : we drive showModal()/close() from the
+  // `open` prop so the dialog gets the browser's focus-trap, ::backdrop
+  // pseudo-element, and Escape handling rather than relying solely on
+  // daisyUI's CSS-only modal-open class.
+  let dialogEl = $state<HTMLDialogElement | null>(null);
+  let previousFocus: HTMLElement | null = null;
+  let cancelBound = false;
+  $effect(() => {
+    if (!dialogEl) return;
+    if (!cancelBound) {
+      dialogEl.addEventListener('cancel', (e) => {
+        e.preventDefault();
+        open = false;
+        onClose();
+      });
+      cancelBound = true;
+    }
+    if (open && !dialogEl.open) {
+      previousFocus = (document.activeElement as HTMLElement | null) ?? null;
+      dialogEl.showModal();
+      queueMicrotask(() => {
+        const target = dialogEl?.querySelector<HTMLElement>('[data-autofocus]');
+        target?.focus();
+      });
+    } else if (!open && dialogEl.open) {
+      dialogEl.close();
+      previousFocus?.focus?.();
+    }
+  });
+
   // Language picker : the unique set of template.language values,
   // sorted, with a friendly display label per language.
   const LANG_LABELS: Record<string, string> = {
@@ -210,13 +240,13 @@
   }
 </script>
 
-<dialog class="modal" class:modal-open={open}>
+<dialog class="modal" class:modal-open={open} bind:this={dialogEl}>
   <div class="modal-box max-w-xl">
     <h3 class="text-lg font-bold mb-3">New file</h3>
 
     <div class="grid grid-cols-2 gap-3">
       <div class="form-control">
-        <label class="label">
+        <label class="label" for="nf-lang">
           <span class="label-text text-xs uppercase opacity-60">Language</span>
         </label>
         <!-- Filter input above the combo : type to narrow. With ~20
@@ -224,16 +254,18 @@
              the dropdown. The combo below auto-collapses to the
              matched entries. -->
         <input
+          id="nf-langFilter"
           type="text"
           bind:value={langFilter}
           placeholder="Filter languages…"
           class="input input-bordered input-xs mb-1 font-mono"
+          aria-label="Filter languages"
         />
         <!-- Drop the `size` attribute : with size>1 a <select>
              becomes a listbox where `bind:value` stops re-syncing
              on filter narrows. Plain dropdown + auto-jump effect
              above keeps the active pick valid. -->
-        <select class="select select-bordered select-sm w-full" bind:value={lang}>
+        <select id="nf-lang" class="select select-bordered select-sm w-full" bind:value={lang}>
           {#each langOptions() as o}
             <option value={o.id}>{o.label}</option>
           {/each}
@@ -244,16 +276,18 @@
       </div>
 
       <div class="form-control">
-        <label class="label">
+        <label class="label" for="nf-template">
           <span class="label-text text-xs uppercase opacity-60">Template</span>
         </label>
         <input
+          id="nf-tplFilter"
           type="text"
           bind:value={tplFilter}
           placeholder="Filter templates…"
           class="input input-bordered input-xs mb-1 font-mono"
+          aria-label="Filter templates"
         />
-        <select class="select select-bordered select-sm w-full" bind:value={templateId}>
+        <select id="nf-template" class="select select-bordered select-sm w-full" bind:value={templateId}>
           {#each tplOptions() as t}
             <option value={t.id}>{t.name}</option>
           {/each}
@@ -271,10 +305,10 @@
     {#if tpl?.id === 'markdown-marp'}
       <div class="grid grid-cols-2 gap-3 mt-3 p-3 rounded bg-base-200/50 border border-base-300/50">
         <div class="form-control">
-          <label class="label py-0">
+          <label class="label py-0" for="nf-marpTheme">
             <span class="label-text text-xs uppercase opacity-60">Marp theme</span>
           </label>
-          <select class="select select-bordered select-sm" bind:value={marpTheme} data-testid="marp-theme-picker">
+          <select id="nf-marpTheme" class="select select-bordered select-sm" bind:value={marpTheme} data-testid="marp-theme-picker">
             <optgroup label="Built-in">
               {#each MARP_THEMES.filter(t => t.origin === 'built-in') as t}
                 <option value={t.id}>{t.label}</option>
@@ -298,10 +332,10 @@
           </select>
         </div>
         <div class="form-control">
-          <label class="label py-0">
+          <label class="label py-0" for="nf-marpLang">
             <span class="label-text text-xs uppercase opacity-60">Slide language</span>
           </label>
-          <select class="select select-bordered select-sm" bind:value={marpLang} data-testid="marp-lang-picker">
+          <select id="nf-marpLang" class="select select-bordered select-sm" bind:value={marpLang} data-testid="marp-lang-picker">
             {#each MARP_LANGS as l}
               <option value={l.id}>{l.label}</option>
             {/each}
@@ -314,14 +348,16 @@
     {/if}
 
     <div class="form-control mt-3">
-      <label class="label">
+      <label class="label" for="nf-path">
         <span class="label-text text-xs uppercase opacity-60">Path inside project</span>
       </label>
       <input
+        id="nf-path"
         type="text"
         class="input input-bordered input-sm font-mono"
         bind:value={path}
         placeholder="e.g. slides/intro.tex"
+        data-autofocus
         onkeydown={(e) => {
           if (e.key === 'Enter') create();
           if (e.key === 'Escape') {
@@ -357,5 +393,7 @@
     class="modal-backdrop"
     onclick={() => { open = false; onClose(); }}
     aria-label="Close"
+    aria-hidden="true"
+    tabindex="-1"
   ></button>
 </dialog>

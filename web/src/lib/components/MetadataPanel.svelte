@@ -235,9 +235,17 @@
             <span class="badge badge-ghost badge-xs">{userVars.length}</span>
             <span class="ml-auto opacity-50 normal-case text-[10px] italic">interpolées dans le doc</span>
           </div>
+          <!-- visually-hidden column headers : screen readers read
+               them out, sighted users keep the compact layout. -->
+          <div class="sr-only" aria-hidden="false">
+            <span id="mp-var-col-name">Nom de la variable</span>
+            <span id="mp-var-col-value">Valeur de la variable</span>
+          </div>
           {#each userVars as v, idx (v.name + ':' + idx)}
             <div class="flex items-center gap-1 mb-1" data-testid="meta-var-row">
+              <label for={'mp-var-name-' + idx} class="sr-only">Nom de la variable {idx + 1}</label>
               <input
+                id={'mp-var-name-' + idx}
                 type="text"
                 class="input input-bordered input-xs font-mono w-28"
                 value={v.name}
@@ -245,7 +253,9 @@
                 placeholder="nom"
                 data-testid="meta-var-name"
               />
+              <label for={'mp-var-value-' + idx} class="sr-only">Valeur de la variable {idx + 1}</label>
               <input
+                id={'mp-var-value-' + idx}
                 type="text"
                 class="input input-bordered input-xs font-mono flex-1 min-w-0"
                 value={v.value}
@@ -258,12 +268,15 @@
                 class="btn btn-ghost btn-xs text-error"
                 onclick={() => deleteUserVar(idx)}
                 title="Supprimer cette variable"
+                aria-label="Supprimer cette variable"
                 data-testid="meta-var-delete"
               >×</button>
             </div>
           {/each}
           <div class="flex items-center gap-1 pt-1 border-t border-base-300/50">
+            <label for="mp-var-new-name" class="sr-only">Nom de la nouvelle variable</label>
             <input
+              id="mp-var-new-name"
               type="text"
               class="input input-bordered input-xs font-mono w-28"
               placeholder="nom"
@@ -271,7 +284,9 @@
               onkeydown={(e) => { if (e.key === 'Enter') addUserVar(); }}
               data-testid="meta-var-new-name"
             />
+            <label for="mp-var-new-value" class="sr-only">Valeur de la nouvelle variable</label>
             <input
+              id="mp-var-new-value"
               type="text"
               class="input input-bordered input-xs font-mono flex-1 min-w-0"
               placeholder="valeur"
@@ -285,6 +300,7 @@
               onclick={addUserVar}
               disabled={!newVarName.trim()}
               title="Ajouter la variable"
+              aria-label="Ajouter la variable"
               data-testid="meta-var-add"
             >+</button>
           </div>
