@@ -29,6 +29,7 @@
   import { setProjectHint, logEvent } from './lib/logbus';
   import Editor from './lib/components/Editor.svelte';
   import WysiwygEditor from './lib/components/WysiwygEditor.svelte';
+  import SpreadsheetEditor from './lib/components/SpreadsheetEditor.svelte';
   import LatexSymbolPalette from './lib/components/LatexSymbolPalette.svelte';
   import BibliographyPanel from './lib/components/BibliographyPanel.svelte';
   import CommentsPanel from './lib/components/CommentsPanel.svelte';
@@ -1054,6 +1055,13 @@
               {#if currentFile.endsWith('.ipynb')}
                 {#key project + '|nb|' + currentFile}
                   <NotebookEditor {project} file={currentFile} />
+                {/key}
+              {:else if currentFile.toLowerCase().endsWith('.ods')}
+                <!-- T9 V0.1 : OpenDocument Spreadsheet editor.
+                     Pure-browser parseODS/writeODS via jszip +
+                     DOMParser ; the grid is contenteditable cells. -->
+                {#key project + '|ods|' + currentFile}
+                  <SpreadsheetEditor {project} file={currentFile} />
                 {/key}
               {:else if currentFile.toLowerCase().endsWith('.rtf') || currentFile.toLowerCase().endsWith('.odt')}
                 <!-- RTF + ODT both open in the WYSIWYG editor
