@@ -25,7 +25,102 @@ export interface RTFParsed {
   meta: { title?: string; author?: string };
 }
 
-export function parseRTF(src: string): RTFParsed {
+// T10 V0.3 : pre-pass that hoists every `{\field{\*\fldinst INSTR}
+// {\fldrslt VISIBLE}}` construct out of the source + replaces each
+// with a placeholder the main parser surfaces as an inline
+// `<span class="rtf-field" ...>`. Done as a pre-pass because the
+// field's `{` / `}` pairs nest inside the parser's brace stack and
+// the char-by-char loop can't easily look ahead.
+interface RTFField {
+  kind: string;
+  name: string;
+  visible: string;
+}
+function extractRTFFields(src: string): { src: string; fields: RTFField[] } {
+  const fields: RTFField[] = [];
+  let out = '';
+  let i = 0;
+  const N = src.length;
+  while (i < N) {
+    // Look for `{\field` at the current position.
+    if (src.startsWith('{\\field', i)) {
+      const fieldStart = i;
+      let depth = 1;
+      i += 7; // past `{\field`
+      const innerStart = i;
+      while (i < N && depth > 0) {
+        if (src[i] === '\\' && (src[i + 1] === '{' || src[i + 1] === '}' || src[i + 1] === '\\')) {
+          i += 2; continue;
+        }
+        if (src[i] === '{') depth++;
+        else if (src[i] === '}') depth--;
+        i++;
+        if (depth === 0) break;
+      }
+      const inner = src.slice(innerStart, i - 1);
+      const instr = pickRTFGroup(inner, 'fldinst');
+      const visible = pickRTFGroup(inner, 'fldrslt');
+      let kind = 'unknown';
+      let name = '';
+      if (instr) {
+        const m = /^\s*(\\\*\s*)?\\?([A-Z]+)\s*(.*)$/.exec(instr);
+        if (m) {
+          kind = m[2].toLowerCase();
+          // DOCPROPERTY / USERPROPERTY take an argument (the variable
+          // name) — quoted or bare.
+          const rest = m[3].trim();
+          if (rest) {
+            const q = /^"([^"]+)"/.exec(rest) ?? /^(\S+)/.exec(rest);
+            if (q) name = q[1];
+          }
+        }
+      }
+      fields.push({ kind, name, visible: (visible ?? '').trim() });
+      const idx = fields.length - 1;
+      out += '\\WLFIELD' + idx + ' ';
+      // i already past the closing brace.
+      continue;
+    }
+    out += src[i];
+    i++;
+  }
+  return { src: out, fields };
+}
+
+// pickRTFGroup : find `\fldinst` / `\fldrslt` and return the text
+// inside its `{...}` group (the destination's payload). We do a
+// shallow scan : the payload itself may carry control words but
+// for V0.3 we just collapse them to their plain text.
+function pickRTFGroup(src: string, name: string): string | null {
+  const marker = '\\' + name;
+  const idx = src.indexOf(marker);
+  if (idx < 0) return null;
+  // Walk back to the opening `{` that started the group containing
+  // the marker.
+  let braceStart = idx;
+  while (braceStart > 0 && src[braceStart] !== '{') braceStart--;
+  // Walk forward through the group body until its matching `}`.
+  let depth = 1;
+  let j = braceStart + 1;
+  while (j < src.length && depth > 0) {
+    if (src[j] === '\\' && (src[j + 1] === '{' || src[j + 1] === '}')) { j += 2; continue; }
+    if (src[j] === '{') depth++;
+    else if (src[j] === '}') depth--;
+    if (depth === 0) break;
+    j++;
+  }
+  const body = src.slice(idx + marker.length, j);
+  // Drop the leading whitespace + the trailing `\*` or ignorable
+  // markers ; keep the visible text by stripping any leftover
+  // control words.
+  return body.replace(/^\s+/, '').replace(/\\[A-Za-z]+(-?\d+)?\s?/g, '').trim();
+}
+
+export function parseRTF(rawSrc: string): RTFParsed {
+  const { src, fields } = extractRTFFields(rawSrc);
+  // The main parser loop reads the rewritten source ; whenever it
+  // sees `\WLFIELD<idx>` it emits the field span instead of a
+  // control word.
   let i = 0;
   const N = src.length;
   // Stack of style frames so `{` saves, `}` restores.
@@ -127,6 +222,23 @@ export function parseRTF(src: string): RTFParsed {
           }
           break;
         }
+        case 'WLFIELD':
+          // T10 V0.3 : the extract-pre-pass emitted `\WLFIELD<idx> ` ;
+          // resolve to the captured field + emit a <span.rtf-field>.
+          if (destination === 'doc' && !top.skip) {
+            const idx = param ?? 0;
+            const f = fields[idx];
+            if (f) {
+              const safeName = f.name.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'} as Record<string, string>)[c]);
+              const safeVisible = f.visible.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'} as Record<string, string>)[c]);
+              const safeKind = f.kind.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'} as Record<string, string>)[c]);
+              html += '<span class="rtf-field" data-kind="' + safeKind + '"'
+                   + (f.name ? ' data-name="' + safeName + '"' : '')
+                   + '>' + safeVisible + '</span>';
+              plain += f.visible;
+            }
+          }
+          break;
         case 'fonttbl':   destination = 'fonttbl'; top.skip = true; break;
         case 'colortbl':  destination = 'colortbl'; top.skip = true; break;
         case 'stylesheet':destination = 'stylesheet'; top.skip = true; break;
@@ -229,7 +341,8 @@ interface LeafFormat { bold: boolean; italic: boolean; underline: boolean; }
 interface BlockBoundary { kind: 'par' | 'line' | 'bullet' | 'enum'; ordinal?: number; }
 interface Leaf { kind: 'text'; text: string; fmt: LeafFormat; }
 interface BoundaryLeaf { kind: 'boundary'; boundary: BlockBoundary; }
-type Item = Leaf | BoundaryLeaf;
+interface FieldLeaf { kind: 'field'; field: { kind: string; name: string; visible: string }; fmt: LeafFormat; }
+type Item = Leaf | BoundaryLeaf | FieldLeaf;
 
 // Inline tags that mutate the format frame as we descend.
 const INLINE_FORMAT: Record<string, Partial<LeafFormat>> = {
@@ -255,6 +368,16 @@ function collectLeaves(node: Node, fmt: LeafFormat, out: Item[]): void {
   if (INLINE_FORMAT[tag]) {
     const next = { ...fmt, ...INLINE_FORMAT[tag] };
     el.childNodes.forEach((c) => collectLeaves(c, next, out));
+    return;
+  }
+  // T10 V0.3 : <span class="rtf-field" data-kind data-name data-result>
+  // → emit a synthetic "field" leaf that serialises back to
+  // `{\field{\*\fldinst KIND}{\fldrslt VISIBLE}}` on the writer side.
+  if (tag === 'span' && (el.getAttribute('class') ?? '').includes('rtf-field')) {
+    const kind = (el.getAttribute('data-kind') ?? 'page').toUpperCase();
+    const name = el.getAttribute('data-name') ?? '';
+    const visible = el.textContent ?? '';
+    out.push({ kind: 'field', field: { kind, name, visible }, fmt: { ...fmt } });
     return;
   }
   // Inline-but-no-format wrappers : span etc.
@@ -344,6 +467,18 @@ function emitLeaves(items: Item[]): string {
     if (it.kind === 'text') {
       setFormat(it.fmt);
       pending.push(escapeRTFText(it.text));
+      continue;
+    }
+    if (it.kind === 'field') {
+      setFormat(it.fmt);
+      // {\field{\*\fldinst KIND [name]}{\fldrslt VISIBLE}}
+      // Quote the DOCPROPERTY name so spaces survive.
+      const fld = it.field;
+      const arg = fld.name ? ' "' + fld.name.replace(/"/g, '') + '"' : '';
+      pending.push(
+        '{\\field{\\*\\fldinst ' + fld.kind + arg + '}'
+        + '{\\fldrslt ' + escapeRTFText(fld.visible) + '}}'
+      );
       continue;
     }
     // Boundary : flush + emit the boundary token + reset format
