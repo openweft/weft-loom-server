@@ -241,8 +241,20 @@
   // longer unmounts/remounts the editor — selection + focus survive
   // the swap. We just flip the reactive state ; the wrapper CSS
   // does the rest.
+  //
+  // The header + footer bands ARE mounted only in Pages mode (so
+  // their contenteditable doesn't shadow the body's
+  // [contenteditable=true][role=textbox] selector). When we toggle
+  // away from Pages, snapshot their live innerHTML into the
+  // odtHeader / odtFooter state so the next remount picks the
+  // user's edits up again ({@html sanitize(odtHeader)} re-renders
+  // with the snapshotted markup).
   function switchPageMode(next: 'continuous' | 'pages') {
     if (pageMode === next) return;
+    if (pageMode === 'pages') {
+      if (headerEl) odtHeader = headerEl.innerHTML;
+      if (footerEl) odtFooter = footerEl.innerHTML;
+    }
     pageMode = next;
   }
 
@@ -959,7 +971,7 @@
           aria-label="Page header"
           spellcheck="true"
           oninput={onInput}
-          class="page-band page-header wysiwyg-surface prose prose-sm max-w-none"
+          class="page-band page-header wysiwyg-band prose prose-sm max-w-none"
           style={`margin: 0.5cm ${MARGIN_CM}cm 0 ${MARGIN_CM}cm; min-height: 1cm; padding-bottom: 0.3cm; line-height: 1.4; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;`}
           data-band="header"
           data-placeholder="en-tête (clic pour éditer)"
@@ -988,7 +1000,7 @@
           aria-label="Page footer"
           spellcheck="true"
           oninput={onInput}
-          class="page-band page-footer wysiwyg-surface prose prose-sm max-w-none"
+          class="page-band page-footer wysiwyg-band prose prose-sm max-w-none"
           style={`margin: 0 ${MARGIN_CM}cm 0.5cm ${MARGIN_CM}cm; min-height: 1cm; padding-top: 0.3cm; line-height: 1.4; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;`}
           data-band="footer"
           data-placeholder="pied de page (clic pour éditer)"
@@ -1002,9 +1014,13 @@
 <style>
   /* Keyboard-only focus indicator — replaces the outline removed
      for mouse users with a visible-but-tasteful 2 px ring when the
-     user reaches the contenteditable via Tab. */
-  .wysiwyg-surface { outline: none; }
-  .wysiwyg-surface:focus-visible {
+     user reaches the contenteditable via Tab. The bands
+     (.wysiwyg-band, header/footer) share the same focus + placeholder
+     styles but a distinct class so .wysiwyg-surface remains a body-
+     only selector — A1 of the cross-feature interaction test relies
+     on that to read the body's text content after a pageMode flip. */
+  .wysiwyg-surface, .wysiwyg-band { outline: none; }
+  .wysiwyg-surface:focus-visible, .wysiwyg-band:focus-visible {
     outline: 2px solid var(--color-primary, #2563eb);
     outline-offset: -2px;
   }
@@ -1013,7 +1029,7 @@
      (otherwise the placeholder string would serialise back into
      the saved ODT). The :empty matcher fires when the band has
      no children. */
-  .wysiwyg-surface[data-placeholder]:empty:not(:focus)::before {
+  .wysiwyg-band[data-placeholder]:empty:not(:focus)::before {
     content: attr(data-placeholder);
     color: rgba(0, 0, 0, 0.4);
     font-style: italic;
