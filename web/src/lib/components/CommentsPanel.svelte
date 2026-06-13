@@ -19,6 +19,7 @@
   import * as Y from 'yjs';
   import {
     commentsArray, encodeRP, resolveAnchors, genId,
+    newCommentMap, commentFromMap,
     type CommentRecord,
   } from '../comments';
   import type { Identity } from '../identity';
@@ -40,7 +41,7 @@
   let pendingBody = $state('');
   let lastSelection = $state<{ from: number; to: number; text: string } | null>(null);
 
-  let arr: Y.Array<CommentRecord> | undefined;
+  let arr: Y.Array<Y.Map<unknown>> | undefined;
   let observer: (() => void) | undefined;
 
   // Watch the comments array + rebuild local state every time it
@@ -56,7 +57,7 @@
     arr = a;
     const ytext = ydoc.getText('file:' + file);
     const rebuild = () => {
-      const list = a.toArray();
+      const list = a.toArray().map(commentFromMap);
       comments = list;
       const res: Record<string, { from: number; to: number } | null> = {};
       for (const c of list) {
@@ -69,6 +70,7 @@
     a.observe(fn);
     ytext.observe(fn);
     observer = () => { a.unobserve(fn); ytext.unobserve(fn); };
+    return () => { if (observer) { observer(); observer = undefined; } };
   });
 
   // The editor sends selection changes to the global hook so the
@@ -106,7 +108,7 @@
       resolved: false,
       ts: Date.now(),
     };
-    ydoc.transact(() => { arr!.push([rec]); }, 'comment-add');
+    ydoc.transact(() => { arr!.push([newCommentMap(rec)]); }, 'comment-add');
     pendingBody = '';
   }
 
@@ -114,11 +116,10 @@
     if (!arr || !ydoc) return;
     ydoc.transact(() => {
       const all = arr!.toArray();
-      const idx = all.findIndex(c => c.id === id);
+      const idx = all.findIndex(m => m.get('id') === id);
       if (idx < 0) return;
-      const old = all[idx];
-      arr!.delete(idx, 1);
-      arr!.insert(idx, [{ ...old, resolved: !old.resolved }]);
+      const cmap = all[idx];
+      cmap.set('resolved', !cmap.get('resolved'));
     }, 'comment-toggle');
   }
 
@@ -126,7 +127,7 @@
     if (!arr || !ydoc) return;
     ydoc.transact(() => {
       const all = arr!.toArray();
-      const idx = all.findIndex(c => c.id === id);
+      const idx = all.findIndex(m => m.get('id') === id);
       if (idx >= 0) arr!.delete(idx, 1);
     }, 'comment-delete');
   }

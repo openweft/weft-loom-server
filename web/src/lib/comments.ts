@@ -38,8 +38,35 @@ export interface CommentRecord {
   ts: number;
 }
 
+// Comments live as a Y.Array of Y.Map<field,value>. Each comment is a
+// small Y.Map so the 'resolved' boolean can flip via cmap.set() — no
+// delete+insert dance, no duplicate records on concurrent toggle.
 export function commentsArray(ydoc: Y.Doc, file: string) {
-  return ydoc.getArray<CommentRecord>('comments:' + file);
+  return ydoc.getArray<Y.Map<unknown>>('comments:' + file);
+}
+
+// Wrap a plain CommentRecord into a Y.Map so it can be pushed into the
+// CRDT array. Field-level mutations (toggleResolved) are then conflict-
+// free across peers.
+export function newCommentMap(rec: CommentRecord): Y.Map<unknown> {
+  const m = new Y.Map<unknown>();
+  m.set('id', rec.id);
+  m.set('from', rec.from);
+  m.set('to', rec.to);
+  m.set('body', rec.body);
+  m.set('authorId', rec.authorId);
+  m.set('authorName', rec.authorName);
+  m.set('authorColor', rec.authorColor);
+  m.set('resolved', rec.resolved);
+  m.set('ts', rec.ts);
+  return m;
+}
+
+// Snapshot a Y.Map<comment-field> back to a plain CommentRecord for the
+// Svelte render path. Uses toJSON() to keep number[] anchors intact.
+export function commentFromMap(m: Y.Map<unknown>): CommentRecord {
+  const j = m.toJSON() as CommentRecord;
+  return j;
 }
 
 // Helpers : encode + decode RelativePosition ↔ number[] so we can

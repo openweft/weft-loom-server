@@ -33,7 +33,7 @@
   import LatexSymbolPalette from './lib/components/LatexSymbolPalette.svelte';
   import BibliographyPanel from './lib/components/BibliographyPanel.svelte';
   import CommentsPanel from './lib/components/CommentsPanel.svelte';
-  import { commentsArray, resolveAnchors } from './lib/comments';
+  import { commentsArray, commentFromMap, resolveAnchors } from './lib/comments';
   import type { CommentRange } from './lib/commentDecorations';
   import TabBar from './lib/components/TabBar.svelte';
   import NewFileDialog from './lib/components/NewFileDialog.svelte';
@@ -742,7 +742,8 @@
       const ytext = ydoc.getText('file:' + currentFile);
       const rebuild = () => {
         const ranges: CommentRange[] = [];
-        for (const c of arr.toArray()) {
+        for (const m of arr.toArray()) {
+          const c = commentFromMap(m);
           const r = resolveAnchors(ydoc!, ytext, c);
           if (r) ranges.push({ id: c.id, from: r.from, to: r.to, resolved: c.resolved });
         }

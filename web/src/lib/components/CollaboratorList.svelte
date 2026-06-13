@@ -59,12 +59,17 @@
 
   let observer: (() => void) | undefined;
   $effect(() => {
-    if (observer && awareness) awareness.off('change', observer);
     observer = undefined;
     if (!awareness) return;
     snapshot();
-    observer = () => snapshot();
-    awareness.on('change', observer);
+    const a = awareness;
+    const fn = () => snapshot();
+    observer = fn;
+    a.on('change', fn);
+    return () => {
+      a.off('change', fn);
+      if (observer === fn) observer = undefined;
+    };
   });
 
   onDestroy(() => {

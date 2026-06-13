@@ -79,18 +79,23 @@
 
   let observer: (() => void) | undefined;
   $effect(() => {
-    if (observer && awareness) awareness.off('change', observer);
     observer = undefined;
     if (!awareness) {
       peers = [];
       return;
     }
     snapshot();
-    observer = () => {
+    const a = awareness;
+    const fn = () => {
       awarenessTick++;
       snapshot();
     };
-    awareness.on('change', observer);
+    observer = fn;
+    a.on('change', fn);
+    return () => {
+      a.off('change', fn);
+      if (observer === fn) observer = undefined;
+    };
   });
 
   onDestroy(() => {
