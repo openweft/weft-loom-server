@@ -11,6 +11,7 @@
 
   import { parseODS, writeODS, columnLabel, blankSheet, type ODSSheet, type ODSCell } from '../ods';
   import { writeFile } from '../api';
+  import { HyperFormula } from 'hyperformula';
 
   interface Props {
     project: string;
@@ -32,6 +33,13 @@
   let selRow = $state(0);
   let selCol = $state(0);
   let formulaBarValue = $state('');
+  // T9 V0.2 : HyperFormula engine. One instance for the whole
+  // workbook ; sheets are added/removed as the user toggles them.
+  // `displayCache` mirrors HF's computed values so the grid can
+  // render "=A1+B1" cells as their numeric result without calling
+  // HF on every render.
+  let hf: HyperFormula | undefined;
+  let displayCache = $state<Map<string, string>>(new Map());
 
   async function load() {
     status = 'loading';
@@ -51,6 +59,11 @@
       selRow = 0;
       selCol = 0;
       formulaBarValue = sheets[0]?.cells[0]?.[0]?.display ?? '';
+      // T9 V0.2 : seed HyperFormula. The sheet matrix uses the
+      // formula (when present, stripped of the `of:` prefix) or
+      // the typed value as the cell content. HF stores formulas
+      // natively + computes the cascade of dependents.
+      rebuildHF();
       status = 'ready';
       dirty = false;
     } catch (e) {
@@ -80,6 +93,64 @@
     saveTimer = setTimeout(save, 600);
   }
 
+  // T9 V0.2 HyperFormula bridge.
+  // rebuildHF : tear down the existing instance + rebuild from the
+  // current sheets array. Cheap for small workbooks ; for huge
+  // ones we'd switch to incremental setSheetContent calls.
+  function rebuildHF() {
+    if (hf) {
+      try { hf.destroy(); } catch { /* ignore */ }
+      hf = undefined;
+    }
+    const sheetsData: Record<string, (string | number | boolean | null)[][]> = {};
+    for (const sh of sheets) {
+      sheetsData[sh.name] = sh.cells.map(row => row.map(cellToHF));
+    }
+    hf = HyperFormula.buildFromSheets(sheetsData, {
+      licenseKey: 'gpl-v3', // HyperFormula is dual GPLv3 / commercial ; we use GPLv3
+    });
+    recomputeDisplayCache();
+  }
+  function cellToHF(c: ODSCell): string | number | boolean | null {
+    if (c.formula) {
+      // ODS stores formulas with the `of:` prefix ; HF expects bare
+      // `=A1+B1`. Strip any prefix + ensure a leading `=`.
+      let f = c.formula.replace(/^of:/, '');
+      if (!f.startsWith('=')) f = '=' + f;
+      return f;
+    }
+    if (c.type === 'float' || c.type === 'int' || c.type === 'percentage') return Number(c.value);
+    if (c.type === 'boolean') return Boolean(c.value);
+    return c.display || null;
+  }
+  function recomputeDisplayCache() {
+    if (!hf) return;
+    const next = new Map<string, string>();
+    sheets.forEach((sh, si) => {
+      sh.cells.forEach((row, r) => {
+        row.forEach((cell, c) => {
+          if (!cell.formula) return;
+          try {
+            const v = hf!.getCellValue({ sheet: si, row: r, col: c });
+            if (v != null) next.set(si + ':' + r + ':' + c, String(v));
+          } catch { /* malformed formula : leave it visible as source */ }
+        });
+      });
+    });
+    displayCache = next;
+  }
+
+  // displayValue : what the user sees in the grid cell. Formula
+  // cells render as the computed result ; everything else is the
+  // raw display string.
+  function displayValue(si: number, r: number, c: number, cell: ODSCell): string {
+    if (cell.formula) {
+      const v = displayCache.get(si + ':' + r + ':' + c);
+      if (v != null) return v;
+    }
+    return cell.display;
+  }
+
   function ensureCell(sheetIdx: number, r: number, c: number) {
     const sh = sheets[sheetIdx];
     while (sh.cells.length <= r) {
@@ -104,6 +175,13 @@
       cell.type = 'string';
       cell.formula = 'of:' + value;
       cell.value = value;
+      // Push the new formula into HF so dependents recompute.
+      if (hf) {
+        try {
+          hf.setCellContents({ sheet: activeSheet, row: r, col: c }, [[value]]);
+          recomputeDisplayCache();
+        } catch { /* ignore — bad formula keeps showing source */ }
+      }
     } else if (/^-?\d+(\.\d+)?$/.test(value)) {
       cell.type = 'float';
       cell.value = Number(value);
@@ -113,6 +191,19 @@
     } else {
       cell.type = 'string';
       cell.value = value;
+      // Clear any prior formula : the user just overwrote it.
+      delete cell.formula;
+    }
+    // Push the non-formula value to HF too so dependents see it.
+    if (hf && !value.startsWith('=')) {
+      try {
+        const hfValue =
+          cell.type === 'float' ? Number(value) :
+          cell.type === 'boolean' ? value.toLowerCase() === 'true' :
+          value;
+        hf.setCellContents({ sheet: activeSheet, row: r, col: c }, [[hfValue]]);
+        recomputeDisplayCache();
+      } catch { /* ignore */ }
     }
     sheets = sheets; // trigger reactivity
     markDirty();
@@ -121,7 +212,13 @@
   function selectCell(r: number, c: number) {
     selRow = r;
     selCol = c;
-    formulaBarValue = sheets[activeSheet]?.cells[r]?.[c]?.display ?? '';
+    const cell = sheets[activeSheet]?.cells[r]?.[c];
+    // Formula cells : show the source in the formula bar (so the
+    // user can edit the expression) ; literal cells show their
+    // display string.
+    formulaBarValue = cell?.formula
+      ? (typeof cell.value === 'string' ? cell.value : String(cell.value))
+      : (cell?.display ?? '');
   }
 
   function onCellInput(r: number, c: number, e: Event) {
@@ -328,11 +425,14 @@
                   contenteditable="true"
                   class="ods-cell"
                   class:ods-cell-selected={r === selRow && c === selCol}
+                  class:ods-cell-formula={!!cell.formula}
                   data-cell="{r},{c}"
+                  data-formula={cell.formula ? '1' : ''}
+                  title={cell.formula ? (typeof cell.value === 'string' ? cell.value : '') : undefined}
                   onclick={() => selectCell(r, c)}
                   oninput={(e) => onCellInput(r, c, e)}
                   onkeydown={(e) => onCellKey(r, c, e)}
-                >{cell.display}</td>
+                >{displayValue(activeSheet, r, c, cell)}</td>
               {/each}
             </tr>
           {/each}
@@ -370,4 +470,17 @@
   }
   .ods-cell:focus { background: rgba(0, 130, 220, 0.06); }
   .ods-cell-selected { box-shadow: inset 0 0 0 2px rgba(0, 100, 200, 0.5); }
+  /* Formula cells get a subtle marker so the user can tell at a
+     glance which cells are computed vs literal. */
+  .ods-cell-formula { background: rgba(0, 200, 100, 0.04); }
+  .ods-cell-formula::after {
+    content: '∑';
+    position: absolute;
+    margin-left: -1.1em;
+    margin-top: -0.3em;
+    font-size: 0.55em;
+    color: rgba(0, 130, 60, 0.6);
+    pointer-events: none;
+  }
+  .ods-cell { position: relative; }
 </style>
