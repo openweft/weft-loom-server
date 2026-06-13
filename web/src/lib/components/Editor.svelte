@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy, untrack } from 'svelte';
-  import { logEvent } from '../logbus';
+  import { logEvent, logError } from '../logbus';
   import { Compartment, EditorState } from '@codemirror/state';
   import { EditorView, keymap } from '@codemirror/view';
   import { authorshipExtension } from '../authorship';
@@ -71,7 +71,7 @@
 
   import * as Y from 'yjs';
   import { WebsocketProvider } from 'y-websocket';
-  import { yjsBinding } from '../ybinding';
+  import { yjsBinding, YORIGIN_LOCAL } from '../ybinding';
   import type { Awareness } from 'y-protocols/awareness';
   import type { Identity } from '../identity';
   import { readFile, writeFile } from '../api';
@@ -168,6 +168,20 @@
   const lineNumbersCompartment = new Compartment();
   const wordWrapCompartment = new Compartment();
   const minimapCompartment = new Compartment();
+  const languageCompartment = new Compartment();
+  const inlineMathCompartment = new Compartment();
+  const foldGutterCompartment = new Compartment();
+  const sectionFoldingCompartment = new Compartment();
+
+  function inlineMathExt(): Extension {
+    return (language === 'latex' || language === 'markdown') ? inlineMathRender() : [];
+  }
+  function foldGutterExt(): Extension {
+    return (language === 'latex' || language === 'markdown') ? foldGutter() : [];
+  }
+  function sectionFoldingExt(): Extension {
+    return sectionFolding(language);
+  }
 
   function fontExt(): Extension {
     const f = settings.current.font;
@@ -243,6 +257,22 @@
       effects: EditorView.scrollIntoView(pos, { y: 'center' }),
     });
     view.focus();
+  });
+
+  // Reconfigure the language pack + language-conditional extensions
+  // when `language` flips. Without this, switching files of different
+  // languages kept the original pack's parser/highlighter in place.
+  $effect(() => {
+    void language;
+    if (!view) return;
+    view.dispatch({
+      effects: [
+        languageCompartment.reconfigure(languagePack(language)),
+        inlineMathCompartment.reconfigure(inlineMathExt()),
+        foldGutterCompartment.reconfigure(foldGutterExt()),
+        sectionFoldingCompartment.reconfigure(sectionFoldingExt()),
+      ],
+    });
   });
 
   // Reactively push setting changes into the editor. The effect
@@ -500,13 +530,21 @@
         weftLoomOpenFile?: (p: string) => void;
       }).weftLoomOpenFile;
       openFn?.(target);
-      // After the new file mounts, defer the jump.
+      // After the new file mounts, defer the jump. Pass line +
+      // character (NOT a pre-computed offset from THIS editor's
+      // doc) so the NEW editor — which holds the right doc — can
+      // resolve the offset against its own buffer. The old code
+      // captured `view` from the file we were leaving, so the
+      // offset was for the wrong document.
+      const targetLine = loc.range.start.line;
+      const targetChar = loc.range.start.character;
       setTimeout(() => {
-        const w = (window as unknown as { weftLoomJumpToOffset?: (f: number, t: number) => void });
-        if (w.weftLoomJumpToOffset && view) {
-          const off = offsetFromPos(view, loc.range.start.line, loc.range.start.character);
-          w.weftLoomJumpToOffset(off, off);
-        }
+        const w = (window as unknown as {
+          weftLoomJumpToOffset?: (
+            arg: { offset: number; to?: number } | { line: number; character: number },
+          ) => void;
+        });
+        w.weftLoomJumpToOffset?.({ line: targetLine, character: targetChar });
       }, 250);
     } else if (view) {
       const off = offsetFromPos(view, loc.range.start.line, loc.range.start.character);
@@ -595,7 +633,7 @@
           { key: 'Mod-]', run: indentMore },
           { key: 'Mod-[', run: indentLess },
         ]),
-        languagePack(language),
+        languageCompartment.of(languagePack(language)),
         // Custom Y.Text ↔ CodeMirror two-way binding. Replaces
         // y-codemirror.next's yCollab : its observer dropped updates
         // past the first sync handshake in our setup and ALSO
@@ -646,13 +684,13 @@
         // `$E=mc^2$` / `$$...$$` / `\(...\)` / `\[...\]` segments
         // render live while the cursor is outside them ; entering
         // the segment swaps back to raw source so it can be edited.
-        ...((language === 'latex' || language === 'markdown') ? [inlineMathRender()] : []),
+        inlineMathCompartment.of(inlineMathExt()),
         // T7 : section-aware fold ranges. foldGutter renders the
         // chevron markers in the gutter ; foldKeymap binds Cmd+Alt+[
         // / Cmd+Alt+] to fold/unfold ; sectionFolding teaches CM
         // about \section + # heading regions for LaTeX/Markdown.
-        ...((language === 'latex' || language === 'markdown') ? [foldGutter()] : []),
-        ...sectionFolding(language),
+        foldGutterCompartment.of(foldGutterExt()),
+        sectionFoldingCompartment.of(sectionFoldingExt()),
         // T6 : decorations for commented text ranges (yellow dotted
         // underline). The ranges are pushed via the StateEffect
         // below — driven by the comments Y.Array observer.
@@ -708,15 +746,35 @@
     // them here so the editor paints the dotted-underline marks.
     (window as unknown as {
       weftLoomSetCommentRanges?: (ranges: CommentRange[]) => void;
-      weftLoomJumpToOffset?: (from: number, to: number) => void;
     }).weftLoomSetCommentRanges = (ranges: CommentRange[]) => {
       if (!view) return;
       view.dispatch({ effects: setCommentRanges.of(ranges) });
     };
+    type JumpArg = { offset: number; to?: number } | { line: number; character: number };
     (window as unknown as {
-      weftLoomJumpToOffset?: (from: number, to: number) => void;
-    }).weftLoomJumpToOffset = (from: number, to: number) => {
+      weftLoomJumpToOffset?: (a: JumpArg | number, b?: number) => void;
+    }).weftLoomJumpToOffset = (a: JumpArg | number, b?: number) => {
       if (!view) return;
+      let from: number;
+      let to: number;
+      if (typeof a === 'number') {
+        // Legacy positional call : (from, to). Both are offsets in
+        // THIS editor's doc.
+        from = a;
+        to = b ?? a;
+      } else if ('line' in a) {
+        // LSP-style {line, character} (0-based) : resolve against
+        // THIS editor's current doc, which is the only safe source
+        // when the jump arrives after a cross-file open.
+        const doc = view.state.doc;
+        const cmLine = Math.min(doc.lines, Math.max(1, a.line + 1));
+        const lineObj = doc.line(cmLine);
+        from = Math.min(doc.length, lineObj.from + a.character);
+        to = from;
+      } else {
+        from = a.offset;
+        to = a.to ?? a.offset;
+      }
       view.dispatch({
         selection: { anchor: from, head: to },
         effects: EditorView.scrollIntoView(from, { y: 'center' }),
@@ -873,11 +931,15 @@
       },
     };
 
-    // Auto-save : every edit reschedules a debounced PUT to the file
-    // API. 250 ms of idle (was 1 s, reduced so Compile clicks pick
-    // up edits without a long wait) → write to disk → schedulePush()
-    // (server side) kicks off the auto-commit + git push pipeline.
-    ytext.observe(() => {
+    // Auto-save : every LOCAL edit reschedules a debounced PUT to
+    // the file API. 250 ms of idle (was 1 s, reduced so Compile
+    // clicks pick up edits without a long wait) → write to disk →
+    // schedulePush() (server side) kicks off the auto-commit + git
+    // push pipeline. Remote (peer) updates skip the autosave path —
+    // the originating peer already wrote the file ; double-writing
+    // from every viewer would thrash the disk + fight on the lock.
+    ytext.observe((_event, tr) => {
+      if (tr.origin !== YORIGIN_LOCAL) return;
       if (!file) return;
       if (saveDebounce) clearTimeout(saveDebounce);
       saveDebounce = setTimeout(async () => {
@@ -885,6 +947,7 @@
         try {
           await writeFile(project, file, ytext.toString());
         } catch (e) {
+          logError('editor', 'autosave', e);
           console.error('autosave failed', e);
         }
         // T8 LSP : push the latest buffer to the language server
@@ -955,7 +1018,10 @@
         const ytextKey = 'file:' + file;
         const t = ydoc.getText(ytextKey);
         // Fire-and-forget : the provider's about to die anyway.
-        writeFile(project, file, t.toString()).catch(() => {});
+        writeFile(project, file, t.toString()).catch((err) => {
+          logError('editor', 'onDestroy-flush', err);
+          console.error('editor flush failed', err);
+        });
       }
     }
     view?.destroy();
@@ -974,42 +1040,65 @@
   // T8 LSP : open the WS lazily — wait for the SPA to know which
   // LSPs the host has + only connect for those. The lifecycle is
   // mirror-of-Editor.mount : we open once per (project, file).
+  // Generation-token guard : when the user toggles language / file
+  // fast, two effect runs race ; without a gen check the loser's
+  // ready-resolution could overwrite lspClient with a stale client.
+  let lspGen = 0;
+  let lspDetach: (() => void) | undefined;
   $effect(() => {
     file; language;
-    untrack(async () => {
-      // First-time fetch of the manifest.
-      if (lspAvailable === undefined) lspAvailable = await fetchAvailableLanguages();
-      const slug = lspSlugFor(language);
-      // Tear down a previous client if the language no longer needs
-      // one, OR if we're switching to a different file (so didClose
-      // fires before re-opening with the new uri).
-      if (lspClient) {
-        try { lspClient.dispose(); } catch { /* ignore */ }
-        lspClient = undefined;
-      }
-      if (!slug || !lspAvailable.has(slug) || !file) return;
-      const c = createLSPClient({
-        url: '/api/lsp/' + slug,
-        rootUri: 'file:///' + project,
-        workspaceFolderName: project,
-      });
-      try {
-        await c.ready;
-      } catch {
-        try { c.dispose(); } catch { /* ignore */ }
-        return;
-      }
-      lspClient = c;
-      // Stream the current file content. We re-read from the ytext
-      // so the LSP sees the exact buffer the user is editing.
-      const text = ydoc?.getText('file:' + file).toString() ?? '';
-      c.didOpen('file://' + file, slug, text);
-      // Re-run the lint extension every time the server pushes new
-      // diagnostics so the gutter + tooltip surface them.
-      c.onChange(() => {
-        if (view) view.dispatch({ effects: [] });
-      });
+    const gen = ++lspGen;
+    const ac = new AbortController();
+    const prevDetach = lspDetach;
+    lspDetach = undefined;
+    untrack(() => {
+      void (async () => {
+        // First-time fetch of the manifest.
+        if (lspAvailable === undefined) {
+          lspAvailable = await fetchAvailableLanguages({ signal: ac.signal });
+        }
+        if (gen !== lspGen) return;
+        const slug = lspSlugFor(language);
+        // Tear down a previous client if the language no longer needs
+        // one, OR if we're switching to a different file (so didClose
+        // fires before re-opening with the new uri).
+        if (lspClient) {
+          try { lspClient.dispose(); } catch { /* ignore */ }
+          lspClient = undefined;
+        }
+        if (!slug || !lspAvailable.has(slug) || !file) return;
+        const c = createLSPClient({
+          url: '/api/lsp/' + slug,
+          rootUri: 'file:///' + project,
+          workspaceFolderName: project,
+        });
+        try {
+          await c.ready;
+        } catch {
+          try { c.dispose(); } catch { /* ignore */ }
+          return;
+        }
+        if (gen !== lspGen) {
+          try { c.dispose(); } catch { /* ignore */ }
+          return;
+        }
+        lspClient = c;
+        // Stream the current file content. We re-read from the ytext
+        // so the LSP sees the exact buffer the user is editing.
+        const text = ydoc?.getText('file:' + file).toString() ?? '';
+        c.didOpen('file://' + file, slug, text);
+        // Re-run the lint extension every time the server pushes new
+        // diagnostics so the gutter + tooltip surface them.
+        const detach = c.onChange(() => {
+          if (view) view.dispatch({ effects: [] });
+        });
+        lspDetach = typeof detach === 'function' ? detach : undefined;
+      })();
     });
+    return () => {
+      ac.abort();
+      prevDetach?.();
+    };
   });
 </script>
 
@@ -1039,22 +1128,24 @@
       </div>
       <span class="opacity-30">·</span>
       <div class="join">
-        <button class="join-item btn btn-xs" onclick={() => fmt('inline-math')} title="Inline math $…$">∑</button>
-        <button class="join-item btn btn-xs" onclick={() => fmt('display-math')} title="Display math $$…$$">∫</button>
+        <button class="join-item btn btn-xs" onclick={() => fmt('inline-math')} title="Inline math $…$" aria-label="Insert inline math">∑</button>
+        <button class="join-item btn btn-xs" onclick={() => fmt('display-math')} title="Display math $$…$$" aria-label="Insert display math">∫</button>
       </div>
       <span class="opacity-30">·</span>
-      <button class="btn btn-xs" onclick={() => fmt('href')} title="Insert hyperlink">🔗</button>
+      <button class="btn btn-xs" onclick={() => fmt('href')} title="Insert hyperlink" aria-label="Insert link">🔗</button>
       <span class="ml-auto"></span>
       <div class="join">
         <button
           class="join-item btn btn-xs"
           class:btn-active={richTextEnabled}
+          aria-pressed={richTextEnabled}
           onclick={toggleRichText}
           title="Rich-text view : headings, bold, math rendered inline"
         >📜 Rich Text</button>
         <button
           class="join-item btn btn-xs"
           class:btn-active={!richTextEnabled}
+          aria-pressed={!richTextEnabled}
           onclick={toggleRichText}
           title="Source view : raw LaTeX commands"
         >&lt;/&gt; Source</button>

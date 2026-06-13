@@ -262,9 +262,9 @@ export function createLSPClient(opts: {
 // availableLanguages : fetch the server's /api/lsp manifest so the
 // SPA only attempts to open WS for languages whose binary is on
 // $PATH. Returns the set ; falls back to empty on error.
-export async function fetchAvailableLanguages(): Promise<Set<string>> {
+export async function fetchAvailableLanguages(opts?: { signal?: AbortSignal }): Promise<Set<string>> {
   try {
-    const r = await fetch('/api/lsp');
+    const r = await fetch('/api/lsp', { signal: opts?.signal });
     if (!r.ok) return new Set();
     const data = await r.json() as { available?: string[] };
     return new Set(data.available ?? []);

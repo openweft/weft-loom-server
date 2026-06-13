@@ -20,7 +20,7 @@ import { EditorView, type ViewUpdate } from '@codemirror/view';
 import { Annotation, type Extension } from '@codemirror/state';
 import * as Y from 'yjs';
 
-const YORIGIN_LOCAL = 'yb-local';
+export const YORIGIN_LOCAL = 'yb-local';
 const remoteAnnot = Annotation.define<boolean>();
 
 export interface YjsBinding {
