@@ -729,6 +729,35 @@
       weftLoomWriteODT?: unknown;
     };
     w.weftLoomOpenFile = openFileByPath;
+    // T5 SyncTeX forward : source line → PDF page. Derives the
+    // compile id from the current artifactURL ; returns null when
+    // there's no active artifact or the .synctex.gz isn't there.
+    (w as unknown as {
+      weftLoomSyncTeXForward?: (sourceFile: string, line: number) => Promise<unknown>;
+    }).weftLoomSyncTeXForward = async (sourceFile: string, line: number) => {
+      if (!artifactURL) return null;
+      // artifactURL = /api/projects/<p>/compile/<id>/artifact
+      const m = /\/compile\/([^/]+)\/artifact/.exec(artifactURL);
+      if (!m) return null;
+      const id = m[1];
+      const url = '/api/projects/' + encodeURIComponent(project)
+        + '/compile/' + encodeURIComponent(id) + '/synctex'
+        + '?source=' + encodeURIComponent(sourceFile)
+        + '&line=' + encodeURIComponent(String(line));
+      try {
+        const r = await fetch(url);
+        if (!r.ok) return null;
+        const data = await r.json();
+        if (!data.found) return null;
+        // Side-effect : append #page=N to artifactURL so the PDF
+        // embed scrolls to the matching page on next render.
+        const base = artifactURL.split('#')[0];
+        artifactURL = base + '#page=' + data.page + '&zoom=page-width';
+        return data;
+      } catch {
+        return null;
+      }
+    };
     // Expose the templates catalogue + writeODT so the
     // odt-templates regression suite can drive the same path
     // NewFileDialog runs when the user picks "From template".

@@ -415,6 +415,19 @@
           { key: 'Mod-b', run: (v) => { if (language === 'latex') { applyLatexCommand(v, 'textbf'); return true; } return false; } },
           { key: 'Mod-i', run: (v) => { if (language === 'latex') { applyLatexCommand(v, 'textit'); return true; } return false; } },
           { key: 'Mod-m', run: (v) => { if (language === 'latex') { applyLatexCommand(v, 'inline-math'); return true; } return false; } },
+          // T5 : Cmd+J = "show this line in PDF" (forward SyncTeX).
+          { key: 'Mod-j', run: (v) => {
+            if (language !== 'latex' || !file) return false;
+            const cursor = v.state.selection.main.head;
+            const line = v.state.doc.lineAt(cursor).number;
+            const fn = (window as unknown as {
+              weftLoomSyncTeXForward?: (s: string, l: number) => Promise<unknown>;
+            }).weftLoomSyncTeXForward;
+            if (typeof fn === 'function') {
+              void fn(file, line);
+            }
+            return true;
+          } },
           // VSCode standard editor shortcuts that the default
           // CodeMirror keymap leaves unwired :
           // - Cmd+/   toggle line comment

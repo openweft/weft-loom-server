@@ -161,6 +161,25 @@ func (s *Service) Artifact(id string) (string, bool) {
 	return p, ok
 }
 
+// SyncTeXPath returns the absolute path of the .synctex.gz file
+// pdflatex produces alongside the PDF. Lives in the same scratch
+// dir as the artifact ; same base name with .synctex.gz appended.
+// Returns "" + false when the artifact is gone or no synctex file
+// was produced (compile used a non-LaTeX path, or pdflatex aborted
+// before writing the synctex stream).
+func (s *Service) SyncTeXPath(id string) (string, bool) {
+	pdf, ok := s.Artifact(id)
+	if !ok {
+		return "", false
+	}
+	base := strings.TrimSuffix(pdf, ".pdf")
+	candidate := base + ".synctex.gz"
+	if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+		return candidate, true
+	}
+	return "", false
+}
+
 // run is the per-job goroutine.
 func (s *Service) run(ident auth.Identity, id string, spec JobSpec, j *runningJob) {
 	start := time.Now()
@@ -294,6 +313,10 @@ func (s *Service) compileLatex(workDir, scratchDir string, spec JobSpec, emit fu
 	args := []string{
 		"-interaction=nonstopmode",
 		"-halt-on-error",
+		// V0.5 SyncTeX : produces <basename>.synctex.gz alongside the
+		// PDF ; the /api/projects/<p>/synctex endpoint parses it so
+		// the PDF viewer can map a click → source line.
+		"-synctex=1",
 		"-output-directory=" + scratchDir,
 		entryAbs,
 	}

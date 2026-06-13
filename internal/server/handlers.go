@@ -6,10 +6,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 
 	"github.com/coder/websocket"
 
 	"github.com/openweft/weft-loom-server/internal/auth"
+	"github.com/openweft/weft-loom-server/internal/eventbus"
+	"github.com/openweft/weft-loom-server/internal/synctex"
+	"github.com/openweft/weft-loom-server/internal/workspace"
 	"github.com/openweft/weft-loom-server/internal/ywebsocket"
 )
 
@@ -35,6 +39,19 @@ func (s *Server) handleReadFile(w http.ResponseWriter, r *http.Request) {
 	defer rc.Close()
 	w.Header().Set("Content-Type", "application/octet-stream")
 	_, _ = io.Copy(w, rc)
+	// Proactive container warmup : when the file extension hints at
+	// a compileable artefact (.tex/.md/.go/...) publish the matching
+	// tool container into the user's workspace VM containers set so
+	// it's already warm when they hit Compile. Idempotent.
+	if s.workspaces != nil {
+		go func() {
+			vm, err := s.workspaces.Ensure(context.Background(), workspace.Identity{Subject: ident.Subject})
+			if err != nil || vm == nil {
+				return
+			}
+			s.warmContainerForFile(context.Background(), vm, projectName(r), filePath(r))
+		}()
+	}
 }
 
 func (s *Server) handleWriteFile(w http.ResponseWriter, r *http.Request) {
@@ -76,6 +93,67 @@ func (s *Server) handleCompileArtifact(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/pdf")
 	w.Header().Set("Content-Disposition", `inline; filename="output.pdf"`)
 	http.ServeFile(w, r, path)
+}
+
+// handleSyncTeX answers SyncTeX queries against the .synctex.gz
+// stream pdflatex produced alongside the PDF.
+//
+//	GET ?source=<file>&line=<n>       → forward  : { page, x, y }
+//	GET ?page=<p>&x=<x>&y=<y>         → backward : { source, line }
+//
+// 404 when there's no synctex file for the given compile id (the
+// compile may have failed, used a non-LaTeX path, or the artifact
+// expired). 400 when neither query shape is satisfied.
+func (s *Server) handleSyncTeX(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	path, ok := s.opts.Compiler.SyncTeXPath(id)
+	if !ok {
+		http.Error(w, "synctex not found for compile "+id, http.StatusNotFound)
+		return
+	}
+	f, err := synctex.Parse(path)
+	if err != nil {
+		http.Error(w, "synctex parse : "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	q := r.URL.Query()
+	// Forward : source + line.
+	if src := q.Get("source"); src != "" {
+		line, _ := strconv.Atoi(q.Get("line"))
+		rec, found := f.Forward(src, line)
+		w.Header().Set("Content-Type", "application/json")
+		if !found {
+			_ = json.NewEncoder(w).Encode(map[string]any{"found": false})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"found": true,
+			"page":  rec.Page,
+			"x":     rec.X,
+			"y":     rec.Y,
+			"line":  rec.Line,
+		})
+		return
+	}
+	// Backward : page + x + y.
+	if p := q.Get("page"); p != "" {
+		page, _ := strconv.Atoi(p)
+		x, _ := strconv.Atoi(q.Get("x"))
+		y, _ := strconv.Atoi(q.Get("y"))
+		src, line, found := f.Backward(page, x, y)
+		w.Header().Set("Content-Type", "application/json")
+		if !found {
+			_ = json.NewEncoder(w).Encode(map[string]any{"found": false})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"found":  true,
+			"source": src,
+			"line":   line,
+		})
+		return
+	}
+	http.Error(w, "synctex requires either source+line (forward) or page+x+y (backward)", http.StatusBadRequest)
 }
 
 // handleCompileStream serves Server-Sent Events for one compile job :
@@ -130,7 +208,15 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	roomID := projectName(r) + ":default"
+	// roomID uses the URL's room segment so multiple Yjs rooms can
+	// coexist under one project (per-file rooms, the test harness's
+	// random room names, etc.). Empty → "default" for back-compat
+	// with clients that don't pass a room.
+	roomSeg := r.PathValue("room")
+	if roomSeg == "" {
+		roomSeg = "default"
+	}
+	roomID := projectName(r) + ":" + roomSeg
 	connID := ywebsocket.ConnID(ident.Subject + "@" + r.RemoteAddr)
 	m := s.hub.Join(roomID, connID)
 	defer m.Leave()
@@ -139,22 +225,44 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	m.LeaveOnContextDone(ctx)
 
+	log := s.opts.Logger
+	log.Info("ws.upgraded", "room", roomID, "conn", string(connID), "members", s.hub.MembersCount(roomID))
+	s.events.Publish(eventbus.Event{
+		Source: "server", Component: "ws", Verb: "upgraded",
+		Project: projectName(r),
+		Fields: map[string]any{
+			"room": roomID, "conn": string(connID),
+			"members": s.hub.MembersCount(roomID),
+		},
+	})
+
 	// Writer goroutine : forward Recv() onto the socket.
 	go func() {
+		var outBytes, outFrames uint64
 		for payload := range m.Recv() {
+			outBytes += uint64(len(payload))
+			outFrames++
+			log.Info("ws.out", "room", roomID, "conn", string(connID), "frame_n", outFrames, "bytes", len(payload))
 			if err := conn.Write(ctx, websocket.MessageBinary, payload); err != nil {
+				log.Info("ws.write.err", "room", roomID, "conn", string(connID), "out_frames", outFrames, "out_bytes", outBytes, "err", err.Error())
 				cancel()
 				return
 			}
 		}
+		log.Info("ws.writer.exit", "room", roomID, "conn", string(connID), "out_frames", outFrames, "out_bytes", outBytes)
 	}()
 
 	// Reader loop : every frame from the client becomes a broadcast.
+	var inBytes, inFrames uint64
 	for {
 		_, payload, err := conn.Read(ctx)
 		if err != nil {
+			log.Info("ws.reader.exit", "room", roomID, "conn", string(connID), "in_frames", inFrames, "in_bytes", inBytes, "err", err.Error())
 			return
 		}
+		inBytes += uint64(len(payload))
+		inFrames++
+		log.Info("ws.in", "room", roomID, "conn", string(connID), "frame_n", inFrames, "bytes", len(payload))
 		m.Send(payload)
 	}
 }
