@@ -202,10 +202,20 @@ func (s *Server) handleCompileStream(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 		return
 	}
-	for ev := range events {
-		body, _ := json.Marshal(ev)
-		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Kind, body)
-		flusher.Flush()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case ev, ok := <-events:
+			if !ok {
+				return
+			}
+			body, _ := json.Marshal(ev)
+			if _, werr := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Kind, body); werr != nil {
+				return
+			}
+			flusher.Flush()
+		}
 	}
 }
 

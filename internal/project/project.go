@@ -146,7 +146,7 @@ func (s *LocalStore) ReadFile(_ context.Context, ident auth.Identity, project, p
 	return os.Open(full)
 }
 
-func (s *LocalStore) WriteFile(_ context.Context, ident auth.Identity, project, path string, body io.Reader) error {
+func (s *LocalStore) WriteFile(_ context.Context, ident auth.Identity, project, path string, body io.Reader) (err error) {
 	full, err := s.resolveFile(ident, project, path)
 	if err != nil {
 		return err
@@ -158,9 +158,15 @@ func (s *LocalStore) WriteFile(_ context.Context, ident auth.Identity, project, 
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	_, err = io.Copy(f, body)
-	return err
+	defer func() {
+		if cerr := f.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
+	if _, err = io.Copy(f, body); err != nil {
+		return err
+	}
+	return f.Sync()
 }
 
 // DeleteFile removes <user>/<project>/<path>. Idempotent on missing

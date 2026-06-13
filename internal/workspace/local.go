@@ -24,6 +24,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/nats-io/nats.go"
 )
@@ -82,7 +83,7 @@ func EmbeddedNATSDisabled() bool {
 
 // Ensure returns a workspace VM. When NATS is unset the result is
 // a sentinel signalling "fall back to host pty" — see api_shell.go.
-func (p *LocalProvisioner) Ensure(ctx context.Context, ident Identity) (*VM, error) {
+func (p *LocalProvisioner) Ensure(ctx context.Context, ident Identity) (vm *VM, err error) {
 	if p.NATSURL == "" {
 		// Dev mode no isolation : the loom-server's api_shell.go
 		// recognises Health()=="dev-local-pty" and spawns /bin/bash
@@ -107,6 +108,14 @@ func (p *LocalProvisioner) Ensure(ctx context.Context, ident Identity) (*VM, err
 	if err != nil {
 		return nil, fmt.Errorf("nats connect %s: %w", p.NATSURL, err)
 	}
+	// Tear down the broker connection on any Ensure-time failure so a
+	// failed DevAgent.Spawn doesn't leave the conn open for the
+	// loom-server's lifetime.
+	defer func() {
+		if err != nil {
+			_ = nc.Drain()
+		}
+	}()
 
 	// V0.4 wiring : boot a real QEMU microVM here. Contract :
 	//   1. derive vmID = VMIDForIdentity(ident)
@@ -132,18 +141,23 @@ func (p *LocalProvisioner) Ensure(ctx context.Context, ident Identity) (*VM, err
 	// click can return a usable WorkDir.
 	workDir := workspaceHostDir(vmID)
 	_ = os.MkdirAll(workDir, 0o755)
-	vm := &VM{
+	var closeOnce sync.Once
+	closer := func() {
+		closeOnce.Do(func() { _ = nc.Drain() })
+	}
+	vm = &VM{
 		VMID:    vmID,
 		NATSURL: p.NATSURL,
 		Conn:    NewNATSConn(nc),
 		WorkDir: workDir,
 		Ready:   ready,
 		Health:  func() string { return "dev-agent" },
+		Close:   closer,
 	}
 	if p.DevAgent != nil {
 		// Boot the in-process devagent so the shell relay round-trip
 		// actually lands on a working pty without QEMU.
-		if err := p.DevAgent.Spawn(nc, vmID, workDir); err != nil {
+		if err = p.DevAgent.Spawn(nc, vmID, workDir); err != nil {
 			return nil, fmt.Errorf("devagent spawn: %w", err)
 		}
 	}

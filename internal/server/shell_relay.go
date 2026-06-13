@@ -57,13 +57,19 @@ func relayShellToNATS(
 	inSubject := execsession.SubjectIn(vm.VMID, sid)
 	openSubject := execsession.SubjectOpen(vm.VMID)
 
+	// relayCtx + cancel unblock the conn.Read loop the moment a
+	// background NATS-callback hits a WS write error, so the relay
+	// exits promptly instead of hanging until the client times out.
+	relayCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	// Step 2 first : subscribe to out BEFORE publishing open so we
 	// never drop the agent's first frames.
 	outSub, err := vm.Conn.Subscribe(outSubject, func(_ string, data []byte) {
-		// The WS writes are blocking ; ctx cancellation makes them
-		// return cleanly so we don't need to coordinate explicitly
-		// with the close path.
-		_ = conn.Write(ctx, websocket.MessageBinary, data)
+		if werr := conn.Write(relayCtx, websocket.MessageBinary, data); werr != nil {
+			cancel()
+			return
+		}
 	})
 	if err != nil {
 		return fmt.Errorf("subscribe out: %w", err)
@@ -112,7 +118,7 @@ func relayShellToNATS(
 	})
 	// Background retry loop : reissue open every 1.5s until we
 	// either see an out frame or the request ends.
-	retryCtx, cancelRetry := context.WithCancel(ctx)
+	retryCtx, cancelRetry := context.WithCancel(relayCtx)
 	defer cancelRetry()
 	go func() {
 		ticker := time.NewTicker(1500 * time.Millisecond)
@@ -146,7 +152,10 @@ func relayShellToNATS(
 			default:
 			}
 		}
-		_ = conn.Write(ctx, websocket.MessageBinary, data)
+		if werr := conn.Write(relayCtx, websocket.MessageBinary, data); werr != nil {
+			cancel()
+			return
+		}
 	})
 	if err != nil {
 		return fmt.Errorf("re-subscribe out: %w", err)
@@ -166,7 +175,7 @@ func relayShellToNATS(
 	}()
 
 	for {
-		_, payload, err := conn.Read(ctx)
+		_, payload, err := conn.Read(relayCtx)
 		if err != nil {
 			return nil // WS hung up, normal close
 		}
@@ -176,15 +185,19 @@ func relayShellToNATS(
 		// Forward verbatim — the SPA and the agent agree on the
 		// 1-byte prefix already, so we don't peek.
 		if err := vm.Conn.Publish(inSubject, payload); err != nil {
-			// Surface + close ; the caller has already returned
-			// from the relay, falling back isn't an option here.
 			events.Publish(eventbus.Event{
 				Source: "server", Component: "shell", Verb: "publish.in.err",
 				Level:   "error",
 				Project: project,
 				Fields:  map[string]any{"vm_id": vm.VMID, "sid": sid, "err": err.Error()},
 			})
-			return nil
+			// Tell the client the relay is dead so xterm shows
+			// something useful, then surface to handleShell —
+			// callers gate fallback on a non-nil return.
+			_ = conn.Write(relayCtx, websocket.MessageText, []byte(
+				"\r\nerror: NATS publish failed ("+err.Error()+") — relay closing\r\n",
+			))
+			return fmt.Errorf("publish in: %w", err)
 		}
 		// Small jitter avoidance : on sustained high-rate input
 		// xterm coalesces well but the NATS broker prefers a

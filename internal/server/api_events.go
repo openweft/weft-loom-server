@@ -29,7 +29,7 @@ func (s *Server) handleEventsStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ch, stop := s.events.Subscribe()
+	ch, drops, stop := s.events.SubscribeWithDrops()
 	defer stop()
 
 	// Welcome event so the doctor UI knows the stream is live even
@@ -62,6 +62,13 @@ func (s *Server) handleEventsStream(w http.ResponseWriter, r *http.Request) {
 			_, _ = fmt.Fprint(w, "data: ")
 			_ = enc.Encode(ev) // newline included by Encode
 			_, _ = fmt.Fprint(w, "\n")
+			flusher.Flush()
+		case marker, ok := <-drops:
+			if !ok {
+				return
+			}
+			n, _ := marker.Fields["drops"].(uint64)
+			_, _ = fmt.Fprintf(w, "event: drop\ndata: {\"drops\": %d}\n\n", n)
 			flusher.Flush()
 		}
 	}

@@ -29,6 +29,7 @@ package synctex
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"fmt"
 	"io"
@@ -38,6 +39,29 @@ import (
 	"strconv"
 	"strings"
 )
+
+// maxSyncTeXFileSize caps the decompressed-into-memory size before
+// scanning so a hostile / runaway .synctex.gz can't OOM the server.
+// Real-world synctex files are sub-MB ; 32 MB is plenty of headroom.
+const maxSyncTeXFileSize = 32 * 1024 * 1024
+
+// Option tunes Parse behaviour. The zero value is the legacy default
+// (no project-root sanitisation) ; handlers that know the project
+// boundary pass WithProjectRoot so untrusted Input: paths can't be
+// echoed back to the SPA verbatim.
+type Option func(*parseOptions)
+
+type parseOptions struct {
+	projectRoot string
+}
+
+// WithProjectRoot scopes Input: paths to the given project root.
+// Paths that fall outside the root are dropped with no record kept,
+// and paths inside the root are rewritten to relative-to-root form
+// so Backward() never leaks absolute host paths.
+func WithProjectRoot(root string) Option {
+	return func(o *parseOptions) { o.projectRoot = root }
+}
 
 // Record is one node from the synctex stream — a hit point that
 // pins a source line to a PDF coordinate.
@@ -62,7 +86,7 @@ type File struct {
 
 // Parse reads a .synctex.gz file from disk. Returns a File with the
 // indexed records ready for Forward queries.
-func Parse(path string) (*File, error) {
+func Parse(path string, opts ...Option) (*File, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -77,10 +101,24 @@ func Parse(path string) (*File, error) {
 		defer gz.Close()
 		r = gz
 	}
-	return parseStream(r)
+	// Cap the decompressed body at maxSyncTeXFileSize before scanning ;
+	// LimitReader + a size check guards against zip-bomb-style inputs.
+	limited := io.LimitReader(r, maxSyncTeXFileSize+1)
+	body, rerr := io.ReadAll(limited)
+	if rerr != nil {
+		return nil, fmt.Errorf("synctex read : %w", rerr)
+	}
+	if len(body) > maxSyncTeXFileSize {
+		return nil, fmt.Errorf("synctex : body exceeds %d bytes", maxSyncTeXFileSize)
+	}
+	return parseStream(bytes.NewReader(body), opts...)
 }
 
-func parseStream(r io.Reader) (*File, error) {
+func parseStream(r io.Reader, opts ...Option) (*File, error) {
+	po := parseOptions{}
+	for _, o := range opts {
+		o(&po)
+	}
 	out := &File{Inputs: make(map[int]string)}
 	br := bufio.NewScanner(r)
 	br.Buffer(make([]byte, 64*1024), 4*1024*1024)
@@ -94,7 +132,10 @@ func parseStream(r io.Reader) (*File, error) {
 				rest := line[len("Input:"):]
 				if idx := strings.Index(rest, ":"); idx > 0 {
 					tag, _ := strconv.Atoi(rest[:idx])
-					out.Inputs[tag] = rest[idx+1:]
+					raw := rest[idx+1:]
+					if sanitised, ok := sanitiseInputPath(raw, po.projectRoot); ok {
+						out.Inputs[tag] = sanitised
+					}
 				}
 				continue
 			}
@@ -177,6 +218,31 @@ func finish(out *File) *File {
 		out.lineIndex[k] = recs
 	}
 	return out
+}
+
+// sanitiseInputPath cleans a SyncTeX Input: path. When projectRoot is
+// empty (legacy callers) the path is just filepath.Clean'd. Otherwise
+// absolute paths outside the root are dropped (ok=false) and paths
+// inside the root are rewritten to relative-to-root so handlers don't
+// echo absolute host paths back to the SPA.
+func sanitiseInputPath(raw, projectRoot string) (string, bool) {
+	clean := filepath.Clean(raw)
+	if projectRoot == "" {
+		return clean, true
+	}
+	rootAbs, err := filepath.Abs(projectRoot)
+	if err != nil {
+		return clean, true
+	}
+	candidate := clean
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(rootAbs, candidate)
+	}
+	rel, err := filepath.Rel(rootAbs, candidate)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return rel, true
 }
 
 // parseRecord parses "N,L:X,Y:..." or "N,L:X,Y" (trailing portion

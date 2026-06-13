@@ -172,7 +172,6 @@ func (p *QEMUProvisioner) Ensure(ctx context.Context, ident Identity) (*VM, erro
 		_ = nc.Drain()
 		return nil, fmt.Errorf("subscribe heartbeat: %w", err)
 	}
-	_ = hbSub
 
 	// Boot the VM in a child process. The child takes over qemu's
 	// lifecycle ; we surface the PID to loom-doctor + tear down on
@@ -232,6 +231,13 @@ func (p *QEMUProvisioner) Ensure(ctx context.Context, ident Identity) (*VM, erro
 	}
 	go func() {
 		defer close(dead)
+		// On VM death tear down the per-VM NATS handles so they don't
+		// leak for the loom-server's lifetime when a guest panics or
+		// the host kills qemu.
+		defer func() {
+			_ = hbSub.Unsubscribe()
+			_ = nc.Drain()
+		}()
 		if err := p.boot(context.Background(), dir, vmID, guestURL, userStorage); err != nil {
 			if p.Logger != nil {
 				p.Logger.Warn("qemu boot failed", "vm_id", vmID, "err", err)
@@ -243,6 +249,13 @@ func (p *QEMUProvisioner) Ensure(ctx context.Context, ident Identity) (*VM, erro
 		}
 	}()
 
+	var closeOnce sync.Once
+	closer := func() {
+		closeOnce.Do(func() {
+			_ = hbSub.Unsubscribe()
+			_ = nc.Drain()
+		})
+	}
 	return &VM{
 		VMID:    vmID,
 		NATSURL: p.NATSURL,
@@ -251,6 +264,7 @@ func (p *QEMUProvisioner) Ensure(ctx context.Context, ident Identity) (*VM, erro
 		Ready:   ready,
 		Dead:    dead,
 		Health:  state.snapshot,
+		Close:   closer,
 	}, nil
 }
 

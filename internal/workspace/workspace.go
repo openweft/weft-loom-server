@@ -70,6 +70,10 @@ type VM struct {
 	// router uses this to decide whether to publish into the in
 	// subject or surface a 503 to the SPA.
 	Health func() string
+	// Close releases any provisioner-owned resources (heartbeat sub,
+	// nats.Conn) so loom-server shutdown doesn't leak them. Provisioners
+	// that don't own such handles leave it nil.
+	Close func()
 }
 
 // NATSPubSub is the slice of nats.Conn the workspace uses : Publish

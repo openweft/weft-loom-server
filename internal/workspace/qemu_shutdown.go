@@ -62,5 +62,8 @@ func (r *Registry) Close(ctx context.Context) {
 			continue
 		}
 		_ = shutdownVM(ctx, er.vm.WorkDir, er.vm.Dead)
+		if er.vm.Close != nil {
+			er.vm.Close()
+		}
 	}
 }

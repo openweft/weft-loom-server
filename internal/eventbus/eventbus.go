@@ -48,8 +48,9 @@ type Hub struct {
 }
 
 type subscription struct {
-	ch       chan Event
-	overflow atomic.Uint64
+	ch         chan Event
+	dropNotify chan Event
+	overflow   atomic.Uint64
 }
 
 const (
@@ -69,7 +70,21 @@ func New() *Hub {
 // next publish drops the oldest and emits a "<drop>" sentinel via
 // the overflow counter (visible to the SSE handler).
 func (h *Hub) Subscribe() (<-chan Event, func()) {
-	sub := &subscription{ch: make(chan Event, subBuffer)}
+	ch, _, stop := h.SubscribeWithDrops()
+	return ch, stop
+}
+
+// SubscribeWithDrops returns the regular Event channel plus a
+// drop-marker channel (capacity 1, drop-on-full) that publishes a
+// single Event{Verb: "drop", Fields: {"drops": N}} sentinel whenever
+// the regular channel overflows. Callers that want to surface
+// buffer-pressure to operators (e.g. the doctor SSE stream) select on
+// both ; everyone else uses Subscribe.
+func (h *Hub) SubscribeWithDrops() (<-chan Event, <-chan Event, func()) {
+	sub := &subscription{
+		ch:         make(chan Event, subBuffer),
+		dropNotify: make(chan Event, 1),
+	}
 	h.mu.Lock()
 	h.subs[sub] = struct{}{}
 	h.mu.Unlock()
@@ -78,8 +93,9 @@ func (h *Hub) Subscribe() (<-chan Event, func()) {
 		delete(h.subs, sub)
 		h.mu.Unlock()
 		close(sub.ch)
+		close(sub.dropNotify)
 	}
-	return sub.ch, stop
+	return sub.ch, sub.dropNotify, stop
 }
 
 // Publish fan-outs to every subscriber. Non-blocking : drops events
@@ -100,8 +116,22 @@ func (h *Hub) Publish(ev Event) {
 		select {
 		case sub.ch <- ev:
 		default:
-			sub.overflow.Add(1)
+			n := sub.overflow.Add(1)
 			h.drops.Add(1)
+			if sub.dropNotify != nil {
+				marker := Event{
+					TS:        time.Now().UTC(),
+					Source:    "server",
+					Component: "eventbus",
+					Verb:      "drop",
+					Level:     "warn",
+					Fields:    map[string]any{"drops": n},
+				}
+				select {
+				case sub.dropNotify <- marker:
+				default:
+				}
+			}
 		}
 	}
 }
