@@ -63,6 +63,12 @@ export interface ODTParsed {
   // style the document referenced by name still resolves correctly
   // in the saved file.
   preservedAutoStyles?: string;
+  // T10 V0.2 : page header / footer content carried from styles.xml's
+  // <style:master-page> definition. The WYSIWYG renders them as
+  // separate editable bands above + below each page in Pages mode ;
+  // round-trip on save regenerates styles.xml.
+  header?: string; // inner HTML
+  footer?: string; // inner HTML
 }
 
 // parseODT : read an ODT file (Blob / ArrayBuffer / Uint8Array) and
@@ -99,7 +105,43 @@ export async function parseODT(data: ArrayBuffer | Uint8Array | Blob): Promise<O
   const meta = parseMeta(metaText);
   const html = parseContent(contentText, pictures);
   const preservedAutoStyles = extractAutoStyles(contentText);
-  return { html, meta, preservedAutoStyles };
+  // T10 V0.2 : pull the header/footer from styles.xml if present.
+  // The standard layout uses a single <style:master-page> with
+  // <style:header> + <style:footer> children — we extract the
+  // inline content of each as HTML.
+  const stylesEntry = zip.file('styles.xml');
+  let header: string | undefined;
+  let footer: string | undefined;
+  if (stylesEntry) {
+    const stylesText = await stylesEntry.async('string');
+    const sDoc = new DOMParser().parseFromString(stylesText, 'application/xml');
+    const masterPages = sDoc.getElementsByTagNameNS(NS.style, 'master-page');
+    if (masterPages.length > 0) {
+      const mp = masterPages[0];
+      const h = mp.getElementsByTagNameNS(NS.style, 'header')[0];
+      const f = mp.getElementsByTagNameNS(NS.style, 'footer')[0];
+      const emptyMap = new Map<string, StyleHints>();
+      if (h) {
+        let inner = '';
+        for (const child of Array.from(h.children)) {
+          if (child.localName === 'p') {
+            inner += '<p>' + emitInline(child, emptyMap, pictures) + '</p>';
+          }
+        }
+        header = inner;
+      }
+      if (f) {
+        let inner = '';
+        for (const child of Array.from(f.children)) {
+          if (child.localName === 'p') {
+            inner += '<p>' + emitInline(child, emptyMap, pictures) + '</p>';
+          }
+        }
+        footer = inner;
+      }
+    }
+  }
+  return { html, meta, preservedAutoStyles, header, footer };
 }
 
 // T10 : the set of <text:*> local names we treat as fields. Any
@@ -711,23 +753,80 @@ export async function writeODT(
   now: string = new Date().toISOString(),
   preservedAutoStyles: string = '',
   userDefined?: Record<string, string>,
+  headerHtml?: string,
+  footerHtml?: string,
 ): Promise<Uint8Array> {
   const collected: CollectedImage[] = [];
   const mediaCollected: CollectedMedia[] = [];
   const contentXML = htmlToContentXML(html, collected, mediaCollected, preservedAutoStyles);
+  // T10 V0.2 : if the user has a non-empty header or footer, emit a
+  // styles.xml with a master-page that carries them. Word + LO both
+  // pick up the master-page on open even when we don't reference it
+  // from automatic-styles ; the default page-layout is implicit.
+  const hasHF = !!(headerHtml && headerHtml.trim()) || !!(footerHtml && footerHtml.trim());
+  const stylesXml = hasHF ? buildStylesXml(headerHtml, footerHtml) : '';
 
   const zip = new JSZip();
   // The mimetype entry must be first + uncompressed.
   zip.file('mimetype', 'application/vnd.oasis.opendocument.text', { compression: 'STORE' });
-  zip.folder('META-INF')!.file('manifest.xml', buildManifest(collected, mediaCollected));
+  zip.folder('META-INF')!.file('manifest.xml', buildManifest(collected, mediaCollected, hasHF));
   zip.file('meta.xml', META_TEMPLATE(now, userDefined));
   zip.file('content.xml', contentXML);
+  if (hasHF) zip.file('styles.xml', stylesXml);
   for (const img of collected) zip.file(img.path, img.bytes);
   for (const m of mediaCollected) zip.file(m.path, m.bytes);
   return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
 }
 
-function buildManifest(images: CollectedImage[], media: CollectedMedia[]): string {
+// buildStylesXml : minimal styles.xml that just declares one
+// <style:master-page> with the user's header / footer content.
+// We convert each top-level <p> in the input HTML to a <text:p>
+// run, peeling inline formatting via a quick text-only walk (rich
+// inline content in the H/F band is V0.3 work).
+function buildStylesXml(headerHtml?: string, footerHtml?: string): string {
+  function htmlBandToOdf(html: string): string {
+    if (!html || !html.trim()) return '';
+    try {
+      const doc = new DOMParser().parseFromString(
+        '<!doctype html><html><body>' + html + '</body></html>',
+        'text/html',
+      );
+      let out = '';
+      for (const c of Array.from(doc.body.children)) {
+        const tag = c.tagName.toLowerCase();
+        if (tag === 'p' || tag === 'div') {
+          out += '<text:p>' + escapeHTML(c.textContent ?? '') + '</text:p>';
+        }
+      }
+      // If the input had only text nodes (no <p>), wrap as one.
+      if (!out) out = '<text:p>' + escapeHTML(doc.body.textContent ?? '') + '</text:p>';
+      return out;
+    } catch {
+      return '<text:p>' + escapeHTML(html) + '</text:p>';
+    }
+  }
+  const hBlock = headerHtml && headerHtml.trim()
+    ? '\n      <style:header>' + htmlBandToOdf(headerHtml) + '</style:header>'
+    : '';
+  const fBlock = footerHtml && footerHtml.trim()
+    ? '\n      <style:footer>' + htmlBandToOdf(footerHtml) + '</style:footer>'
+    : '';
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<office:document-styles
+  xmlns:office="${NS.office}"
+  xmlns:text="${NS.text}"
+  xmlns:style="${NS.style}"
+  xmlns:fo="${NS.fo}"
+  office:version="1.2">
+  <office:master-styles>
+    <style:master-page style:name="Standard" style:page-layout-name="Mpm1">${hBlock}${fBlock}
+    </style:master-page>
+  </office:master-styles>
+</office:document-styles>
+`;
+}
+
+function buildManifest(images: CollectedImage[], media: CollectedMedia[], includeStyles: boolean): string {
   let extras = '';
   for (const img of images) {
     extras += '  <manifest:file-entry manifest:full-path="' + img.path
@@ -737,12 +836,15 @@ function buildManifest(images: CollectedImage[], media: CollectedMedia[]): strin
     extras += '  <manifest:file-entry manifest:full-path="' + m.path
            + '" manifest:media-type="' + m.mime + '"/>\n';
   }
+  const stylesEntry = includeStyles
+    ? '  <manifest:file-entry manifest:full-path="styles.xml" manifest:media-type="text/xml"/>\n'
+    : '';
   return `<?xml version="1.0" encoding="UTF-8"?>
 <manifest:manifest xmlns:manifest="${NS.manifest}" manifest:version="1.2">
   <manifest:file-entry manifest:full-path="/" manifest:media-type="application/vnd.oasis.opendocument.text"/>
   <manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>
   <manifest:file-entry manifest:full-path="meta.xml" manifest:media-type="text/xml"/>
-${extras}</manifest:manifest>
+${stylesEntry}${extras}</manifest:manifest>
 `;
 }
 

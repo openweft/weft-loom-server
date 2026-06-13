@@ -28,6 +28,13 @@
   // T10 : user-defined meta vars carried across the load/save cycle.
   // The VariablesPanel writes here ; save() forwards to writeODT.
   let odtUserDefined = $state<Record<string, string>>({});
+  // T10 V0.2 : header + footer content from styles.xml. Editable
+  // bands in Pages mode ; round-trip into a re-emitted styles.xml
+  // on save.
+  let odtHeader = $state<string>('');
+  let odtFooter = $state<string>('');
+  let headerEl: HTMLDivElement | undefined;
+  let footerEl: HTMLDivElement | undefined;
   // Debounce timer for save-on-change : ~600 ms after the last
   // keystroke we serialise + PUT. Keeps the keystroke loop tight.
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -65,6 +72,8 @@
           html = parsed.html || '<p><br></p>';
           odtPreservedAutoStyles = parsed.preservedAutoStyles ?? '';
           odtUserDefined = parsed.meta.userDefined ?? {};
+          odtHeader = parsed.header ?? '';
+          odtFooter = parsed.footer ?? '';
           // Expose for the Variables sidebar : the panel reads
           // + mutates this object directly, and the next save()
           // call picks the latest snapshot up.
@@ -97,11 +106,19 @@
     try {
       let body: BodyInit;
       if (format() === 'odt') {
+        // Snapshot the H/F editable bands before serialising — the
+        // contenteditable divs may have been edited since the last
+        // load() ; if they haven't been mounted (continuous mode)
+        // we fall back to the stashed string.
+        const hSnap = headerEl ? headerEl.innerHTML : odtHeader;
+        const fSnap = footerEl ? footerEl.innerHTML : odtFooter;
         const bytes = await writeODT(
           editorEl.innerHTML,
           new Date().toISOString(),
           odtPreservedAutoStyles,
           odtUserDefined,
+          hSnap,
+          fSnap,
         );
         // BodyInit accepts BufferSource ; wrap to a Blob so fetch
         // sets the proper Content-Length without copying the buffer
@@ -813,6 +830,19 @@
           <div class="ruler-body-v" style="top: {MARGIN_CM}cm; height: {paperHeightCm - 2 * MARGIN_CM}cm"></div>
         </div>
         <div class="page-paper" style="width: {paperWidthCm}cm; min-height: {paperHeightCm}cm">
+          <!-- T10 V0.2 : editable header band. Sits inside the
+               top margin ; round-trips into <style:header> on save. -->
+          <div
+            bind:this={headerEl}
+            contenteditable="true"
+            role="textbox"
+            aria-label="Page header"
+            spellcheck="true"
+            oninput={onInput}
+            class="page-band page-header outline-none prose prose-sm max-w-none"
+            style="margin: 0.5cm {MARGIN_CM}cm 0 {MARGIN_CM}cm; min-height: 1cm; padding-bottom: 0.3cm; line-height: 1.4; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;"
+            data-band="header"
+          >{@html odtHeader || '<p class="opacity-50"><i>en-tête (clic pour éditer)</i></p>'}</div>
           <div
             bind:this={editorEl}
             contenteditable="true"
@@ -824,8 +854,19 @@
             oninput={onInput}
             onkeydown={onKeyDown}
             class="outline-none prose prose-sm max-w-none wysiwyg-surface"
-            style="padding: {MARGIN_CM}cm; line-height: 1.6; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; min-height: calc({paperHeightCm}cm - {2 * MARGIN_CM}cm);"
+            style="padding: 0.3cm {MARGIN_CM}cm 0.3cm {MARGIN_CM}cm; line-height: 1.6; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; min-height: calc({paperHeightCm}cm - {2 * MARGIN_CM}cm - 3cm);"
           ></div>
+          <div
+            bind:this={footerEl}
+            contenteditable="true"
+            role="textbox"
+            aria-label="Page footer"
+            spellcheck="true"
+            oninput={onInput}
+            class="page-band page-footer outline-none prose prose-sm max-w-none"
+            style="margin: 0 {MARGIN_CM}cm 0.5cm {MARGIN_CM}cm; min-height: 1cm; padding-top: 0.3cm; line-height: 1.4; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;"
+            data-band="footer"
+          >{@html odtFooter || '<p class="opacity-50"><i>pied de page (clic pour éditer)</i></p>'}</div>
         </div>
       </div>
     </div>
@@ -1083,6 +1124,19 @@
     color: #1a1a1a;
     box-shadow: 0 2px 8px rgba(0,0,0,0.15), 0 0 0 1px rgba(0,0,0,0.06);
     margin-bottom: 1rem;
+    display: flex;
+    flex-direction: column;
+  }
+  /* T10 V0.2 : header + footer editable bands. Subtle bottom-/top-
+     border separates them visually from the body content. */
+  .page-band {
+    border-bottom: 1px dashed rgba(0, 100, 200, 0.2);
+    font-size: 0.85em;
+    color: rgba(0,0,0,0.65);
+  }
+  .page-footer {
+    border-bottom: none;
+    border-top: 1px dashed rgba(0, 100, 200, 0.2);
   }
 
   .wysiwyg-surface :global(span.odt-field) {
