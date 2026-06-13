@@ -18,6 +18,13 @@
   let { project, file }: Props = $props();
 
   let editorEl: HTMLDivElement;
+  // T11 fix : pageMode toggle replaces the contenteditable element
+  // (Svelte's {#if pages} branch unmounts the continuous branch +
+  // mounts a fresh editor div with empty innerHTML). We stash the
+  // current content into pendingHTML right before the toggle so the
+  // post-mount effect can restore it ; otherwise the user sees the
+  // editor blank itself when switching modes.
+  let pendingHTML: string | null = $state(null);
   let status = $state<'loading' | 'ready' | 'saving' | 'error'>('loading');
   let errorMessage = $state('');
   let etag = '';
@@ -207,6 +214,34 @@
   // starts at MARGIN_CM cm, ends at paperWidthCm - MARGIN_CM.
   const hTicks = $derived(Array.from({ length: Math.floor(paperWidthCm) + 1 }, (_, i) => i));
   const vTicks = $derived(Array.from({ length: Math.floor(paperHeightCm) + 1 }, (_, i) => i));
+
+  // switchPageMode : snapshot the contenteditable's content + the
+  // header / footer band content BEFORE the {#if pageMode} swap,
+  // then restore them after the new editor div is bound. Without
+  // this the toggle loses the user's edits because Svelte mounts
+  // a fresh, empty <div contenteditable>.
+  function switchPageMode(next: 'continuous' | 'pages') {
+    if (pageMode === next) return;
+    pendingHTML = editorEl?.innerHTML ?? null;
+    if (headerEl) odtHeader = headerEl.innerHTML;
+    if (footerEl) odtFooter = footerEl.innerHTML;
+    pageMode = next;
+  }
+
+  // Restore the snapshot once the new editor div lands. Runs every
+  // time editorEl changes ; the `pendingHTML` flag ensures we only
+  // act on the first mount after a toggle (not on every reactive
+  // re-bind).
+  $effect(() => {
+    if (editorEl && pendingHTML !== null) {
+      // Defer one microtask so the bind has fully settled.
+      const snap = pendingHTML;
+      pendingHTML = null;
+      queueMicrotask(() => {
+        if (editorEl) editorEl.innerHTML = snap;
+      });
+    }
+  });
   const savedLabel = $derived(() => {
     if (!savedAt) return '';
     const delta = Math.max(0, nowTick - savedAt);
@@ -738,14 +773,14 @@
         type="button"
         class="join-item btn btn-xs"
         class:btn-active={pageMode === 'continuous'}
-        onclick={() => (pageMode = 'continuous')}
+        onclick={() => switchPageMode('continuous')}
         data-testid="layout-continuous"
       >Continu</button>
       <button
         type="button"
         class="join-item btn btn-xs"
         class:btn-active={pageMode === 'pages'}
-        onclick={() => (pageMode = 'pages')}
+        onclick={() => switchPageMode('pages')}
         data-testid="layout-pages"
       >Pages</button>
     </div>
