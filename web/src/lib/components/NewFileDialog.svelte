@@ -15,6 +15,8 @@
   import { TEMPLATES, findTemplate, type Template } from '../templates';
   import { writeFile } from '../api';
   import { writeODT } from '../odt';
+  import { MARP_THEMES } from '../marp';
+  import { MARP_LANGS, renderMarpDeck, type MarpLang } from '../marp_template';
 
   interface Props {
     open: boolean;
@@ -108,6 +110,11 @@
   let path = $state('');
   let err = $state<string | null>(null);
   let creating = $state(false);
+  // Marp-specific parameters : when templateId === 'markdown-marp'
+  // we surface a theme + UI-language picker so the generated deck
+  // ships with the right brand colours + localised copy.
+  let marpTheme = $state<string>('default');
+  let marpLang = $state<MarpLang>('en');
 
   // When the language changes, snap templateId to that language's
   // first entry. Special-case "blank" : show only the blank template.
@@ -167,6 +174,12 @@
         const html = tpl.content.replace(/\$\{date\}/g, today);
         const bytes = await writeODT(html, new Date().toISOString());
         await writeFile(project, path, bytes, 'application/vnd.oasis.opendocument.text');
+      } else if (tpl.id === 'markdown-marp') {
+        // Marp template gets the selected theme + UI language baked
+        // in so the deck opens already wearing the brand colours +
+        // localised section headings.
+        const body = renderMarpDeck(marpTheme, marpLang);
+        await writeFile(project, path, body);
       } else {
         await writeFile(project, path, tpl.content);
       }
@@ -239,6 +252,51 @@
 
     {#if tpl}
       <div class="mt-2 text-xs opacity-60 italic">{tpl.description}</div>
+    {/if}
+
+    {#if tpl?.id === 'markdown-marp'}
+      <div class="grid grid-cols-2 gap-3 mt-3 p-3 rounded bg-base-200/50 border border-base-300/50">
+        <div class="form-control">
+          <label class="label py-0">
+            <span class="label-text text-xs uppercase opacity-60">Marp theme</span>
+          </label>
+          <select class="select select-bordered select-sm" bind:value={marpTheme} data-testid="marp-theme-picker">
+            <optgroup label="Built-in">
+              {#each MARP_THEMES.filter(t => t.origin === 'built-in') as t}
+                <option value={t.id}>{t.label}</option>
+              {/each}
+            </optgroup>
+            <optgroup label="Institutional">
+              {#each MARP_THEMES.filter(t => ['polytechnique', 'ip-paris', 'cnrs', 'dinum', 'paris-saclay', 'ihes'].includes(t.id)) as t}
+                <option value={t.id}>{t.label}</option>
+              {/each}
+            </optgroup>
+            <optgroup label="Community">
+              {#each MARP_THEMES.filter(t => t.origin === 'community' && !['polytechnique', 'ip-paris', 'cnrs', 'dinum', 'paris-saclay', 'ihes'].includes(t.id)) as t}
+                <option value={t.id}>{t.label}</option>
+              {/each}
+            </optgroup>
+            <optgroup label="Custom">
+              {#each MARP_THEMES.filter(t => t.origin === 'custom') as t}
+                <option value={t.id}>{t.label}</option>
+              {/each}
+            </optgroup>
+          </select>
+        </div>
+        <div class="form-control">
+          <label class="label py-0">
+            <span class="label-text text-xs uppercase opacity-60">Slide language</span>
+          </label>
+          <select class="select select-bordered select-sm" bind:value={marpLang} data-testid="marp-lang-picker">
+            {#each MARP_LANGS as l}
+              <option value={l.id}>{l.label}</option>
+            {/each}
+          </select>
+        </div>
+        <div class="col-span-2 text-[10px] opacity-50 italic">
+          Theme drives brand colours + cover-page class ; language localises every section heading and label.
+        </div>
+      </div>
     {/if}
 
     <div class="form-control mt-3">

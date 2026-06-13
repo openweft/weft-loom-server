@@ -370,62 +370,72 @@
        lists. We deliberately skip font-family / size pickers ; the
        RTF writer fixes those at the document level (Helvetica 12pt).
        Add them when there's an explicit user ask. -->
-  <div class="flex items-center gap-1 px-2 py-1 border-b border-base-300 bg-base-200 text-sm">
-    <select
-      class="select select-bordered select-xs"
-      onchange={(e) => {
-        const v = (e.currentTarget as HTMLSelectElement).value;
-        if (v === 'p') exec('formatBlock', 'p');
-        else if (v === 'h1' || v === 'h2' || v === 'h3') exec('formatBlock', v);
-        (e.currentTarget as HTMLSelectElement).value = '';
-      }}
-    >
-      <option value="" disabled selected>Style</option>
-      <option value="p">Paragraph</option>
-      <option value="h1">Heading 1</option>
-      <option value="h2">Heading 2</option>
-      <option value="h3">Heading 3</option>
-    </select>
-    <select
-      class="select select-bordered select-xs"
-      title="Font family"
-      onchange={(e) => {
-        const v = (e.currentTarget as HTMLSelectElement).value;
-        if (v) setFontFamily(v);
-        (e.currentTarget as HTMLSelectElement).value = '';
-      }}
-    >
-      <option value="" disabled selected>Font</option>
-      <option>Arial</option>
-      <option>Helvetica</option>
-      <option>Times New Roman</option>
-      <option>Georgia</option>
-      <option>Garamond</option>
-      <option>Courier New</option>
-      <option>Verdana</option>
-      <option>Calibri</option>
-    </select>
-    <select
-      class="select select-bordered select-xs"
-      title="Font size"
-      onchange={(e) => {
-        const v = (e.currentTarget as HTMLSelectElement).value;
-        if (v) setFontSize(v);
-        (e.currentTarget as HTMLSelectElement).value = '';
-      }}
-    >
-      <option value="" disabled selected>Size</option>
-      <option value="8pt">8</option>
-      <option value="9pt">9</option>
-      <option value="10pt">10</option>
-      <option value="11pt">11</option>
-      <option value="12pt">12</option>
-      <option value="14pt">14</option>
-      <option value="16pt">16</option>
-      <option value="18pt">18</option>
-      <option value="24pt">24</option>
-      <option value="36pt">36</option>
-    </select>
+  <div class="flex flex-wrap items-center gap-1 px-2 py-1 border-b border-base-300 bg-base-200 text-sm">
+    <label class="flex flex-col gap-0.5">
+      <span class="text-[10px] uppercase opacity-50 leading-none">Style</span>
+      <select
+        class="select select-bordered select-xs"
+        title="Block style"
+        onchange={(e) => {
+          const v = (e.currentTarget as HTMLSelectElement).value;
+          if (v === 'p') exec('formatBlock', 'p');
+          else if (v === 'h1' || v === 'h2' || v === 'h3') exec('formatBlock', v);
+          (e.currentTarget as HTMLSelectElement).value = '';
+        }}
+      >
+        <option value="" disabled selected>Style…</option>
+        <option value="p">Paragraph</option>
+        <option value="h1">Heading 1</option>
+        <option value="h2">Heading 2</option>
+        <option value="h3">Heading 3</option>
+      </select>
+    </label>
+    <label class="flex flex-col gap-0.5">
+      <span class="text-[10px] uppercase opacity-50 leading-none">Font</span>
+      <select
+        class="select select-bordered select-xs"
+        title="Font family"
+        onchange={(e) => {
+          const v = (e.currentTarget as HTMLSelectElement).value;
+          if (v) setFontFamily(v);
+          (e.currentTarget as HTMLSelectElement).value = '';
+        }}
+      >
+        <option value="" disabled selected>Font…</option>
+        <option>Arial</option>
+        <option>Helvetica</option>
+        <option>Times New Roman</option>
+        <option>Georgia</option>
+        <option>Garamond</option>
+        <option>Courier New</option>
+        <option>Verdana</option>
+        <option>Calibri</option>
+      </select>
+    </label>
+    <label class="flex flex-col gap-0.5">
+      <span class="text-[10px] uppercase opacity-50 leading-none">Size</span>
+      <select
+        class="select select-bordered select-xs"
+        title="Font size"
+        onchange={(e) => {
+          const v = (e.currentTarget as HTMLSelectElement).value;
+          if (v) setFontSize(v);
+          (e.currentTarget as HTMLSelectElement).value = '';
+        }}
+      >
+        <option value="" disabled selected>Size…</option>
+        <option value="8pt">8</option>
+        <option value="9pt">9</option>
+        <option value="10pt">10</option>
+        <option value="11pt">11</option>
+        <option value="12pt">12</option>
+        <option value="14pt">14</option>
+        <option value="16pt">16</option>
+        <option value="18pt">18</option>
+        <option value="24pt">24</option>
+        <option value="36pt">36</option>
+      </select>
+    </label>
     <span class="divider divider-horizontal mx-0"></span>
     <button type="button" title="Bold (⌘B)"        class="btn btn-ghost btn-xs font-bold"        onclick={() => exec('bold')}>B</button>
     <button type="button" title="Italic (⌘I)"      class="btn btn-ghost btn-xs italic"           onclick={() => exec('italic')}>I</button>

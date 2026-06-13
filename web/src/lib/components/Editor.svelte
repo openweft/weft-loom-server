@@ -490,6 +490,26 @@
     // even for the very first remote update.
     bindingDetach = binding.attach(view);
 
+    // Expose a global insert-at-cursor hook so the LaTeX symbol
+    // palette + math equation builder can splice LaTeX commands
+    // into the source view without needing a parent reference.
+    // `placeCursorOffset` (optional) lets the palette put the
+    // caret at a useful position inside the inserted snippet — e.g.
+    // \\frac{|}{} parks at the numerator stub.
+    (window as unknown as {
+      weftLoomInsertAtCursor?: (s: string, placeCursorOffset?: number) => void;
+    }).weftLoomInsertAtCursor = (s: string, placeCursorOffset?: number) => {
+      if (!view) return;
+      const sel = view.state.selection.main;
+      view.dispatch({
+        changes: { from: sel.from, to: sel.to, insert: s },
+        selection: placeCursorOffset !== undefined
+          ? { anchor: sel.from + placeCursorOffset }
+          : { anchor: sel.from + s.length },
+      });
+      view.focus();
+    };
+
     provider.on('status', (event: { status: string }) => {
       if (
         event.status === 'connected' ||

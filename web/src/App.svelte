@@ -29,6 +29,7 @@
   import { setProjectHint, logEvent } from './lib/logbus';
   import Editor from './lib/components/Editor.svelte';
   import WysiwygEditor from './lib/components/WysiwygEditor.svelte';
+  import LatexSymbolPalette from './lib/components/LatexSymbolPalette.svelte';
   import TabBar from './lib/components/TabBar.svelte';
   import NewFileDialog from './lib/components/NewFileDialog.svelte';
   import AIChatPanel from './lib/components/AIChatPanel.svelte';
@@ -732,6 +733,11 @@
     // NewFileDialog runs when the user picks "From template".
     import('./lib/templates').then(m => { w.weftLoomTemplates = m; });
     import('./lib/odt').then(m => { w.weftLoomWriteODT = m.writeODT; });
+    // Marp template renderer hook — backs the theme+language
+    // picker regression test (marp-picker.mjs).
+    import('./lib/marp_template').then(m => {
+      (w as unknown as { weftLoomMarp?: unknown }).weftLoomMarp = m;
+    });
     // Mirror of the SPA's Run code-path : start a compile against the
     // current file using the same {language, entry} body the
     // bottom-panel sends. Lets the ui-compile-entry regression suite
@@ -951,7 +957,7 @@
             onClose={onCloseTab}
           />
           <Breadcrumb {project} file={currentFile} />
-          <div class="flex-1 overflow-hidden" oncontextmenu={openEditorContext} role="region" aria-label="Editor">
+          <div class="flex-1 overflow-hidden relative" oncontextmenu={openEditorContext} role="region" aria-label="Editor">
             {#if currentFile}
               {#if currentFile.endsWith('.ipynb')}
                 {#key project + '|nb|' + currentFile}
@@ -982,6 +988,7 @@
                     onCursorStats={(s) => { cursorLine = s.line; cursorCol = s.col; selectionLen = s.selectionLen; wordCount = s.words; }}
                   />
                 {/key}
+                <LatexSymbolPalette visible={language === 'latex'} />
               {/if}
             {:else}
               <div class="h-full flex items-center justify-center opacity-50 text-sm">

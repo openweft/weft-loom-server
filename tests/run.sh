@@ -131,8 +131,27 @@ node tests/odt-templates.mjs
 ODT_TPL=$?
 
 echo
+echo "----- LaTeX symbol palette suite -----"
+# Regression guard for the LaTeX symbol palette : the FAB must
+# only render for .tex/.latex files ; clicking a symbol must
+# splice the LaTeX command into the editor via the cursor-insert
+# hook ; tab + filter wiring must stay alive.
+node tests/latex-palette.mjs
+LATEX_PAL=$?
+
+echo
+echo "----- Marp theme+language picker suite -----"
+# Regression guard for the NewFileDialog Marp picker : every
+# (theme, language) combo from the catalogue must produce a deck
+# carrying the right theme: + lang: YAML + localised section
+# headings, and institutional themes must opt into the
+# cover-page <!-- _class: lead --> hook.
+node tests/marp-picker.mjs
+MARP_PIC=$?
+
+echo
 echo "==============================================="
-if [ $UI -eq 0 ] && [ $LANG -eq 0 ] && [ $PREVIEW -eq 0 ] && [ $UIENTRY -eq 0 ] && [ $THEMEP -eq 0 ] && [ $WYSIWYG -eq 0 ] && [ $WYSIWYG_ODT -eq 0 ] && [ $WYSIWYG_ODT_TB -eq 0 ] && [ $ODT_TPL -eq 0 ]; then
+if [ $UI -eq 0 ] && [ $LANG -eq 0 ] && [ $PREVIEW -eq 0 ] && [ $UIENTRY -eq 0 ] && [ $THEMEP -eq 0 ] && [ $WYSIWYG -eq 0 ] && [ $WYSIWYG_ODT -eq 0 ] && [ $WYSIWYG_ODT_TB -eq 0 ] && [ $ODT_TPL -eq 0 ] && [ $LATEX_PAL -eq 0 ] && [ $MARP_PIC -eq 0 ]; then
   echo "  \033[32mALL PASS\033[0m"
   exit 0
 fi
@@ -145,5 +164,7 @@ fi
 [ $WYSIWYG_ODT -eq 0 ] && echo "  wysiwyg-odt        : \033[32mPASS\033[0m" || echo "  wysiwyg-odt        : \033[31mFAIL\033[0m"
 [ $WYSIWYG_ODT_TB -eq 0 ] && echo "  wysiwyg-odt-toolbar: \033[32mPASS\033[0m" || echo "  wysiwyg-odt-toolbar: \033[31mFAIL\033[0m"
 [ $ODT_TPL -eq 0 ] && echo "  odt-templates      : \033[32mPASS\033[0m" || echo "  odt-templates      : \033[31mFAIL\033[0m"
+[ $LATEX_PAL -eq 0 ] && echo "  latex-palette      : \033[32mPASS\033[0m" || echo "  latex-palette      : \033[31mFAIL\033[0m"
+[ $MARP_PIC -eq 0 ] && echo "  marp-picker        : \033[32mPASS\033[0m" || echo "  marp-picker        : \033[31mFAIL\033[0m"
 echo "==============================================="
 exit 1
