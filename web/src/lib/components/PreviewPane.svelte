@@ -116,6 +116,14 @@
   $effect(() => {
     if (pdfURL) showPDF = true;
   });
+  // Reset the PDF toggle when the artefact URL is cleared OR the
+  // active file changes ; otherwise we'd keep showing a stale PDF
+  // viewer over an unrelated file. App.svelte still owns clearing
+  // artifactURL on file change ; this local reset is the safety net.
+  $effect(() => {
+    file;
+    if (!pdfURL) showPDF = false;
+  });
 
   let html: string = $state('');
   let debounce: ReturnType<typeof setTimeout> | undefined;

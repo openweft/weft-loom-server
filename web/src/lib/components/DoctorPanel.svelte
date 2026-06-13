@@ -34,6 +34,7 @@
   let sse: EventSource | undefined;
   let paused = $state(false);
   let scroll: HTMLDivElement | undefined = $state();
+  let connected = $state(true);
 
   function connect() {
     if (sse) sse.close();
@@ -59,8 +60,12 @@
         }
       }
     };
+    sse.onopen = () => {
+      connected = true;
+    };
     sse.onerror = () => {
-      // Browser will auto-reconnect ; we just visually flag it.
+      // Browser will auto-reconnect ; flip the badge red until then.
+      connected = false;
     };
   }
 
@@ -123,6 +128,11 @@
         <span class="text-xs">this project only</span>
       </label>
       <span class="badge badge-ghost badge-sm ml-2">{filtered.length}/{events.length}</span>
+      <span
+        class="inline-block w-2 h-2 rounded-full ml-1 {connected ? 'bg-success' : 'bg-error'}"
+        aria-label={connected ? 'event stream live' : 'event stream offline'}
+        title={connected ? 'event stream live' : 'event stream offline'}
+      ></span>
       <div class="ml-auto flex gap-1">
         <button class="btn btn-ghost btn-xs" onclick={togglePause} title="Pause / resume">
           {paused ? '▶' : '⏸'}

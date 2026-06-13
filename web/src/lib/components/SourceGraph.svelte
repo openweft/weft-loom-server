@@ -39,7 +39,6 @@
     }
   }
   onMount(() => {
-    refresh();
     poll = setInterval(refresh, 30_000);
   });
   onDestroy(() => {

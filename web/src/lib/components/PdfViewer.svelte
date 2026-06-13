@@ -14,7 +14,7 @@
   // The .worker.mjs sidecar is loaded as a separate chunk by Vite ;
   // we tell PDF.js where to find it via GlobalWorkerOptions.
 
-  import { onMount, onDestroy } from 'svelte';
+  import { onDestroy } from 'svelte';
 
   interface Props {
     src: string;                       // /api/projects/<p>/compile/<id>/artifact
@@ -27,6 +27,10 @@
   let status = $state<'loading' | 'ready' | 'error'>('loading');
   let errMsg = $state('');
   let pageCount = $state(0);
+  // Track the live PDF.js document so we can destroy it before
+  // loading a new src (or on component teardown). Without this the
+  // previous doc leaks its worker resources + canvases.
+  let currentDoc: { destroy: () => Promise<void> } | null = null;
 
   // PDF.js wants a worker URL ; resolve it via Vite's `?url` import
   // (Vite hashes + serves the worker as a separate chunk).
@@ -44,8 +48,11 @@
     status = 'loading';
     try {
       const pdfjs = await loadWorker();
+      await currentDoc?.destroy();
+      currentDoc = null;
       const task = pdfjs.getDocument({ url: src });
       const doc = await task.promise;
+      currentDoc = doc;
       pageCount = doc.numPages;
       pages = [];
       container.innerHTML = '';
@@ -110,10 +117,10 @@
     }
   });
 
-  onMount(() => {
-    if (container) void load().then(scrollToPageFromFragment);
+  onDestroy(() => {
+    void currentDoc?.destroy();
+    currentDoc = null;
   });
-  onDestroy(() => { /* PDF.js holds no globals once doc.destroy() ; we skip cleanup since the canvas removal does it */ });
 </script>
 
 <div class="pdf-viewer-wrap" data-testid="pdf-viewer">

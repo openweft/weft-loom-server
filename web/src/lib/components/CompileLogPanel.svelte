@@ -7,6 +7,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { startCompile } from '../api';
   import { compileCommands } from '../settings.svelte';
+  import { logError } from '../logbus';
 
   interface Props {
     project: string;
@@ -45,6 +46,8 @@
 
   let lines = $state<LogLine[]>([]);
   let inFlight = $state(false);
+  // Hoisted so onDestroy can close the stream even mid-run.
+  let es: EventSource | null = null;
 
   // Language-agnostic : every file gets a Run button. The
   // server-side dispatcher decides what to do per language ; if
@@ -219,9 +222,14 @@
       });
       if (customCmd) push({ kind: 'log', text: 'custom command : ' + customCmd, ts: Date.now() });
       push({ kind: 'log', text: `job ${id} started`, ts: Date.now() });
-      const es = new EventSource(
+      es?.close();
+      es = new EventSource(
         `/api/projects/${encodeURIComponent(project)}/compile/${id}`,
       );
+      // Track whether the server already delivered the 'result' event ;
+      // an 'error' fired afterwards is the normal SSE close, before it
+      // is a genuine network interruption worth surfacing.
+      let gotResult = false;
       es.addEventListener('log', (e) => {
         const ev = e as MessageEvent;
         let text = ev.data as string;
@@ -260,12 +268,18 @@
         } catch {
           push({ kind: 'result', text: ev.data, ts: Date.now() });
         }
-        es.close();
+        gotResult = true;
+        es?.close();
+        es = null;
         inFlight = false;
       });
       es.addEventListener('error', () => {
-        push({ kind: 'error', text: 'stream interrupted', ts: Date.now() });
-        es.close();
+        if (!gotResult) {
+          push({ kind: 'error', text: 'stream interrupted', ts: Date.now() });
+          logError('compile', 'stream_interrupted', new Error('SSE error before result'), { project, language });
+        }
+        es?.close();
+        es = null;
         inFlight = false;
       });
     } catch (e) {
@@ -294,7 +308,8 @@
   // handler that lived here is removed to avoid dead code.
 
   onDestroy(() => {
-    // No teardown needed ; the in-panel drag state moved out.
+    es?.close();
+    es = null;
   });
 
   function fmtTime(ts: number): string {

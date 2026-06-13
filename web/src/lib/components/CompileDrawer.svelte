@@ -1,6 +1,7 @@
 <script lang="ts">
   import { startCompile } from '../api';
   import { compileCommands } from '../settings.svelte';
+  import { logError } from '../logbus';
 
   interface Props {
     open: boolean;
@@ -43,6 +44,7 @@
       const es = new EventSource(
         `/api/projects/${encodeURIComponent(project)}/compile/${id}`,
       );
+      let gotResult = false;
       es.addEventListener('log', (e) => {
         const ev = e as MessageEvent;
         try {
@@ -72,11 +74,15 @@
         } catch {
           lines = [...lines, { kind: 'result', text: ev.data }];
         }
+        gotResult = true;
         es.close();
         inFlight = false;
       });
       es.addEventListener('error', () => {
-        lines = [...lines, { kind: 'error', text: 'stream interrupted' }];
+        if (!gotResult) {
+          lines = [...lines, { kind: 'error', text: 'stream interrupted' }];
+          logError('compile', 'stream_interrupted', new Error('SSE error before result'), { project, language });
+        }
         es.close();
         inFlight = false;
       });
