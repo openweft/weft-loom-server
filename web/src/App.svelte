@@ -2,7 +2,7 @@
   // Editor restored : the file list works (Navbar/CompileDrawer aren't
   // the blocker we eliminated those). y-websocket now reaches
   // /sync/default so it doesn't saturate the conn pool any more.
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import * as Y from 'yjs';
   import type { Awareness } from 'y-protocols/awareness';
   import FileExplorer from './lib/components/FileExplorer.svelte';
@@ -47,6 +47,52 @@
 
   let identity = $state<Identity>(loadIdentity());
 
+  // Hoisted handler refs : addEventListener with an anonymous arrow
+  // leaks the listener on component teardown (no stable reference to
+  // pass to removeEventListener). Keep them as named consts so the
+  // matching onDestroy cleanup actually unbinds.
+  function onDocContextMenu(ev: MouseEvent) {
+    const el = ev.target as HTMLElement;
+    if (!el) return;
+    if (el.closest('input, textarea, embed, [contenteditable=true], [data-allow-native-context]')) return;
+    ev.preventDefault();
+  }
+  function onDocKeyDown(ev: KeyboardEvent) {
+    const mod = ev.metaKey || ev.ctrlKey;
+    if (!mod) return;
+    // Cmd+P : Go to file
+    if (ev.key === 'p' && !ev.shiftKey && !ev.altKey) {
+      ev.preventDefault();
+      quickOpenOpen = true;
+      return;
+    }
+    // Cmd+S : explicit save — forces every mounted editor to
+    // flush its buffer to disk immediately. Same event the
+    // CompileLogPanel uses before kicking off a compile.
+    if (ev.key === 's' && !ev.shiftKey && !ev.altKey) {
+      ev.preventDefault();
+      const flushEv = new CustomEvent<{ ack: Promise<void> | null }>(
+        'weft-loom-flush-saves',
+        { detail: { ack: null } },
+      );
+      window.dispatchEvent(flushEv);
+      void flushEv.detail.ack;
+      return;
+    }
+    // Cmd+Shift+P : Command palette
+    if ((ev.key === 'P' || ev.key === 'p') && ev.shiftKey) {
+      ev.preventDefault();
+      paletteOpen = true;
+      return;
+    }
+    // Cmd+, : Settings
+    if (ev.key === ',') {
+      ev.preventDefault();
+      settingsOpen = true;
+      return;
+    }
+  }
+
   onMount(() => {
     applyTheme(loadTheme());
     // Suppress the browser's native right-click menu on the whole
@@ -54,53 +100,18 @@
     // explicit `oncontextmenu` handlers on each region. Inputs +
     // PDF embeds keep their default menu so the user can still
     // copy/paste in form fields and download PDFs.
-    document.addEventListener('contextmenu', (ev) => {
-      const el = ev.target as HTMLElement;
-      if (!el) return;
-      if (el.closest('input, textarea, embed, [contenteditable=true], [data-allow-native-context]')) return;
-      ev.preventDefault();
-    });
+    document.addEventListener('contextmenu', onDocContextMenu);
 
     // Global keyboard shortcuts : Cmd+P quick file open, Cmd+,
     // settings, Cmd+Shift+P command palette (placeholder = QuickOpen
     // for now). CodeMirror keymaps intercept these only when the
     // editor has focus ; we listen at the document level so the
     // shortcuts work from any pane.
-    document.addEventListener('keydown', (ev) => {
-      const mod = ev.metaKey || ev.ctrlKey;
-      if (!mod) return;
-      // Cmd+P : Go to file
-      if (ev.key === 'p' && !ev.shiftKey && !ev.altKey) {
-        ev.preventDefault();
-        quickOpenOpen = true;
-        return;
-      }
-      // Cmd+S : explicit save — forces every mounted editor to
-      // flush its buffer to disk immediately. Same event the
-      // CompileLogPanel uses before kicking off a compile.
-      if (ev.key === 's' && !ev.shiftKey && !ev.altKey) {
-        ev.preventDefault();
-        const flushEv = new CustomEvent<{ ack: Promise<void> | null }>(
-          'weft-loom-flush-saves',
-          { detail: { ack: null } },
-        );
-        window.dispatchEvent(flushEv);
-        void flushEv.detail.ack;
-        return;
-      }
-      // Cmd+Shift+P : Command palette
-      if ((ev.key === 'P' || ev.key === 'p') && ev.shiftKey) {
-        ev.preventDefault();
-        paletteOpen = true;
-        return;
-      }
-      // Cmd+, : Settings
-      if (ev.key === ',') {
-        ev.preventDefault();
-        settingsOpen = true;
-        return;
-      }
-    });
+    document.addEventListener('keydown', onDocKeyDown);
+  });
+  onDestroy(() => {
+    document.removeEventListener('contextmenu', onDocContextMenu);
+    document.removeEventListener('keydown', onDocKeyDown);
   });
 
   // Context menu controller — bound via bind:this so the
@@ -736,7 +747,13 @@
     // T6 : keep the editor's comment decorations in sync with the
     // ydoc's comments Y.Array. Re-resolves anchors on every Yjs
     // observe tick so concurrent edits rebase the highlighted
-    // ranges automatically.
+    // ranges automatically. Capture arr/ytext/rebuild locally so the
+    // cleanup at the end of this effect can detach the observers — a
+    // bare arr.observe() leaks the handler when ydoc/currentFile
+    // change because the next effect run wires up a new pair.
+    let commentArr: Y.Array<Y.Map<unknown>> | null = null;
+    let commentYText: Y.Text | null = null;
+    let commentRebuild: (() => void) | null = null;
     if (ydoc && currentFile) {
       const arr = commentsArray(ydoc, currentFile);
       const ytext = ydoc.getText('file:' + currentFile);
@@ -755,6 +772,9 @@
       rebuild();
       arr.observe(rebuild);
       ytext.observe(rebuild);
+      commentArr = arr;
+      commentYText = ytext;
+      commentRebuild = rebuild;
     }
     // T5b SyncTeX backward : PDF click (page + x + y in synctex sp)
     // → source file + line. The hook OPENS the source file (via
@@ -851,6 +871,10 @@
         },
       );
       try { return await r.json(); } catch { return null; }
+    };
+    return () => {
+      if (commentArr && commentRebuild) commentArr.unobserve(commentRebuild);
+      if (commentYText && commentRebuild) commentYText.unobserve(commentRebuild);
     };
   });
 

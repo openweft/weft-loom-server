@@ -8,8 +8,30 @@
   // original format for round-trip with the rest of the toolchain.
 
   import { onMount, onDestroy, untrack } from 'svelte';
+  import DOMPurify from 'dompurify';
   import { parseRTF, writeRTF } from '../rtf';
   import { parseODT, writeODT } from '../odt';
+  import { logError } from '../logbus';
+
+  // Attribute allow-list preserved when sanitising rich-text we
+  // generate ourselves (parseODT / parseRTF). DOMPurify drops these
+  // data-* attributes by default ; we need them for the writeback path
+  // (annotations, footnotes, bookmarks, fields, style hints).
+  const SANITIZE_OPTS = {
+    ADD_ATTR: [
+      'data-fmt', 'data-name', 'data-bookmark', 'data-anchor',
+      'data-footnote-id', 'data-style-name', 'data-id', 'data-body',
+      'data-kind', 'data-creator', 'data-date', 'data-band',
+      'data-odt-style', 'data-placeholder', 'contenteditable',
+    ],
+    // RETURN_TRUSTED_TYPES is false by default — set explicitly so
+    // the return type narrows to `string` for innerHTML / {@html}.
+    RETURN_TRUSTED_TYPE: false as const,
+  };
+
+  function sanitize(html: string): string {
+    return DOMPurify.sanitize(html, SANITIZE_OPTS) as unknown as string;
+  }
 
   interface Props {
     project: string;
@@ -18,13 +40,6 @@
   let { project, file }: Props = $props();
 
   let editorEl: HTMLDivElement;
-  // T11 fix : pageMode toggle replaces the contenteditable element
-  // (Svelte's {#if pages} branch unmounts the continuous branch +
-  // mounts a fresh editor div with empty innerHTML). We stash the
-  // current content into pendingHTML right before the toggle so the
-  // post-mount effect can restore it ; otherwise the user sees the
-  // editor blank itself when switching modes.
-  let pendingHTML: string | null = $state(null);
   let status = $state<'loading' | 'ready' | 'saving' | 'error'>('loading');
   let errorMessage = $state('');
   let etag = '';
@@ -99,7 +114,7 @@
         const parsed = parseRTF(text);
         html = parsed.html || '<p><br></p>';
       }
-      editorEl.innerHTML = html;
+      editorEl.innerHTML = sanitize(html);
       status = 'ready';
     } catch (e) {
       status = 'error';
@@ -142,10 +157,16 @@
       } else {
         body = writeRTF(editorEl.innerHTML);
       }
+      const headers: Record<string, string> = {};
+      if (etag) headers['If-Match'] = etag;
       const r = await fetch(
         '/api/projects/' + encodeURIComponent(project) + '/files/' + encodeURIComponent(file),
-        { method: 'PUT', body },
+        { method: 'PUT', body, headers },
       );
+      if (r.status === 412) {
+        logError('wysiwyg', 'put_precondition_failed', new Error('etag mismatch'), { project, file, etag });
+        throw new Error('PUT 412 — la version sur disque a changé (recharger pour fusionner)');
+      }
       if (!r.ok && r.status !== 204) throw new Error('PUT ' + r.status);
       etag = r.headers.get('etag') ?? etag;
       status = 'ready';
@@ -215,33 +236,16 @@
   const hTicks = $derived(Array.from({ length: Math.floor(paperWidthCm) + 1 }, (_, i) => i));
   const vTicks = $derived(Array.from({ length: Math.floor(paperHeightCm) + 1 }, (_, i) => i));
 
-  // switchPageMode : snapshot the contenteditable's content + the
-  // header / footer band content BEFORE the {#if pageMode} swap,
-  // then restore them after the new editor div is bound. Without
-  // this the toggle loses the user's edits because Svelte mounts
-  // a fresh, empty <div contenteditable>.
+  // switchPageMode : a single contenteditable div lives outside the
+  // pages-vs-continuous branches now, so toggling the layout no
+  // longer unmounts/remounts the editor — selection + focus survive
+  // the swap. We just flip the reactive state ; the wrapper CSS
+  // does the rest.
   function switchPageMode(next: 'continuous' | 'pages') {
     if (pageMode === next) return;
-    pendingHTML = editorEl?.innerHTML ?? null;
-    if (headerEl) odtHeader = headerEl.innerHTML;
-    if (footerEl) odtFooter = footerEl.innerHTML;
     pageMode = next;
   }
 
-  // Restore the snapshot once the new editor div lands. Runs every
-  // time editorEl changes ; the `pendingHTML` flag ensures we only
-  // act on the first mount after a toggle (not on every reactive
-  // re-bind).
-  $effect(() => {
-    if (editorEl && pendingHTML !== null) {
-      // Defer one microtask so the bind has fully settled.
-      const snap = pendingHTML;
-      pendingHTML = null;
-      queueMicrotask(() => {
-        if (editorEl) editorEl.innerHTML = snap;
-      });
-    }
-  });
   const savedLabel = $derived(() => {
     if (!savedAt) return '';
     const delta = Math.max(0, nowTick - savedAt);
@@ -645,14 +649,67 @@
   // Reload when the active file changes (the parent wraps us in
   // `{#key currentFile}` so the component already remounts, but
   // an extra effect lets the same instance follow successive opens
-  // if the wrapper changes its strategy later).
+  // if the wrapper changes its strategy later). Flush any pending
+  // edits to the OLD file before switching so they don't get lost.
   $effect(() => {
     project; file;
-    untrack(() => { if (editorEl) load(); });
+    untrack(() => {
+      if (!editorEl) return;
+      void (async () => {
+        if (dirty) await saveNow();
+        await load();
+      })();
+    });
   });
 
-  onMount(() => { load(); });
-  onDestroy(() => { if (saveTimer) clearTimeout(saveTimer); });
+  // beforeunload : if the user closes the tab/navigates away with
+  // unsaved edits, fire off a best-effort flush. sendBeacon is the
+  // only API guaranteed to deliver during unload ; we fall back to a
+  // synchronous fetch (keepalive flag) when beacon isn't available.
+  function onBeforeUnload() {
+    if (!dirty) return;
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = undefined; }
+    try {
+      let body: BodyInit;
+      if (format() === 'odt') {
+        // sendBeacon needs sync-serialisable bytes ; writeODT is async
+        // because it gzips through jszip. We can't await here — fall
+        // back to fetch(keepalive) which the browser will run on a
+        // best-effort basis during unload.
+        const headers: Record<string, string> = {};
+        if (etag) headers['If-Match'] = etag;
+        void fetch(
+          '/api/projects/' + encodeURIComponent(project) + '/files/' + encodeURIComponent(file),
+          { method: 'PUT', body: editorEl?.innerHTML ?? '', headers, keepalive: true },
+        );
+        return;
+      }
+      body = writeRTF(editorEl?.innerHTML ?? '');
+      const url = '/api/projects/' + encodeURIComponent(project) + '/files/' + encodeURIComponent(file);
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon(url, new Blob([body], { type: 'application/rtf' }));
+      } else {
+        const headers: Record<string, string> = {};
+        if (etag) headers['If-Match'] = etag;
+        void fetch(url, { method: 'PUT', body, headers, keepalive: true });
+      }
+    } catch (e) {
+      logError('wysiwyg', 'beforeunload_flush', e);
+    }
+  }
+
+  onMount(() => {
+    load();
+    window.addEventListener('beforeunload', onBeforeUnload);
+  });
+  onDestroy(() => {
+    window.removeEventListener('beforeunload', onBeforeUnload);
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = undefined;
+      if (dirty) void saveNow();
+    }
+  });
 </script>
 
 <div class="flex flex-col h-full bg-base-100">
@@ -829,13 +886,19 @@
     {/if}
   </div>
 
-  <!-- Editing surface -->
-  {#if pageMode === 'pages'}
-    <!-- T11 Pages mode : the editor sits inside a fixed-width
-         A4/US-Letter "page" with rulers across the top + down the
-         left edge. The page is centred on a grey workspace so the
-         user sees the document as it would print. -->
-    <div class="page-mode-wrap flex-1 overflow-auto bg-base-200" data-testid="page-mode-wrap">
+  <!-- Editing surface : one shared contenteditable lives at the
+       same DOM position in both modes — toggling pageMode flips
+       wrapper classes + visibility of the page chrome instead of
+       unmounting the editor, so selection + focus survive the
+       switch. Header + footer bands are always mounted (so their
+       bindings stay stable too) ; CSS hides them in continuous mode. -->
+  <div
+    class="flex-1 overflow-auto bg-base-200"
+    class:page-mode-wrap={pageMode === 'pages'}
+    class:continuous-mode={pageMode === 'continuous'}
+    data-testid={pageMode === 'pages' ? 'page-mode-wrap' : 'continuous-mode-wrap'}
+  >
+    {#if pageMode === 'pages'}
       <!-- Horizontal ruler : sticky to the top so it tracks the
            page as the user scrolls. cm ticks every 1 cm with a
            numeric label every other tick. -->
@@ -851,7 +914,14 @@
         <!-- Body shading inside the margins -->
         <div class="ruler-body" style="left: {MARGIN_CM}cm; width: {paperWidthCm - 2 * MARGIN_CM}cm"></div>
       </div>
-      <div class="page-row" style="min-width: calc({paperWidthCm}cm + 2.5rem)">
+    {/if}
+    <div
+      class="page-row"
+      class:page-row-pages={pageMode === 'pages'}
+      class:page-row-continuous={pageMode === 'continuous'}
+      style={pageMode === 'pages' ? `min-width: calc(${paperWidthCm}cm + 2.5rem)` : ''}
+    >
+      {#if pageMode === 'pages'}
         <!-- Vertical ruler : cm ticks down the left side of the page. -->
         <div class="ruler-v" style="height: {paperHeightCm}cm">
           {#each vTicks as cm (cm)}
@@ -864,65 +934,84 @@
           {/each}
           <div class="ruler-body-v" style="top: {MARGIN_CM}cm; height: {paperHeightCm - 2 * MARGIN_CM}cm"></div>
         </div>
-        <div class="page-paper" style="width: {paperWidthCm}cm; min-height: {paperHeightCm}cm">
-          <!-- T10 V0.2 : editable header band. Sits inside the
-               top margin ; round-trips into <style:header> on save. -->
-          <div
-            bind:this={headerEl}
-            contenteditable="true"
-            role="textbox"
-            aria-label="Page header"
-            spellcheck="true"
-            oninput={onInput}
-            class="page-band page-header outline-none prose prose-sm max-w-none"
-            style="margin: 0.5cm {MARGIN_CM}cm 0 {MARGIN_CM}cm; min-height: 1cm; padding-bottom: 0.3cm; line-height: 1.4; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;"
-            data-band="header"
-          >{@html odtHeader || '<p class="opacity-50"><i>en-tête (clic pour éditer)</i></p>'}</div>
-          <div
-            bind:this={editorEl}
-            contenteditable="true"
-            role="textbox"
-            tabindex="0"
-            aria-label="Rich text editor"
-            aria-multiline="true"
-            spellcheck="true"
-            oninput={onInput}
-            onkeydown={onKeyDown}
-            class="outline-none prose prose-sm max-w-none wysiwyg-surface"
-            style="padding: 0.3cm {MARGIN_CM}cm 0.3cm {MARGIN_CM}cm; line-height: 1.6; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; min-height: calc({paperHeightCm}cm - {2 * MARGIN_CM}cm - 3cm);"
-          ></div>
-          <div
-            bind:this={footerEl}
-            contenteditable="true"
-            role="textbox"
-            aria-label="Page footer"
-            spellcheck="true"
-            oninput={onInput}
-            class="page-band page-footer outline-none prose prose-sm max-w-none"
-            style="margin: 0 {MARGIN_CM}cm 0.5cm {MARGIN_CM}cm; min-height: 1cm; padding-top: 0.3cm; line-height: 1.4; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;"
-            data-band="footer"
-          >{@html odtFooter || '<p class="opacity-50"><i>pied de page (clic pour éditer)</i></p>'}</div>
-        </div>
+      {/if}
+      <div
+        class="page-paper"
+        class:page-paper-pages={pageMode === 'pages'}
+        class:page-paper-continuous={pageMode === 'continuous'}
+        style={pageMode === 'pages' ? `width: ${paperWidthCm}cm; min-height: ${paperHeightCm}cm` : ''}
+      >
+        <!-- T10 V0.2 : editable header band. CSS-hidden in
+             continuous mode but kept mounted so headerEl/footerEl
+             refs (and any user edits) stay alive across toggles. -->
+        <div
+          bind:this={headerEl}
+          contenteditable="true"
+          role="textbox"
+          aria-label="Page header"
+          spellcheck="true"
+          oninput={onInput}
+          class="page-band page-header wysiwyg-surface prose prose-sm max-w-none"
+          style={pageMode === 'pages'
+            ? `margin: 0.5cm ${MARGIN_CM}cm 0 ${MARGIN_CM}cm; min-height: 1cm; padding-bottom: 0.3cm; line-height: 1.4; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;`
+            : 'display: none;'}
+          data-band="header"
+          data-placeholder="en-tête (clic pour éditer)"
+        >{@html sanitize(odtHeader)}</div>
+        <div
+          bind:this={editorEl}
+          contenteditable="true"
+          role="textbox"
+          tabindex="0"
+          aria-label="Rich text editor"
+          aria-multiline="true"
+          spellcheck="true"
+          oninput={onInput}
+          onkeydown={onKeyDown}
+          class="wysiwyg-surface prose prose-sm max-w-none"
+          style={pageMode === 'pages'
+            ? `padding: 0.3cm ${MARGIN_CM}cm 0.3cm ${MARGIN_CM}cm; line-height: 1.6; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; min-height: calc(${paperHeightCm}cm - ${2 * MARGIN_CM}cm - 3cm);`
+            : `flex: 1 1 auto; overflow: auto; padding: 1.5rem 2rem; line-height: 1.6; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; background: var(--fallback-b1, oklch(var(--b1)/1));`}
+        ></div>
+        <div
+          bind:this={footerEl}
+          contenteditable="true"
+          role="textbox"
+          aria-label="Page footer"
+          spellcheck="true"
+          oninput={onInput}
+          class="page-band page-footer wysiwyg-surface prose prose-sm max-w-none"
+          style={pageMode === 'pages'
+            ? `margin: 0 ${MARGIN_CM}cm 0.5cm ${MARGIN_CM}cm; min-height: 1cm; padding-top: 0.3cm; line-height: 1.4; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;`
+            : 'display: none;'}
+          data-band="footer"
+          data-placeholder="pied de page (clic pour éditer)"
+        >{@html sanitize(odtFooter)}</div>
       </div>
     </div>
-  {:else}
-    <div
-      bind:this={editorEl}
-      contenteditable="true"
-      role="textbox"
-      tabindex="0"
-      aria-label="Rich text editor"
-      aria-multiline="true"
-      spellcheck="true"
-      oninput={onInput}
-      onkeydown={onKeyDown}
-      class="flex-1 overflow-auto px-8 py-6 outline-none prose prose-sm max-w-none bg-base-100 wysiwyg-surface"
-      style="line-height: 1.6; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;"
-    ></div>
-  {/if}
+  </div>
 </div>
 
 <style>
+  /* Keyboard-only focus indicator — replaces the outline removed
+     for mouse users with a visible-but-tasteful 2 px ring when the
+     user reaches the contenteditable via Tab. */
+  .wysiwyg-surface { outline: none; }
+  .wysiwyg-surface:focus-visible {
+    outline: 2px solid var(--color-primary, #2563eb);
+    outline-offset: -2px;
+  }
+  /* CSS-driven placeholder for the header + footer bands. Lives
+     entirely in the stylesheet so it never leaks into innerHTML
+     (otherwise the placeholder string would serialise back into
+     the saved ODT). The :empty matcher fires when the band has
+     no children. */
+  .wysiwyg-surface[data-placeholder]:empty:not(:focus)::before {
+    content: attr(data-placeholder);
+    color: rgba(0, 0, 0, 0.4);
+    font-style: italic;
+    pointer-events: none;
+  }
   .wysiwyg-surface :global(p) { margin: 0 0 0.6em; }
   /* Heading auto-numbering : the contenteditable defines three
      CSS counters (sec, ssec, sssec) reset by each ancestor level
@@ -1155,10 +1244,32 @@
     z-index: -1;
   }
   .page-paper {
+    display: flex;
+    flex-direction: column;
+  }
+  .page-paper-pages {
     background: white;
     color: #1a1a1a;
     box-shadow: 0 2px 8px rgba(0,0,0,0.15), 0 0 0 1px rgba(0,0,0,0.06);
     margin-bottom: 1rem;
+  }
+  .page-paper-continuous {
+    background: var(--fallback-b1, oklch(var(--b1)/1));
+    flex: 1 1 auto;
+    min-height: 100%;
+  }
+  /* Continuous mode : the editor fills the host pane edge-to-edge,
+     no rulers, no page chrome — same UX the original {:else} branch
+     produced before the {#if} was folded into a single tree. */
+  .continuous-mode {
+    background-image: none;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .page-row-continuous {
+    margin: 0;
+    flex: 1 1 auto;
     display: flex;
     flex-direction: column;
   }
