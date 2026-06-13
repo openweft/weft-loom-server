@@ -1,4 +1,4 @@
-// Command weft-loom is the collaborative editor server. It hosts
+// Command weft-loom is the Sovereign Collaborative Edition server. It hosts
 // CodeMirror+Yjs-powered project editing (LaTeX, Markdown, Go, C++,
 // Python, anything CodeMirror has a lang pack for) and dispatches
 // compile jobs to ephemeral microVMs via weft-agent.
@@ -45,8 +45,8 @@ func main() {
 func rootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:          "weft-loom",
-		Short:        "Collaborative editor + sandboxed compile for openweft",
-		Long:         "weft-loom is the collaborative editor service : CodeMirror + Yjs in the browser, gRPC-orchestrated microVM compilers on the server side. One server, any language CodeMirror has a lang pack for.",
+		Short:        "Sovereign Collaborative Edition + sandboxed compile for openweft",
+		Long:         "weft-loom is the Sovereign Collaborative Edition service : CodeMirror + Yjs in the browser, gRPC-orchestrated microVM compilers on the server side. One server, any language CodeMirror has a lang pack for.",
 		SilenceUsage: true,
 	}
 	root.AddCommand(versionCmd(), serveCmd())
@@ -145,9 +145,13 @@ func serve(ctx context.Context, cfg config.Config) error {
 	select {
 	case <-ctx.Done():
 		log.Info("shutdown signal", "reason", ctx.Err())
-		shutCtx, cancel := context.WithTimeout(context.Background(), 5e9)
+		shutCtx, cancel := context.WithTimeout(context.Background(), 15e9) // 15 s : workspace VMs need ~10 s ACPI grace
 		defer cancel()
-		return httpSrv.Shutdown(shutCtx)
+		// Stop accepting new HTTP first, then powerdown workspace
+		// VMs gracefully, then close the embedded broker.
+		httpErr := httpSrv.Shutdown(shutCtx)
+		srv.Shutdown(shutCtx)
+		return httpErr
 	case err := <-errCh:
 		if err != nil && err != http.ErrServerClosed {
 			return err

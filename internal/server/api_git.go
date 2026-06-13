@@ -284,6 +284,9 @@ func (s *Server) handleGitStatus(w http.ResponseWriter, r *http.Request) {
 	if statErr != nil {
 		out.LastError = statErr.Error()
 	} else {
+		if changes == nil {
+			changes = []gitChange{}
+		}
 		out.Changes = changes
 		out.Ahead = ahead
 		out.Behind = behind

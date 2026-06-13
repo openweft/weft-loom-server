@@ -1,0 +1,20 @@
+import puppeteer from 'puppeteer';
+const browser = await puppeteer.launch({ args: ['--no-sandbox'] });
+const page = await browser.newPage();
+await page.goto('http://127.0.0.1:8080/', { waitUntil: 'domcontentloaded' });
+await new Promise(r => setTimeout(r, 3000));
+const info = await page.evaluate(() => {
+  const ul = document.querySelector('aside ul.menu, ul.menu.menu-sm');
+  if (!ul) return { found: false };
+  const cs = getComputedStyle(ul);
+  return {
+    found: true,
+    clientH: ul.clientHeight,
+    scrollH: ul.scrollHeight,
+    overflowY: cs.overflowY,
+    canScrollV: ul.scrollHeight > ul.clientHeight,
+    childrenCount: ul.children.length,
+  };
+});
+console.log(JSON.stringify(info, null, 2));
+await browser.close();

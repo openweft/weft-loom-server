@@ -1,0 +1,15 @@
+import puppeteer from 'puppeteer';
+const browser = await puppeteer.launch({ args: ['--no-sandbox'] });
+const page = await browser.newPage();
+const errors = [];
+page.on('pageerror', e => errors.push('pageerror: ' + e.message));
+page.on('console', m => { if (m.type() === 'error') errors.push('console: ' + m.text()); });
+await page.goto('http://127.0.0.1:8080/', { waitUntil: 'domcontentloaded' });
+await new Promise(r => setTimeout(r, 3000));
+const len = await page.evaluate(() => document.body.innerHTML.length);
+const navbar = await page.$('[aria-label="Menu bar"]');
+const sidebar = await page.$('[aria-label="Activity bar"]');
+console.log('body len:', len, 'menubar:', !!navbar, 'activitybar:', !!sidebar);
+if (errors.length) console.log('ERRORS:\n' + errors.slice(0, 8).join('\n'));
+else console.log('no JS errors');
+await browser.close();

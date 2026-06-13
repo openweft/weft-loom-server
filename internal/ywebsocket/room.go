@@ -62,6 +62,23 @@ func (h *Hub) Join(roomID string, conn ConnID) *Membership {
 	return r.add(conn)
 }
 
+// MembersCount returns the number of connections currently in the
+// named room (0 when the room doesn't exist). Used by the SSE log /
+// the loom-doctor observability layer to surface joining + leaving
+// peers — the count IS the bidirectional-sync precondition (need
+// ≥ 2 members for any cross-client frame to flow).
+func (h *Hub) MembersCount(roomID string) int {
+	h.mu.Lock()
+	r, ok := h.rooms[roomID]
+	h.mu.Unlock()
+	if !ok {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.members)
+}
+
 // gcRoom removes a room when its last member leaves. Called by Room
 // itself with the room lock held internally — the Hub lock is what
 // we take here to serialise the map mutation.

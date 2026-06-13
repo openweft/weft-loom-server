@@ -1,7 +1,7 @@
 {
   "name": "weft-loom",
   "short_name": "loom",
-  "description": "collaborative code editor",
+  "description": "Sovereign Collaborative Edition",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",

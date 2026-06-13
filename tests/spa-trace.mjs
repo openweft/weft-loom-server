@@ -1,0 +1,10 @@
+import puppeteer from 'puppeteer';
+const browser = await puppeteer.launch({ args: ['--no-sandbox'] });
+const page = await browser.newPage();
+const errors = [];
+page.on('pageerror', e => errors.push('=== pageerror ===\n' + (e.stack || e.message)));
+await page.goto('http://127.0.0.1:8080/?debug=1', { waitUntil: 'domcontentloaded' });
+await new Promise(r => setTimeout(r, 5000));
+if (errors.length) console.log(errors.slice(0,3).join('\n\n'));
+else console.log('no errors');
+await browser.close();

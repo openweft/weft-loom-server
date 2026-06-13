@@ -41,7 +41,56 @@ func writeConfigSidecar(projectDir string, cfg gitConfig) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(projectDir, ".git-config.json"), b, 0o600)
+	if err := os.WriteFile(filepath.Join(projectDir, ".git-config.json"), b, 0o600); err != nil {
+		return err
+	}
+	// The sidecar holds the access token in plaintext — under no
+	// circumstances should it land in the remote repo. Ensure
+	// .gitignore covers it AND the local compile scratch dir.
+	return ensureGitignore(projectDir, []string{
+		".git-config.json",
+		".weft-loom/",
+	})
+}
+
+// ensureGitignore appends entries to <projectDir>/.gitignore that are
+// not already present. Idempotent — re-saving the git config a second
+// time leaves .gitignore unchanged. Preserves existing contents +
+// trailing newline so user-added entries aren't disturbed.
+func ensureGitignore(projectDir string, entries []string) error {
+	path := filepath.Join(projectDir, ".gitignore")
+	existing, _ := os.ReadFile(path) // tolerate not-found
+	have := map[string]bool{}
+	for _, line := range strings.Split(string(existing), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			have[trimmed] = true
+		}
+	}
+	var add []string
+	for _, e := range entries {
+		if !have[e] {
+			add = append(add, e)
+		}
+	}
+	if len(add) == 0 {
+		return nil
+	}
+	var buf strings.Builder
+	buf.Write(existing)
+	if len(existing) > 0 && existing[len(existing)-1] != '\n' {
+		buf.WriteByte('\n')
+	}
+	if len(existing) > 0 {
+		// Section comment makes the auto-managed block easy to spot
+		// when reading .gitignore — operators know not to wipe it.
+		buf.WriteString("\n# weft-loom auto-added\n")
+	}
+	for _, e := range add {
+		buf.WriteString(e)
+		buf.WriteByte('\n')
+	}
+	return os.WriteFile(path, []byte(buf.String()), 0o644)
 }
 
 // projectStorageRoot exposes the configured project store root path

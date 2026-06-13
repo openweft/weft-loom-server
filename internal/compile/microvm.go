@@ -35,24 +35,36 @@ import (
 // imageForLanguage picks the OCI image weft-microvm pulls for a
 // given language. The images bundle the toolchain pre-installed so
 // the VM boots ready to compile.
+//
+// Image refs match the published `openweft/weft-loom-*` repos
+// (cross-referenced against each repo's build.yml on 2026-06-10).
+// Per-cluster override via WEFT_LOOM_IMAGE_<LANG> for air-gapped
+// installs pointing at a private registry.
 func imageForLanguage(language string, marp bool) string {
-	// Allow per-cluster override via env so an air-gapped install can
-	// point at a private registry.
+	_ = marp
+	envOverride := func(key, def string) string {
+		if v := os.Getenv(key); v != "" {
+			return v
+		}
+		return def
+	}
 	switch language {
 	case "latex":
-		if v := os.Getenv("WEFT_LOOM_IMAGE_LATEX"); v != "" {
-			return v
-		}
-		return "ghcr.io/openweft/weft-loom-texlive:latest"
+		return envOverride("WEFT_LOOM_IMAGE_LATEX", "ghcr.io/openweft/weft-loom-texlive:latest")
 	case "markdown":
-		// One image covers BOTH marp + pandoc. The runtime picks the
-		// binary based on the front-matter ; weft-agent only pulls
-		// one OCI artifact for any markdown source.
-		_ = marp
-		if v := os.Getenv("WEFT_LOOM_IMAGE_MARKDOWN"); v != "" {
-			return v
-		}
-		return "ghcr.io/openweft/weft-loom-markdown:latest"
+		// One image covers BOTH marp + pandoc — the runtime picks
+		// the binary based on the front-matter.
+		return envOverride("WEFT_LOOM_IMAGE_MARKDOWN", "ghcr.io/openweft/weft-loom-markdown:latest")
+	case "golang", "go":
+		return envOverride("WEFT_LOOM_IMAGE_GOLANG", "ghcr.io/openweft/weft-loom-golang:latest")
+	case "python":
+		return envOverride("WEFT_LOOM_IMAGE_PYTHON", "ghcr.io/openweft/weft-loom-python:latest")
+	case "rust":
+		return envOverride("WEFT_LOOM_IMAGE_RUST", "ghcr.io/openweft/weft-loom-rust:latest")
+	case "node", "javascript", "typescript":
+		return envOverride("WEFT_LOOM_IMAGE_NODE", "ghcr.io/openweft/weft-loom-node:latest")
+	case "cpp", "c++", "c":
+		return envOverride("WEFT_LOOM_IMAGE_CPP", "ghcr.io/openweft/weft-loom-cpp:latest")
 	}
 	return ""
 }
