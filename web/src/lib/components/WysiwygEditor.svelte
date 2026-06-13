@@ -890,8 +890,14 @@
        same DOM position in both modes — toggling pageMode flips
        wrapper classes + visibility of the page chrome instead of
        unmounting the editor, so selection + focus survive the
-       switch. Header + footer bands are always mounted (so their
-       bindings stay stable too) ; CSS hides them in continuous mode. -->
+       switch. Header + footer bands are only mounted in Pages mode
+       (in Continuous mode they have no visual representation, and
+       leaving them mounted would shadow the body's
+       [contenteditable=true][role=textbox] selector — a11y tooling
+       and tests would pick up the empty header first). The save
+       path already falls back to the stashed odtHeader/odtFooter
+       strings when their refs are undefined, so the round-trip
+       is preserved across toggles. -->
   <div
     class="flex-1 overflow-auto bg-base-200"
     class:page-mode-wrap={pageMode === 'pages'}
@@ -941,9 +947,11 @@
         class:page-paper-continuous={pageMode === 'continuous'}
         style={pageMode === 'pages' ? `width: ${paperWidthCm}cm; min-height: ${paperHeightCm}cm` : ''}
       >
-        <!-- T10 V0.2 : editable header band. CSS-hidden in
-             continuous mode but kept mounted so headerEl/footerEl
-             refs (and any user edits) stay alive across toggles. -->
+        <!-- T10 V0.2 : editable header band — only mounted in Pages
+             mode. save() falls back to the stashed odtHeader string
+             when headerEl is undefined so the round-trip is preserved
+             across mode toggles. -->
+        {#if pageMode === 'pages'}
         <div
           bind:this={headerEl}
           contenteditable="true"
@@ -952,12 +960,11 @@
           spellcheck="true"
           oninput={onInput}
           class="page-band page-header wysiwyg-surface prose prose-sm max-w-none"
-          style={pageMode === 'pages'
-            ? `margin: 0.5cm ${MARGIN_CM}cm 0 ${MARGIN_CM}cm; min-height: 1cm; padding-bottom: 0.3cm; line-height: 1.4; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;`
-            : 'display: none;'}
+          style={`margin: 0.5cm ${MARGIN_CM}cm 0 ${MARGIN_CM}cm; min-height: 1cm; padding-bottom: 0.3cm; line-height: 1.4; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;`}
           data-band="header"
           data-placeholder="en-tête (clic pour éditer)"
         >{@html sanitize(odtHeader)}</div>
+        {/if}
         <div
           bind:this={editorEl}
           contenteditable="true"
@@ -973,6 +980,7 @@
             ? `padding: 0.3cm ${MARGIN_CM}cm 0.3cm ${MARGIN_CM}cm; line-height: 1.6; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; min-height: calc(${paperHeightCm}cm - ${2 * MARGIN_CM}cm - 3cm);`
             : `flex: 1 1 auto; overflow: auto; padding: 1.5rem 2rem; line-height: 1.6; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; background: var(--fallback-b1, oklch(var(--b1)/1));`}
         ></div>
+        {#if pageMode === 'pages'}
         <div
           bind:this={footerEl}
           contenteditable="true"
@@ -981,12 +989,11 @@
           spellcheck="true"
           oninput={onInput}
           class="page-band page-footer wysiwyg-surface prose prose-sm max-w-none"
-          style={pageMode === 'pages'
-            ? `margin: 0 ${MARGIN_CM}cm 0.5cm ${MARGIN_CM}cm; min-height: 1cm; padding-top: 0.3cm; line-height: 1.4; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;`
-            : 'display: none;'}
+          style={`margin: 0 ${MARGIN_CM}cm 0.5cm ${MARGIN_CM}cm; min-height: 1cm; padding-top: 0.3cm; line-height: 1.4; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;`}
           data-band="footer"
           data-placeholder="pied de page (clic pour éditer)"
         >{@html sanitize(odtFooter)}</div>
+        {/if}
       </div>
     </div>
   </div>
