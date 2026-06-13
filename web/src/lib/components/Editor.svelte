@@ -54,6 +54,7 @@
   import { compileDiagnostics } from '../compileDiagnostics.svelte';
   import { showMinimap } from '@replit/codemirror-minimap';
   import { citeCompletion } from '../citeAutocomplete';
+  import { inlineMathRender } from '../inlineMathRender';
   import { citeHover } from '../citeHover';
   import { bib } from '../bibStore.svelte';
   import { search, searchKeymap } from '@codemirror/search';
@@ -468,6 +469,11 @@
         // Compartment so the toolbar button can flip it without
         // tearing down the editor.
         richTextCompartment.of(latexRichText(language === 'latex' && richTextEnabled, project)),
+        // V0.1.5 : inline KaTeX rendering for LaTeX + markdown.
+        // `$E=mc^2$` / `$$...$$` / `\(...\)` / `\[...\]` segments
+        // render live while the cursor is outside them ; entering
+        // the segment swaps back to raw source so it can be edited.
+        ...((language === 'latex' || language === 'markdown') ? [inlineMathRender()] : []),
         fontCompartment.of(fontExt()),
         tabCompartment.of(tabExt()),
         wordWrapCompartment.of(wordWrapExt()),
