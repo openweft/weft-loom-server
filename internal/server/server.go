@@ -27,6 +27,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/coder/websocket"
 	"github.com/nats-io/nats.go"
 	"github.com/openweft/weft-loom-server/internal/auth"
 	"github.com/openweft/weft-loom-server/internal/compile"
@@ -52,6 +53,43 @@ type Options struct {
 	// Auth validates OIDC bearers. nil = dev mode (auth disabled,
 	// every request gets a synthetic identity).
 	Auth auth.Verifier
+	// Config bundles security-sensitive runtime knobs (WS origin
+	// allowlist, host-pty fallback gate, git host blocklist). Zero
+	// value = safe production defaults except in dev mode (Auth=nil)
+	// where the missing-config path is permissive on purpose.
+	Config SecurityConfig
+}
+
+// SecurityConfig groups runtime security knobs surfaced to the server
+// (kept distinct from internal/config.Config so the cmd/ binary can
+// translate operator HCL into this struct without dragging the HCL
+// types into the server package).
+type SecurityConfig struct {
+	// AllowOrigin restricts the set of HTTP Origin values accepted on
+	// websocket upgrades. "*" or empty = no enforcement (the
+	// reverse-proxy layer is expected to validate). Comma-separated
+	// list otherwise ; each entry is a coder/websocket OriginPattern
+	// (host[:port], wildcards allowed).
+	AllowOrigin string
+	// AllowHostPty toggles the dev-mode fallback in handleShell that
+	// spawns a pty on the loom-server host when the NATS exec relay
+	// fails. Default false : in production a relay failure surfaces
+	// to chat and the session ends. Dev mode (Auth=nil) ignores this
+	// gate and keeps the fallback for local iteration.
+	AllowHostPty bool
+	// Git contains git remote SSRF guards.
+	Git GitSecurityConfig
+}
+
+// GitSecurityConfig governs which git remotes the clone/pull/push
+// handlers will dial. Defaults reject loopback, RFC1918 and the AWS
+// metadata IP ; HostBlocklist extends the deny list with operator-
+// specified DNS names.
+type GitSecurityConfig struct {
+	// HostBlocklist is a set of hostnames that always fail validation.
+	HostBlocklist []string
+	// AllowPlainHTTP opts in to "http://" remotes ; default false.
+	AllowPlainHTTP bool
 }
 
 // Server is the HTTP handler tree, built once at startup.
@@ -92,6 +130,9 @@ func New(opts Options) (*Server, error) {
 		events:     eventbus.New(),
 		warmups:    newWarmupState(),
 		toolshare:  toolshareFromEnv(),
+	}
+	if opts.Auth != nil && opts.Config.AllowHostPty {
+		opts.Logger.Warn("security: AllowHostPty=true in a non-dev config — workspace shell fallback escapes the VM sandbox")
 	}
 	// Workspace provisioner : QEMU backend when the operator picks
 	// it explicitly (production), in-process devagent otherwise
@@ -243,10 +284,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/events/client", s.requireAuth(s.handleClientEvent))
 	// Workspace VM bootstrap : the in-guest init fetches this tar
 	// at boot to populate /workspace with the user's project files.
-	// Unauthenticated by design — the vmid is the auth (only the
-	// VM bound to that id can hit it over loopback SLIRP). V0.6
-	// swap to a NATS-side signature when crossing networks.
-	s.mux.HandleFunc("GET /api/internal/workspace-tar/{vmid}", s.handleWorkspaceTar)
+	// Authenticated like the rest of the API ; the handler ALSO
+	// re-derives the vmid from the caller's identity and 403s on
+	// mismatch (defence in depth so a logged-in user can't fetch
+	// another user's tar).
+	s.mux.HandleFunc("GET /api/internal/workspace-tar/{vmid}", s.requireAuth(s.handleWorkspaceTar))
 	s.mux.HandleFunc("GET /api/projects/{name}/compile/{id}", s.requireAuth(s.handleCompileStream))
 	s.mux.HandleFunc("GET /api/projects/{name}/compile/{id}/artifact", s.requireAuth(s.handleCompileArtifact))
 	s.mux.HandleFunc("GET /api/projects/{name}/compile/{id}/synctex", s.requireAuth(s.handleSyncTeX))
@@ -254,8 +296,8 @@ func (s *Server) routes() {
 	// `/api/lsp/{lang}` routes to internal/lsp ; we keep the path
 	// outside /api/projects/ since the LSP itself opens the project
 	// dir via initialize's rootUri.
-	s.mux.HandleFunc("GET /api/lsp/{lang}", s.handleLSP)
-	s.mux.HandleFunc("GET /api/lsp", s.handleLSPList)
+	s.mux.HandleFunc("GET /api/lsp/{lang}", s.requireAuth(s.handleLSP))
+	s.mux.HandleFunc("GET /api/lsp", s.requireAuth(s.handleLSPList))
 	s.mux.HandleFunc("POST /api/projects/{name}/notebook/exec", s.requireAuth(s.handleNotebookExec))
 	s.mux.HandleFunc("GET /api/projects/{name}/sync", s.handleSync)
 	// y-websocket appends "/{roomName}" to the configured WS URL, even
@@ -303,6 +345,60 @@ func (s *Server) identify(r *http.Request) (auth.Identity, bool) {
 		return auth.Identity{}, false
 	}
 	return ident, true
+}
+
+// wsAcceptOpts returns websocket upgrade options that enforce the
+// configured Origin allowlist. Dev mode (AllowOrigin = "*" or empty)
+// keeps InsecureSkipVerify so local browser dev against weird ports
+// still works ; prod sets OriginPatterns so a cross-origin browser
+// page can't drive the user's WS endpoints.
+func (s *Server) wsAcceptOpts() *websocket.AcceptOptions {
+	patterns := s.allowedOriginPatterns()
+	if len(patterns) == 0 {
+		return &websocket.AcceptOptions{InsecureSkipVerify: true}
+	}
+	return &websocket.AcceptOptions{OriginPatterns: patterns}
+}
+
+// allowedOriginPatterns returns the configured Origin allowlist as a
+// list of coder/websocket OriginPattern strings. Empty or "*" → nil
+// (caller pairs with InsecureSkipVerify=true).
+func (s *Server) allowedOriginPatterns() []string {
+	v := s.opts.Config.AllowOrigin
+	if v == "" || v == "*" {
+		return nil
+	}
+	out := make([]string, 0, 4)
+	for _, p := range splitAndTrim(v, ',') {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func splitAndTrim(s string, sep byte) []string {
+	var out []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == sep {
+			out = append(out, trimASCIISpace(s[start:i]))
+			start = i + 1
+		}
+	}
+	out = append(out, trimASCIISpace(s[start:]))
+	return out
+}
+
+func trimASCIISpace(s string) string {
+	i, j := 0, len(s)
+	for i < j && (s[i] == ' ' || s[i] == '\t') {
+		i++
+	}
+	for j > i && (s[j-1] == ' ' || s[j-1] == '\t') {
+		j--
+	}
+	return s[i:j]
 }
 
 func bearerFromRequest(r *http.Request) string {

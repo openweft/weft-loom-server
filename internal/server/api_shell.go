@@ -52,9 +52,7 @@ func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		InsecureSkipVerify: true,
-	})
+	conn, err := websocket.Accept(w, r, s.wsAcceptOpts())
 	if err != nil {
 		return
 	}
@@ -73,18 +71,27 @@ func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
 			Fields:  map[string]any{"vm_id": vm.VMID, "subject": ident.Subject},
 		})
 		if err := relayShellToNATS(r.Context(), conn, vm, projectName(r), s.events); err != nil {
-			// Surface to xterm + loom-doctor, then fall through to
-			// the host pty path so dev-mode shells keep working when
-			// the agent isn't reachable.
-			_ = conn.Write(r.Context(), websocket.MessageText, []byte(
-				"info: NATS exec relay failed ("+err.Error()+") — falling back to host pty\r\n",
-			))
+			// Surface to xterm + loom-doctor. Only fall through to
+			// the host pty path in dev mode (Auth=nil) or when the
+			// operator explicitly opted in via AllowHostPty — in a
+			// real deployment that fallback escapes the workspace VM
+			// sandbox and runs the user's shell on the loom-server
+			// host, which is exactly what we don't want.
 			s.events.Publish(eventbus.Event{
 				Source: "server", Component: "shell", Verb: "nats.fallback",
 				Level:   "warn",
 				Project: projectName(r),
 				Fields:  map[string]any{"vm_id": vm.VMID, "err": err.Error()},
 			})
+			if s.opts.Auth != nil && !s.opts.Config.AllowHostPty {
+				_ = conn.Write(r.Context(), websocket.MessageText, []byte(
+					"error: NATS exec relay failed ("+err.Error()+") ; host-pty fallback disabled in production\r\n",
+				))
+				return
+			}
+			_ = conn.Write(r.Context(), websocket.MessageText, []byte(
+				"info: NATS exec relay failed ("+err.Error()+") — falling back to host pty\r\n",
+			))
 		} else {
 			// NATS relay handled the entire session ; we're done.
 			return

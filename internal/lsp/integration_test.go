@@ -27,7 +27,7 @@ func TestBridgeEndToEnd(t *testing.T) {
 
 	// httptest server wrapping HandleWS with `lang=fake`.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		HandleWS(w, r, "fake", testLogger(t))
+		HandleWS(w, r, "fake", testLogger(t), nil)
 	}))
 	defer srv.Close()
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")

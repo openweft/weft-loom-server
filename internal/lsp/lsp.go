@@ -55,6 +55,71 @@ type LanguageServer struct {
 	EnvOverride string
 }
 
+// Concurrency caps for LSP subprocess spawns. Two layers : a global
+// process-wide ceiling (lspSem) so the host can't be saturated, and a
+// per-subject ceiling (lspPerUser) so a single editor with a runaway
+// reconnect loop can't starve everyone else. The numbers are
+// deliberate compromises — moderate-sized teams stay under the global
+// cap, individual users can run 4 LSPs (one per open language) before
+// hitting the per-user ceiling.
+const (
+	lspGlobalMax  = 16
+	lspPerUserMax = 4
+)
+
+var (
+	lspSem        = make(chan struct{}, lspGlobalMax)
+	lspPerUserMu  sync.Mutex
+	lspPerUserCnt = map[string]int{}
+)
+
+// lspSubjectFromRequest extracts a per-user key. We can't import
+// internal/auth from this package (loom-server pulls lsp, not the
+// other way around), so we read the same cookie / bearer prefix the
+// server uses ; in dev mode there's no token so we fall back to
+// "anon" which is what auth.IdentityFrom synthesises.
+func lspSubjectFromRequest(r *http.Request) string {
+	if h := r.Header.Get("Authorization"); len(h) > len("Bearer ") {
+		return h[len("Bearer "):]
+	}
+	if c, err := r.Cookie("weft-loom"); err == nil && c.Value != "" {
+		return c.Value
+	}
+	return "anon"
+}
+
+// lspAcquire reserves a slot in both the global and per-user
+// semaphores. Returns release closures the caller defers. err =
+// 429-friendly message when either ceiling is hit.
+func lspAcquire(subject string) (func(), func(), error) {
+	select {
+	case lspSem <- struct{}{}:
+	default:
+		return func() {}, func() {}, errors.New("lsp: server is busy (too many concurrent sessions)")
+	}
+	releaseGlobal := func() { <-lspSem }
+
+	lspPerUserMu.Lock()
+	if lspPerUserCnt[subject] >= lspPerUserMax {
+		lspPerUserMu.Unlock()
+		releaseGlobal()
+		return func() {}, func() {}, errors.New("lsp: too many concurrent sessions for this user")
+	}
+	lspPerUserCnt[subject]++
+	lspPerUserMu.Unlock()
+	releasePerUser := func() {
+		lspPerUserMu.Lock()
+		defer lspPerUserMu.Unlock()
+		if lspPerUserCnt[subject] > 0 {
+			lspPerUserCnt[subject]--
+		}
+		if lspPerUserCnt[subject] == 0 {
+			delete(lspPerUserCnt, subject)
+		}
+	}
+	return releaseGlobal, releasePerUser, nil
+}
+
 // Servers is the registry of LSP launchers. Adding a new language
 // is a one-line change here ; the handler dispatches by the URL
 // path's lang parameter.
@@ -97,7 +162,25 @@ func (s LanguageServer) resolveBinary() (string, error) {
 // langKey : the URL path param ("latex", "go", …) extracted by
 // the caller's mux. Returning quickly on unknown languages keeps
 // the editor's error path clean.
-func HandleWS(w http.ResponseWriter, r *http.Request, langKey string, logger *slog.Logger) {
+//
+// acceptOpts : the caller passes the same websocket.AcceptOptions
+// it uses for the rest of its WS endpoints so the Origin allowlist
+// stays uniform across /api/projects/{name}/sync, /shell and /lsp.
+// nil = use a permissive default (dev mode).
+func HandleWS(w http.ResponseWriter, r *http.Request, langKey string, logger *slog.Logger, acceptOpts *websocket.AcceptOptions) {
+	// Per-user + global concurrency caps : reject early so a runaway
+	// editor / malicious client can't fork-bomb the host with LSP
+	// subprocesses. Subject keys the per-user counter — empty fallback
+	// covers dev mode where no identity is injected.
+	subject := lspSubjectFromRequest(r)
+	releaseGlobal, releasePerUser, err := lspAcquire(subject)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusTooManyRequests)
+		return
+	}
+	defer releaseGlobal()
+	defer releasePerUser()
+
 	server, ok := Servers[langKey]
 	if !ok {
 		http.Error(w, "lsp: unknown language "+langKey, http.StatusNotFound)
@@ -108,11 +191,16 @@ func HandleWS(w http.ResponseWriter, r *http.Request, langKey string, logger *sl
 		http.Error(w, "lsp: server binary "+server.Binary+" not installed : "+err.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		// LSP messages can be larger than the default ; gopls
-		// initialize responses easily run past 100 KB.
-		CompressionMode: websocket.CompressionDisabled,
-	})
+	opts := acceptOpts
+	if opts == nil {
+		opts = &websocket.AcceptOptions{InsecureSkipVerify: true}
+	}
+	// LSP messages can be larger than the default ; gopls initialize
+	// responses easily run past 100 KB. Force compression off while
+	// preserving the caller-provided origin policy.
+	optsCopy := *opts
+	optsCopy.CompressionMode = websocket.CompressionDisabled
+	c, err := websocket.Accept(w, r, &optsCopy)
 	if err != nil {
 		return
 	}

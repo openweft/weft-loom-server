@@ -12,7 +12,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -240,6 +242,98 @@ func countSince(repo *git.Repository, head, base plumbing.Hash) (int, error) {
 
 var storerStop = errors.New("stop")
 
+// validateRemoteURL guards the git clone/pull/push handlers against
+// SSRF. The user controls cfg.RemoteURL ; without this check they
+// could point the server at internal services (the AWS / Hetzner
+// metadata endpoints, the embedded NATS broker, a co-tenant's
+// loom-server on the same subnet, …).
+//
+// Rules :
+//   - scheme must be one of ssh / git / https (or http when
+//     AllowPlainHTTP is set, intended for forgejo-on-an-internal-CA
+//     deployments)
+//   - host must resolve to publicly-routable IPs only ; we reject
+//     loopback, RFC1918, link-local, and the cloud metadata IP
+//     (169.254.169.254)
+//   - HostBlocklist (config) wins on top
+func (s *Server) validateRemoteURL(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return fmt.Errorf("git: remote URL required")
+	}
+	// scp-style "git@github.com:user/repo.git" → treat as ssh.
+	if i := strings.Index(raw, "@"); i > 0 && !strings.Contains(raw[:i], "/") && !strings.Contains(raw, "://") {
+		host := raw[i+1:]
+		if c := strings.Index(host, ":"); c > 0 {
+			host = host[:c]
+		}
+		return s.checkRemoteHost(host)
+	}
+	u, err := url.ParseRequestURI(raw)
+	if err != nil {
+		return fmt.Errorf("git: bad remote URL: %w", err)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https", "ssh", "git":
+		// allowed
+	case "http":
+		if !s.opts.Config.Git.AllowPlainHTTP {
+			return fmt.Errorf("git: scheme %q requires AllowPlainHTTP", u.Scheme)
+		}
+	default:
+		return fmt.Errorf("git: unsupported scheme %q", u.Scheme)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("git: remote URL missing host")
+	}
+	return s.checkRemoteHost(host)
+}
+
+// checkRemoteHost rejects hosts in the blocklist or whose resolved
+// IPs fall into private / loopback / link-local / cloud-metadata
+// ranges. DNS rebinding is partially mitigated by failing closed on
+// any private IP in the response set (a single private answer is
+// enough).
+func (s *Server) checkRemoteHost(host string) error {
+	host = strings.ToLower(host)
+	for _, blocked := range s.opts.Config.Git.HostBlocklist {
+		if strings.EqualFold(strings.TrimSpace(blocked), host) {
+			return fmt.Errorf("git: host %q is blocked", host)
+		}
+	}
+	// Literal IP : check directly. Hostname : resolve + check each.
+	if ip := net.ParseIP(host); ip != nil {
+		return checkRemoteIP(ip)
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return fmt.Errorf("git: resolve %q: %w", host, err)
+	}
+	for _, ip := range ips {
+		if err := checkRemoteIP(ip); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func checkRemoteIP(ip net.IP) error {
+	switch {
+	case ip.IsLoopback():
+		return fmt.Errorf("git: refusing loopback IP %s", ip)
+	case ip.IsPrivate():
+		return fmt.Errorf("git: refusing private IP %s", ip)
+	case ip.IsLinkLocalUnicast(), ip.IsLinkLocalMulticast():
+		return fmt.Errorf("git: refusing link-local IP %s", ip)
+	case ip.IsUnspecified():
+		return fmt.Errorf("git: refusing unspecified IP %s", ip)
+	case ip.Equal(net.IPv4(169, 254, 169, 254)):
+		return fmt.Errorf("git: refusing cloud metadata IP %s", ip)
+	}
+	return nil
+}
+
 // ------------------------------------------------------------------
 // Handlers
 // ------------------------------------------------------------------
@@ -306,6 +400,10 @@ func (s *Server) handleGitConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "remote_url is required", http.StatusBadRequest)
 		return
 	}
+	if err := s.validateRemoteURL(cfg.RemoteURL); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if cfg.Branch == "" {
 		cfg.Branch = "main"
 	}
@@ -330,6 +428,10 @@ func (s *Server) handleGitClone(w http.ResponseWriter, r *http.Request) {
 	var cfg gitConfig
 	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
 		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.validateRemoteURL(cfg.RemoteURL); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if cfg.Branch == "" {
@@ -393,6 +495,10 @@ func (s *Server) handleGitPull(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "git not configured", http.StatusBadRequest)
 		return
 	}
+	if err := s.validateRemoteURL(cfg.RemoteURL); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	repo, err := git.PlainOpen(dir)
 	if err != nil {
 		http.Error(w, "no working tree (run clone first)", http.StatusBadRequest)
@@ -443,6 +549,10 @@ func (s *Server) handleGitPush(w http.ResponseWriter, r *http.Request) {
 	cfg, ok := readConfig(dir)
 	if !ok {
 		http.Error(w, "git not configured", http.StatusBadRequest)
+		return
+	}
+	if err := s.validateRemoteURL(cfg.RemoteURL); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	repo, err := git.PlainOpen(dir)

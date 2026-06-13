@@ -41,6 +41,15 @@ type notebookExecResponse struct {
 }
 
 func (s *Server) handleNotebookExec(w http.ResponseWriter, r *http.Request) {
+	ident, _ := auth.IdentityFrom(r.Context())
+	projectName := r.PathValue("name")
+	// Per-project ACL : matches /sync and /shell. ListFiles fails on
+	// "this user can't see this project" so it doubles as the gate.
+	if _, err := s.opts.Projects.ListFiles(r.Context(), ident, projectName); err != nil {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
 	var req notebookExecRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "decode: "+err.Error(), http.StatusBadRequest)
@@ -51,7 +60,6 @@ func (s *Server) handleNotebookExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ident, _ := auth.IdentityFrom(r.Context())
 	vm := s.lookupWorkspace(ident.Subject)
 	if vm == nil || vm.Conn == nil {
 		http.Error(w, "workspace VM not available", http.StatusServiceUnavailable)
@@ -135,7 +143,10 @@ func execNotebookCell(ctx context.Context, vm *workspace.VM, bin, src string) (n
 		case 'o':
 			stdout.Write(data[1:])
 		case 'e':
-			if len(data) >= 5 {
+			// Guard against a second 'e' frame from the agent — close(done)
+			// twice panics. Serialised under mu so the flag flip + close
+			// is atomic w.r.t. the select on <-done in the caller.
+			if len(data) >= 5 && !exited {
 				exited = true
 				exitVal = binary.BigEndian.Uint32(data[1:5])
 				close(done)

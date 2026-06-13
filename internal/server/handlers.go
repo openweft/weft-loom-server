@@ -100,7 +100,7 @@ func (s *Server) handleCompileArtifact(w http.ResponseWriter, r *http.Request) {
 // stdio LSP. Authenticated like the rest of the project API ; the
 // lang URL param picks the registered server.
 func (s *Server) handleLSP(w http.ResponseWriter, r *http.Request) {
-	loomlsp.HandleWS(w, r, r.PathValue("lang"), s.opts.Logger)
+	loomlsp.HandleWS(w, r, r.PathValue("lang"), s.opts.Logger, s.wsAcceptOpts())
 }
 
 // handleLSPList : reports which LSP servers are actually resolvable
@@ -129,7 +129,15 @@ func (s *Server) handleSyncTeX(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "synctex not found for compile "+id, http.StatusNotFound)
 		return
 	}
-	f, err := synctex.Parse(path)
+	// Scope Input: paths to this project's working tree so untrusted
+	// .synctex.gz content can't leak absolute host paths back to the SPA.
+	var parseOpts []synctex.Option
+	if ident, ok := auth.IdentityFrom(r.Context()); ok {
+		if root, derr := s.projectWorkingDir(ident, projectName(r)); derr == nil && root != "" {
+			parseOpts = append(parseOpts, synctex.WithProjectRoot(root))
+		}
+	}
+	f, err := synctex.Parse(path, parseOpts...)
 	if err != nil {
 		http.Error(w, "synctex parse : "+err.Error(), http.StatusInternalServerError)
 		return
@@ -217,9 +225,7 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		InsecureSkipVerify: true, // origin check happens at the reverse-proxy layer
-	})
+	conn, err := websocket.Accept(w, r, s.wsAcceptOpts())
 	if err != nil {
 		// Accept already wrote the error response.
 		return
