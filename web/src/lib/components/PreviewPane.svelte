@@ -444,9 +444,32 @@
   /* Bring back default markdown styling DOMPurify strips. Tailwind's
      `prose` plugin would do this for us if we had `@tailwindcss/typography`
      installed ; for now hand-craft the bits the preview actually uses. */
-  :global(.prose h1) { font-size: 1.75rem; font-weight: 700; margin: 1rem 0; }
-  :global(.prose h2) { font-size: 1.4rem; font-weight: 700; margin: 0.8rem 0; }
-  :global(.prose h3) { font-size: 1.15rem; font-weight: 600; margin: 0.6rem 0; }
+  /* Heading auto-numbering matches the WYSIWYG editor's pattern. */
+  :global(.prose) { counter-reset: sec 0 ssec 0 sssec 0; }
+  :global(.prose h1) {
+    font-size: 1.75rem; font-weight: 700; margin: 1rem 0;
+    counter-increment: sec; counter-reset: ssec 0 sssec 0;
+  }
+  :global(.prose h1):not(.no-num)::before {
+    content: counter(sec) ". ";
+    color: rgba(0, 100, 200, 0.7);
+  }
+  :global(.prose h2) {
+    font-size: 1.4rem; font-weight: 700; margin: 0.8rem 0;
+    counter-increment: ssec; counter-reset: sssec 0;
+  }
+  :global(.prose h2):not(.no-num)::before {
+    content: counter(sec) "." counter(ssec) " ";
+    color: rgba(0, 100, 200, 0.7);
+  }
+  :global(.prose h3) {
+    font-size: 1.15rem; font-weight: 600; margin: 0.6rem 0;
+    counter-increment: sssec;
+  }
+  :global(.prose h3):not(.no-num)::before {
+    content: counter(sec) "." counter(ssec) "." counter(sssec) " ";
+    color: rgba(0, 100, 200, 0.7);
+  }
   :global(.prose p)  { margin: 0.5rem 0; line-height: 1.6; }
   :global(.prose ul), :global(.prose ol) { margin: 0.5rem 0 0.5rem 1.5rem; }
   :global(.prose code) { background: rgba(127,127,127,0.15); padding: 0.1rem 0.3rem; border-radius: 0.2rem; }

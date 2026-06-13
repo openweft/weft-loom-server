@@ -47,7 +47,15 @@ const NS = {
 
 export interface ODTParsed {
   html: string;
-  meta: { title?: string; author?: string; date?: string };
+  meta: {
+    title?: string;
+    author?: string;
+    date?: string;
+    // T10 : user-defined meta vars (<meta:user-defined name="X">value</meta:user-defined>).
+    // Round-trip with the document ; surfaced in the Variables
+    // sidebar so the user can edit them without touching XML.
+    userDefined?: Record<string, string>;
+  };
   // Raw `<office:automatic-styles>` block from the source content.xml.
   // The reader can't surface every Word-/LibreOffice-specific style
   // attribute as semantic HTML, so we stash the entries verbatim and
@@ -94,6 +102,65 @@ export async function parseODT(data: ArrayBuffer | Uint8Array | Blob): Promise<O
   return { html, meta, preservedAutoStyles };
 }
 
+// T10 : the set of <text:*> local names we treat as fields. Any
+// element here is replaced by a single <span class="odt-field"…>
+// in the WYSIWYG. The list covers the high-frequency Word/LO
+// surface — page counters, dates, title/author from <office:meta>,
+// chapter / file-name navigation aids, AND the user-defined
+// custom-variable getter (text:user-field-get).
+const FIELD_LOCALS = new Set([
+  'page-number',
+  'page-count',
+  'date',
+  'time',
+  'title',
+  'subject',
+  'description',
+  'keywords',
+  'author-name',
+  'author-initials',
+  'initial-creator',
+  'creation-date',
+  'creation-time',
+  'modification-date',
+  'modification-time',
+  'chapter',
+  'file-name',
+  'user-field-get',
+  'variable-get',
+  'sequence',
+]);
+
+// Human-readable placeholder text for a field whose source doesn't
+// carry a rendered value (the user may insert one from the toolbar
+// before Word/LO has had a chance to evaluate it).
+function fieldLabel(kind: string, name: string): string {
+  switch (kind) {
+    case 'page-number':       return '[#]';
+    case 'page-count':        return '[N]';
+    case 'date':              return '[date]';
+    case 'time':              return '[time]';
+    case 'title':             return '[title]';
+    case 'subject':           return '[subject]';
+    case 'description':       return '[description]';
+    case 'keywords':          return '[keywords]';
+    case 'author-name':       return '[author]';
+    case 'author-initials':   return '[initials]';
+    case 'initial-creator':   return '[creator]';
+    case 'creation-date':     return '[created]';
+    case 'creation-time':     return '[created-time]';
+    case 'modification-date': return '[modified]';
+    case 'modification-time': return '[modified-time]';
+    case 'chapter':           return '[chapter]';
+    case 'file-name':         return '[file]';
+    case 'sequence':          return '[#' + name + ']';
+    case 'user-field-get':
+    case 'variable-get':
+      return '[$' + (name || 'var') + ']';
+    default: return '[' + kind + ']';
+  }
+}
+
 // extractAutoStyles : pull the inner XML of <office:automatic-styles>
 // from content.xml as a raw string. We can't re-serialise via
 // DOMParser without losing prefix consistency, and the spec lets us
@@ -118,8 +185,8 @@ function mimeForExt(path: string): string {
 }
 
 // parseMeta : pull <dc:title>, <meta:initial-creator>, <dc:date> out
-// of meta.xml. All three are optional ; the result object only
-// carries the keys that actually appeared.
+// of meta.xml, plus all <meta:user-defined> entries. All optional ;
+// the result object only carries the keys that actually appeared.
 function parseMeta(xml: string): ODTParsed['meta'] {
   const out: ODTParsed['meta'] = {};
   if (!xml) return out;
@@ -131,6 +198,14 @@ function parseMeta(xml: string): ODTParsed['meta'] {
   if (creator) out.author = creator.trim();
   const date = doc.getElementsByTagNameNS(NS.dc, 'date')[0]?.textContent;
   if (date) out.date = date.trim();
+  // T10 : user-defined meta vars. <meta:user-defined meta:name="X">val</…>
+  const ud: Record<string, string> = {};
+  for (const el of Array.from(doc.getElementsByTagNameNS(NS.meta, 'user-defined'))) {
+    const name = el.getAttributeNS(NS.meta, 'name');
+    const value = el.textContent ?? '';
+    if (name) ud[name] = value;
+  }
+  if (Object.keys(ud).length) out.userDefined = ud;
   return out;
 }
 
@@ -424,6 +499,28 @@ function emitInline(node: Node, styles: Map<string, StyleHints>, pictures: Recor
           + '" data-role="end"></a>';
     } else if (ln === 'soft-page-break') {
       out += '<hr class="page-break">';
+    } else if (FIELD_LOCALS.has(ln) && el.namespaceURI === NS.text) {
+      // T10 ODT field round-trip. Each ODF field maps to a single
+      // <span class="odt-field" data-kind=… data-name=… data-fmt=…>
+      // where kind is the field type ("page-number" / "page-count" /
+      // "date" / "title" / "author-name" / "user-field-get" / …),
+      // name the variable name (user-field-get only), fmt the
+      // display format hint where the source provided one.
+      const kind = ln;
+      const name = el.getAttributeNS(NS.text, 'name') ?? '';
+      const fmt = el.getAttributeNS(NS.style, 'num-format')
+               || el.getAttributeNS(NS.text, 'fixed-date')
+               || '';
+      // Visible glyph : the source's displayed value. Word/LO render
+      // the current value when they write the file, so we surface
+      // it as-is + let the user pick whether to re-render on save.
+      const visible = (el.textContent ?? '').trim();
+      const label = visible || fieldLabel(kind, name);
+      out += '<span class="odt-field"'
+          + ' data-kind="' + escapeAttr(kind) + '"'
+          + (name ? ' data-name="' + escapeAttr(name) + '"' : '')
+          + (fmt ? ' data-fmt="' + escapeAttr(fmt) + '"' : '')
+          + '>' + escapeHTML(label) + '</span>';
     } else if (ln === 'annotation' && el.namespaceURI === NS.office) {
       // V0.10 comments/annotations. ODF :
       //   <office:annotation>
@@ -519,7 +616,15 @@ function escapeAttr(s: string): string {
 // / meta.xml). The mimetype entry is added first and uncompressed,
 // as the spec requires.
 
-const META_TEMPLATE = (now: string) => `<?xml version="1.0" encoding="UTF-8"?>
+const META_TEMPLATE = (now: string, userDefined?: Record<string, string>) => {
+  let extras = '';
+  if (userDefined) {
+    for (const [name, value] of Object.entries(userDefined)) {
+      extras += '    <meta:user-defined meta:name="' + escapeAttr(name) + '">'
+              + escapeHTML(value) + '</meta:user-defined>\n';
+    }
+  }
+  return `<?xml version="1.0" encoding="UTF-8"?>
 <office:document-meta
   xmlns:office="${NS.office}"
   xmlns:meta="${NS.meta}"
@@ -528,9 +633,10 @@ const META_TEMPLATE = (now: string) => `<?xml version="1.0" encoding="UTF-8"?>
   <office:meta>
     <meta:generator>weft-loom-wysiwyg</meta:generator>
     <dc:date>${now}</dc:date>
-  </office:meta>
+${extras}  </office:meta>
 </office:document-meta>
 `;
+};
 
 interface CollectedImage { path: string; bytes: Uint8Array; mime: string; }
 
@@ -549,6 +655,7 @@ export async function writeODT(
   html: string,
   now: string = new Date().toISOString(),
   preservedAutoStyles: string = '',
+  userDefined?: Record<string, string>,
 ): Promise<Uint8Array> {
   const collected: CollectedImage[] = [];
   const contentXML = htmlToContentXML(html, collected, preservedAutoStyles);
@@ -557,7 +664,7 @@ export async function writeODT(
   // The mimetype entry must be first + uncompressed.
   zip.file('mimetype', 'application/vnd.oasis.opendocument.text', { compression: 'STORE' });
   zip.folder('META-INF')!.file('manifest.xml', buildManifest(collected));
-  zip.file('meta.xml', META_TEMPLATE(now));
+  zip.file('meta.xml', META_TEMPLATE(now, userDefined));
   zip.file('content.xml', contentXML);
   for (const img of collected) {
     zip.file(img.path, img.bytes);
@@ -971,6 +1078,23 @@ function emitODTInline(node: Node, fmt: StyleHints, ctx: WriteCtx): string {
     // V0.10 specific markers : bookmark / annotation / footnote ALL
     // win over the generic <a>/<span>/<sup> chain below. Check them
     // first so the elif chain can't capture them by mistake.
+    if (tag === 'span' && klass.includes('odt-field')) {
+      // T10 : re-emit a span as the ODF field element it came from.
+      const kind = el.getAttribute('data-kind') ?? 'page-number';
+      const nm = el.getAttribute('data-name') ?? '';
+      const fmt = el.getAttribute('data-fmt') ?? '';
+      const visible = el.textContent ?? '';
+      const safeKind = FIELD_LOCALS.has(kind) ? kind : 'page-number';
+      const attrs: string[] = [];
+      if (nm) attrs.push('text:name="' + escapeAttr(nm) + '"');
+      if (fmt && (safeKind === 'page-number' || safeKind === 'page-count' || safeKind === 'sequence')) {
+        attrs.push('style:num-format="' + escapeAttr(fmt) + '"');
+      }
+      if (safeKind === 'page-number') attrs.push('text:select-page="current"');
+      const head = '<text:' + safeKind + (attrs.length ? ' ' + attrs.join(' ') : '') + '>';
+      out += head + escapeHTML(visible) + '</text:' + safeKind + '>';
+      continue;
+    }
     if (tag === 'a' && klass.includes('odt-bookmark')) {
       const nm = el.getAttribute('data-name') ?? '';
       const role = el.getAttribute('data-role') ?? 'point';

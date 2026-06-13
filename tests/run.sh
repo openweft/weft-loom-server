@@ -193,8 +193,18 @@ node tests/comments-panel.mjs
 COMMENTS=$?
 
 echo
+echo "----- ODT fields + outline suite -----"
+# Regression guard for T10 V0.1 (ODT field round-trip) + the
+# ODT/RTF outline support. Seeds a doc with page-number, title,
+# user-field-get + 3 levels of headings ; asserts WYSIWYG surfaces
+# fields as .odt-field spans, outline shows the headings, and
+# saved bytes re-emit the ODF field elements + user-defined meta.
+node tests/odt-fields-outline.mjs
+ODT_FIELDS=$?
+
+echo
 echo "==============================================="
-if [ $UI -eq 0 ] && [ $LANG -eq 0 ] && [ $PREVIEW -eq 0 ] && [ $UIENTRY -eq 0 ] && [ $THEMEP -eq 0 ] && [ $WYSIWYG -eq 0 ] && [ $WYSIWYG_ODT -eq 0 ] && [ $WYSIWYG_ODT_TB -eq 0 ] && [ $ODT_TPL -eq 0 ] && [ $LATEX_PAL -eq 0 ] && [ $MARP_PIC -eq 0 ] && [ $BIB_PAN -eq 0 ] && [ $INLINE_MATH -eq 0 ] && [ $OUTLINE -eq 0 ] && [ $PDF_VIEW -eq 0 ] && [ $COMMENTS -eq 0 ]; then
+if [ $UI -eq 0 ] && [ $LANG -eq 0 ] && [ $PREVIEW -eq 0 ] && [ $UIENTRY -eq 0 ] && [ $THEMEP -eq 0 ] && [ $WYSIWYG -eq 0 ] && [ $WYSIWYG_ODT -eq 0 ] && [ $WYSIWYG_ODT_TB -eq 0 ] && [ $ODT_TPL -eq 0 ] && [ $LATEX_PAL -eq 0 ] && [ $MARP_PIC -eq 0 ] && [ $BIB_PAN -eq 0 ] && [ $INLINE_MATH -eq 0 ] && [ $OUTLINE -eq 0 ] && [ $PDF_VIEW -eq 0 ] && [ $COMMENTS -eq 0 ] && [ $ODT_FIELDS -eq 0 ]; then
   echo "  \033[32mALL PASS\033[0m"
   exit 0
 fi
@@ -214,5 +224,6 @@ fi
 [ $OUTLINE -eq 0 ] && echo "  outline-depth      : \033[32mPASS\033[0m" || echo "  outline-depth      : \033[31mFAIL\033[0m"
 [ $PDF_VIEW -eq 0 ] && echo "  pdf-viewer-mount   : \033[32mPASS\033[0m" || echo "  pdf-viewer-mount   : \033[31mFAIL\033[0m"
 [ $COMMENTS -eq 0 ] && echo "  comments-panel     : \033[32mPASS\033[0m" || echo "  comments-panel     : \033[31mFAIL\033[0m"
+[ $ODT_FIELDS -eq 0 ] && echo "  odt-fields-outline : \033[32mPASS\033[0m" || echo "  odt-fields-outline : \033[31mFAIL\033[0m"
 echo "==============================================="
 exit 1

@@ -25,6 +25,9 @@
   // on save so user-customised paragraph/cell/list styles still
   // resolve in the round-tripped file).
   let odtPreservedAutoStyles = '';
+  // T10 : user-defined meta vars carried across the load/save cycle.
+  // The VariablesPanel writes here ; save() forwards to writeODT.
+  let odtUserDefined = $state<Record<string, string>>({});
   // Debounce timer for save-on-change : ~600 ms after the last
   // keystroke we serialise + PUT. Keeps the keystroke loop tight.
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -52,6 +55,19 @@
           const parsed = await parseODT(buf);
           html = parsed.html || '<p><br></p>';
           odtPreservedAutoStyles = parsed.preservedAutoStyles ?? '';
+          odtUserDefined = parsed.meta.userDefined ?? {};
+          // Expose for the Variables sidebar : the panel reads
+          // + mutates this object directly, and the next save()
+          // call picks the latest snapshot up.
+          (window as unknown as {
+            weftLoomODTVars?: {
+              get: () => Record<string, string>;
+              set: (v: Record<string, string>) => void;
+            };
+          }).weftLoomODTVars = {
+            get: () => odtUserDefined,
+            set: (v) => { odtUserDefined = { ...v }; save(); },
+          };
         }
       } else {
         const text = await r.text();
@@ -76,6 +92,7 @@
           editorEl.innerHTML,
           new Date().toISOString(),
           odtPreservedAutoStyles,
+          odtUserDefined,
         );
         // BodyInit accepts BufferSource ; wrap to a Blob so fetch
         // sets the proper Content-Length without copying the buffer
@@ -256,6 +273,75 @@
       range.insertNode(span);
     }
     sel.removeAllRanges();
+    onInput();
+  }
+
+  // T10 : insertField surfaces an ODT field at the caret. The
+  // kind is picked from a small prompt() list ; user-field-get
+  // also asks for the variable name. Round-trips as a
+  // <text:page-number/> / <text:user-field-get …/> on save.
+  function insertField() {
+    const choice = prompt(
+      'Insert field — pick one :\n'
+      + ' p  = page number\n'
+      + ' n  = page count\n'
+      + ' d  = date\n'
+      + ' t  = title\n'
+      + ' a  = author\n'
+      + ' f  = file name\n'
+      + ' c  = chapter\n'
+      + ' v  = user variable (will ask for name)\n',
+      'p',
+    );
+    if (!choice) return;
+    const map: Record<string, string> = {
+      p: 'page-number', n: 'page-count', d: 'date',
+      t: 'title', a: 'author-name', f: 'file-name', c: 'chapter',
+    };
+    let kind = map[choice.trim().toLowerCase()];
+    let name = '';
+    if (choice.trim().toLowerCase() === 'v') {
+      kind = 'user-field-get';
+      const askedName = prompt('Variable name :', 'ClientName');
+      if (!askedName) return;
+      name = askedName.trim();
+    }
+    if (!kind) return;
+    editorEl.focus();
+    const span = document.createElement('span');
+    span.className = 'odt-field';
+    span.setAttribute('data-kind', kind);
+    if (name) span.setAttribute('data-name', name);
+    // Same label-resolution helper used by parseODT so what the
+    // user sees in the editor matches what the reader would show
+    // for the same field.
+    const label = ({
+      'page-number': '[#]',
+      'page-count': '[N]',
+      'date': '[date]',
+      'time': '[time]',
+      'title': '[title]',
+      'author-name': '[author]',
+      'file-name': '[file]',
+      'chapter': '[chapter]',
+      'user-field-get': '[$' + (name || 'var') + ']',
+    } as Record<string, string>)[kind] ?? ('[' + kind + ']');
+    span.textContent = label;
+    const sel = window.getSelection();
+    let range: Range;
+    if (sel && sel.rangeCount > 0 && editorEl.contains(sel.getRangeAt(0).startContainer)) {
+      range = sel.getRangeAt(0);
+      range.deleteContents();
+    } else {
+      range = document.createRange();
+      range.selectNodeContents(editorEl);
+      range.collapse(false);
+    }
+    range.insertNode(span);
+    range.setStartAfter(span);
+    range.collapse(true);
+    sel?.removeAllRanges();
+    sel?.addRange(range);
     onInput();
   }
 
@@ -456,6 +542,7 @@
     <button type="button" title="Insert footnote"    class="btn btn-ghost btn-xs" onclick={() => insertFootnote()}>†</button>
     <button type="button" title="Insert comment"     class="btn btn-ghost btn-xs" onclick={() => insertComment()}>💬</button>
     <button type="button" title="Insert page break"  class="btn btn-ghost btn-xs" onclick={() => insertPageBreak()}>⤓</button>
+    <button type="button" title="Insert field (page#, date, title, $var…)" class="btn btn-ghost btn-xs" onclick={() => insertField()}>{`{f}`}</button>
     <span class="divider divider-horizontal mx-0"></span>
     <label title="Text colour" class="btn btn-ghost btn-xs px-1 inline-flex items-center gap-1">
       <span class="font-bold">A</span>
@@ -498,9 +585,48 @@
 
 <style>
   .wysiwyg-surface :global(p) { margin: 0 0 0.6em; }
-  .wysiwyg-surface :global(h1) { font-size: 1.6em; font-weight: 700; margin: 0.4em 0; }
-  .wysiwyg-surface :global(h2) { font-size: 1.35em; font-weight: 700; margin: 0.4em 0; }
-  .wysiwyg-surface :global(h3) { font-size: 1.15em; font-weight: 700; margin: 0.3em 0; }
+  /* Heading auto-numbering : the contenteditable defines three
+     CSS counters (sec, ssec, sssec) reset by each ancestor level
+     so H1 → "1.", H2 → "1.1", H3 → "1.1.1". The .no-num class
+     turned on per-heading (data-odt-style="Quotation" or via the
+     toolbar) opts a heading out — useful for an unnumbered
+     "Abstract" or "References" heading. */
+  .wysiwyg-surface { counter-reset: sec 0 ssec 0 sssec 0; }
+  .wysiwyg-surface :global(h1) {
+    font-size: 1.6em; font-weight: 700; margin: 0.4em 0;
+    counter-increment: sec;
+    counter-reset: ssec 0 sssec 0;
+  }
+  .wysiwyg-surface :global(h1):not(.no-num)::before {
+    content: counter(sec) ". ";
+    color: rgba(0, 100, 200, 0.7);
+    margin-right: 0.2em;
+  }
+  .wysiwyg-surface :global(h2) {
+    font-size: 1.35em; font-weight: 700; margin: 0.4em 0;
+    counter-increment: ssec;
+    counter-reset: sssec 0;
+  }
+  .wysiwyg-surface :global(h2):not(.no-num)::before {
+    content: counter(sec) "." counter(ssec) " ";
+    color: rgba(0, 100, 200, 0.7);
+    margin-right: 0.2em;
+  }
+  .wysiwyg-surface :global(h3) {
+    font-size: 1.15em; font-weight: 700; margin: 0.3em 0;
+    counter-increment: sssec;
+  }
+  .wysiwyg-surface :global(h3):not(.no-num)::before {
+    content: counter(sec) "." counter(ssec) "." counter(sssec) " ";
+    color: rgba(0, 100, 200, 0.7);
+    margin-right: 0.2em;
+  }
+  /* H1/H2/H3 inside annotation popovers + footnote bodies shouldn't
+     pick up the document-wide counter — the WYSIWYG's <h?> children
+     of <span.odt-annotation> get the same selectors otherwise. */
+  .wysiwyg-surface :global(span.odt-annotation) :global(h1)::before,
+  .wysiwyg-surface :global(span.odt-annotation) :global(h2)::before,
+  .wysiwyg-surface :global(span.odt-annotation) :global(h3)::before { content: ''; }
   .wysiwyg-surface :global(ul) { padding-left: 1.5em; list-style: disc; }
   .wysiwyg-surface :global(ol) { padding-left: 1.5em; list-style: decimal; }
   /* Tables : visible borders + sensible cell padding so the user
@@ -564,5 +690,18 @@
     border-radius: 3px;
     padding: 0 0.2em;
     cursor: help;
+  }
+  /* T10 : visible badge for ODT fields. The user sees [date],
+     [#], [$ClientName] etc. on a pale blue chip so they know
+     they're editing a dynamic value, not literal text. */
+  .wysiwyg-surface :global(span.odt-field) {
+    background: rgba(0, 130, 220, 0.12);
+    border: 1px solid rgba(0, 130, 220, 0.4);
+    border-radius: 3px;
+    padding: 0 0.25em;
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 0.9em;
+    color: #0466a3;
+    cursor: default;
   }
 </style>

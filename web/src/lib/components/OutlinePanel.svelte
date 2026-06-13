@@ -21,6 +21,8 @@
   // — fine for the file sizes weft-loom targets.
 
   import { onMount, onDestroy } from 'svelte';
+  import JSZip from 'jszip';
+  import { parseRTF } from '../rtf';
 
   interface Props {
     project: string;
@@ -172,10 +174,73 @@
     return entries;
   }
 
-  function langForFile(f: string): 'latex' | 'markdown' | null {
-    if (f.endsWith('.tex')) return 'latex';
-    if (f.endsWith('.md') || f.endsWith('.markdown') || f.endsWith('.mdown')) return 'markdown';
+  function langForFile(f: string): 'latex' | 'markdown' | 'odt' | 'rtf' | null {
+    const l = f.toLowerCase();
+    if (l.endsWith('.tex')) return 'latex';
+    if (l.endsWith('.md') || l.endsWith('.markdown') || l.endsWith('.mdown')) return 'markdown';
+    if (l.endsWith('.odt')) return 'odt';
+    if (l.endsWith('.rtf')) return 'rtf';
     return null;
+  }
+
+  // T10 ext : parse ODT content.xml for <text:h text:outline-level="N">
+  // entries — same data the WYSIWYG editor reads, but stripped of body
+  // text so the outline stays scoped to the heading text.
+  async function parseODTHeadings(buf: ArrayBuffer): Promise<Entry[]> {
+    const out: Entry[] = [];
+    try {
+      const zip = await JSZip.loadAsync(buf);
+      const xml = await zip.file('content.xml')?.async('string');
+      if (!xml) return out;
+      const doc = new DOMParser().parseFromString(xml, 'application/xml');
+      const NS_TEXT = 'urn:oasis:names:tc:opendocument:xmlns:text:1.0';
+      const hs = doc.getElementsByTagNameNS(NS_TEXT, 'h');
+      // ODT has no line-number concept in its body ; we approximate
+      // with the index-in-document-order so the click handler at
+      // least has a deterministic anchor (WYSIWYG editor doesn't
+      // use line-jump anyway — outline-jump for ODT is best-effort).
+      for (let i = 0; i < hs.length; i++) {
+        const el = hs[i];
+        const lvl = Math.min(6, Math.max(1,
+          Number(el.getAttributeNS(NS_TEXT, 'outline-level') ?? '1'))) - 1;
+        out.push({
+          depth: lvl,
+          label: (el.textContent ?? '').trim(),
+          line: i + 1,
+          starred: false,
+          number: '',
+        });
+      }
+    } catch {
+      // ignore — malformed ODT just produces an empty outline
+    }
+    return out;
+  }
+
+  // T10 ext : parse RTF source by passing it through parseRTF, then
+  // walking the resulting HTML for <h1>..<h6> headings. The WYSIWYG
+  // editor uses the same HTML path so we surface the same headings.
+  function parseRTFHeadings(text: string): Entry[] {
+    const out: Entry[] = [];
+    try {
+      const { html } = parseRTF(text);
+      const doc = new DOMParser().parseFromString(
+        '<!doctype html><html><body>' + html + '</body></html>',
+        'text/html',
+      );
+      const hs = doc.body.querySelectorAll('h1, h2, h3, h4, h5, h6');
+      for (let i = 0; i < hs.length; i++) {
+        const el = hs[i];
+        out.push({
+          depth: Number(el.tagName.slice(1)) - 1,
+          label: (el.textContent ?? '').trim(),
+          line: i + 1,
+          starred: false,
+          number: '',
+        });
+      }
+    } catch { /* ignore */ }
+    return out;
   }
 
   async function refresh() {
@@ -197,8 +262,20 @@
       }
       const tag = r.headers.get('etag') ?? '';
       if (tag) lastSig = tag;
-      const text = await r.text();
-      entries = parseOutline(text, lang);
+      if (lang === 'odt') {
+        const buf = await r.arrayBuffer();
+        const list = await parseODTHeadings(buf);
+        applyNumbers(list, 5);
+        entries = list;
+      } else if (lang === 'rtf') {
+        const text = await r.text();
+        const list = parseRTFHeadings(text);
+        applyNumbers(list, 5);
+        entries = list;
+      } else {
+        const text = await r.text();
+        entries = parseOutline(text, lang);
+      }
     } finally {
       loading = false;
     }
