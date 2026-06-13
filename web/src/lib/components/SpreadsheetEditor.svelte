@@ -14,7 +14,7 @@
   import { HyperFormula } from 'hyperformula';
   import * as Y from 'yjs';
   import { WebsocketProvider } from 'y-websocket';
-  import { onDestroy } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
 
   interface Props {
     project: string;
@@ -134,6 +134,12 @@
   function clearFormatting() {
     applyStyleToRange(() => undefined);
   }
+  // Reflect the anchor cell's style so the ribbon toggles can
+  // announce their pressed state to assistive tech.
+  const anchorStyle = $derived(sheets[activeSheet]?.cells[selRow]?.[selCol]?.style);
+  const isBold      = $derived(!!anchorStyle?.bold);
+  const isItalic    = $derived(!!anchorStyle?.italic);
+  const isUnderline = $derived(!!anchorStyle?.underline);
 
   // cellInlineStyle : translate ODSCellStyle → CSS declarations the
   // virtualized cell div can carry inline. Kept narrow : the
@@ -232,10 +238,23 @@
     type: string;
     formula?: string;
   }> | undefined;
+  // Sheet-shape Y.Array : one entry per sheet describing its name +
+  // dense row/col counts. Peers observe this to add/remove/resize
+  // sheets in lockstep ; cell content keeps flowing through cellsMap.
+  type SheetShape = { name: string; rows: number; cols: number };
+  let shapeArr: Y.Array<SheetShape> | undefined;
   // `applyingRemote` guards against the observer triggering its own
   // local change handler when we mutate the local sheets[] in
   // response to a remote update.
   let applyingRemote = false;
+  // Cells received before their sheet exists locally (sheet-shape
+  // event hasn't landed yet). Replayed once the sheet materialises.
+  const pendingCells = new Map<string, {
+    display: string;
+    value: string | number | boolean;
+    type: string;
+    formula?: string;
+  } | undefined>();
 
   function wsURL(p: string): string {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -270,7 +289,12 @@
     if (parts.length !== 3) return;
     const [si, r, c] = parts.map(Number);
     if (Number.isNaN(si) || Number.isNaN(r) || Number.isNaN(c)) return;
-    if (!sheets[si]) return;
+    if (!sheets[si]) {
+      // Sheet hasn't materialised locally yet — buffer + replay
+      // once the shape observer adds the missing sheet.
+      pendingCells.set(key, value);
+      return;
+    }
     ensureCell(si, r, c);
     if (value === undefined) {
       // Remote delete — clear the cell locally.
@@ -298,38 +322,160 @@
     }
   }
 
+  function pushShape() {
+    if (!ydoc || !shapeArr) return;
+    ydoc.transact(() => {
+      shapeArr!.delete(0, shapeArr!.length);
+      shapeArr!.push(sheets.map((sh) => ({
+        name: sh.name,
+        rows: sh.cells.length,
+        cols: sh.cells[0]?.length ?? 0,
+      })));
+    }, 'ods-shape');
+  }
+
+  function applyShape(shapes: SheetShape[]) {
+    // Add or grow sheets to match the peer's shape ; preserve any
+    // cell content already in place. We do not shrink (rows/cols
+    // removal is a V0.5 concern) so concurrent inserts don't drop
+    // data.
+    let mutated = false;
+    for (let i = 0; i < shapes.length; i++) {
+      const want = shapes[i];
+      if (!sheets[i]) {
+        sheets[i] = blankSheet(want.name);
+        mutated = true;
+      } else if (sheets[i].name !== want.name) {
+        sheets[i].name = want.name;
+        mutated = true;
+      }
+      const sh = sheets[i];
+      while (sh.cells.length < want.rows) {
+        const cols = sh.cells[0]?.length ?? want.cols;
+        const row: ODSCell[] = [];
+        for (let k = 0; k < cols; k++) row.push({ display: '', value: '', type: 'string' });
+        sh.cells.push(row);
+        mutated = true;
+      }
+      const targetCols = Math.max(want.cols, sh.cells[0]?.length ?? 0);
+      for (const row of sh.cells) {
+        while (row.length < targetCols) {
+          row.push({ display: '', value: '', type: 'string' });
+          mutated = true;
+        }
+      }
+    }
+    if (mutated) sheets = sheets;
+    // Replay buffered cells whose sheets just materialised.
+    if (pendingCells.size > 0) {
+      const replayKeys: string[] = [];
+      for (const k of pendingCells.keys()) {
+        const si = Number(k.split(':')[0]);
+        if (!Number.isNaN(si) && sheets[si]) replayKeys.push(k);
+      }
+      for (const k of replayKeys) {
+        const v = pendingCells.get(k);
+        pendingCells.delete(k);
+        applyRemoteCell(k, v);
+      }
+    }
+  }
+
+  async function claimSeed(): Promise<boolean> {
+    // Designated-seeder protocol mirrored from Editor.svelte. Only
+    // the peer that wins /api/seed-claim pushes local cells ; everyone
+    // else waits for Yjs sync to deliver them. The endpoint returns
+    // 200 OK on win, 409 on conflict.
+    if (!file) return false;
+    try {
+      const url = '/api/projects/' + encodeURIComponent(project)
+        + '/seed-claim/cells:' + file.split('/').map(encodeURIComponent).join('/');
+      const resp = await fetch(url, { method: 'POST' });
+      if (resp.status === 409) {
+        // Another peer is seeding ; wait briefly + bail.
+        await new Promise((r) => setTimeout(r, 3000));
+        return false;
+      }
+      return resp.ok;
+    } catch {
+      // Endpoint may not exist in dev — fall back to clientID race
+      // resolution at the call site.
+      return false;
+    }
+  }
+
+  function isLowestClientID(): boolean {
+    if (!provider) return false;
+    const states = provider.awareness.getStates();
+    const ids = Array.from(states.keys());
+    if (ids.length === 0) return true;
+    const self = provider.awareness.clientID;
+    return ids.every((id) => self <= id);
+  }
+
   function attachProvider() {
     if (!file) return;
     if (provider) return;
     ydoc = new Y.Doc();
     provider = new WebsocketProvider(wsURL(project), 'ods:' + file, ydoc);
     cellsMap = ydoc.getMap('cells');
-    // Seed the Y.Map with our locally-loaded cells the first time
-    // the provider syncs ; if another peer already populated it,
-    // their state wins via Yjs LWW-by-clock semantics.
+    shapeArr = ydoc.getArray<SheetShape>('sheet-shape');
+    // Seed the Y.Map + sheet-shape with our locally-loaded data the
+    // first time the provider syncs ; if another peer already
+    // populated either structure, their state wins.
     provider.once('sync', () => {
-      if (!cellsMap || !ydoc) return;
-      // If the map is empty, push all local cells. Otherwise, the
-      // observer below will apply remote state when it fires.
-      if (cellsMap.size === 0) {
-        ydoc.transact(() => {
-          sheets.forEach((sh, si) => {
-            sh.cells.forEach((row, r) => {
-              row.forEach((_cell, c) => {
-                pushCellToYMap(si, r, c);
+      if (!cellsMap || !ydoc || !shapeArr) return;
+      // Pull any existing shape into local state before deciding to
+      // seed cells — shape might be non-empty even if cells are
+      // (peer mid-seed).
+      if (shapeArr.length > 0) {
+        applyingRemote = true;
+        try { applyShape(shapeArr.toArray()); } finally { applyingRemote = false; }
+      }
+      // Resolve seeder election : prefer the server-side claim, fall
+      // back to lowest clientID. Wait 500 ms for awareness to settle
+      // so the comparison sees every peer.
+      setTimeout(() => {
+        void (async () => {
+          if (!cellsMap || !ydoc || !shapeArr) return;
+          const empty = cellsMap.size === 0 && shapeArr.length === 0;
+          if (!empty) {
+            // Some peer already seeded ; pull whatever's there.
+            applyingRemote = true;
+            try {
+              if (shapeArr.length > 0) applyShape(shapeArr.toArray());
+              for (const [k, v] of cellsMap.entries()) applyRemoteCell(k, v);
+            } finally {
+              applyingRemote = false;
+            }
+            return;
+          }
+          const won = await claimSeed();
+          const shouldSeed = won || (!won && isLowestClientID());
+          if (!shouldSeed) return;
+          // Re-check emptiness in case a peer seeded while we waited.
+          if (cellsMap.size > 0 || shapeArr.length > 0) {
+            applyingRemote = true;
+            try {
+              if (shapeArr.length > 0) applyShape(shapeArr.toArray());
+              for (const [k, v] of cellsMap.entries()) applyRemoteCell(k, v);
+            } finally {
+              applyingRemote = false;
+            }
+            return;
+          }
+          pushShape();
+          ydoc.transact(() => {
+            sheets.forEach((sh, si) => {
+              sh.cells.forEach((row, r) => {
+                row.forEach((_cell, c) => {
+                  pushCellToYMap(si, r, c);
+                });
               });
             });
-          });
-        }, 'ods-seed');
-      } else {
-        // Pull every entry into local state.
-        applyingRemote = true;
-        try {
-          for (const [k, v] of cellsMap.entries()) applyRemoteCell(k, v);
-        } finally {
-          applyingRemote = false;
-        }
-      }
+          }, 'ods-seed');
+        })();
+      }, 500);
     });
     cellsMap.observe((ev) => {
       // Apply only what changed, and only when the origin isn't
@@ -348,34 +494,68 @@
         applyingRemote = false;
       }
     });
+    shapeArr.observe((ev) => {
+      if (ev.transaction.origin === 'ods-shape') return;
+      applyingRemote = true;
+      try { applyShape(shapeArr!.toArray()); } finally { applyingRemote = false; }
+    });
   }
 
   function detachProvider() {
     if (provider) { try { provider.destroy(); } catch { /* ignore */ } provider = undefined; }
     if (ydoc) { try { ydoc.destroy(); } catch { /* ignore */ } ydoc = undefined; }
     cellsMap = undefined;
+    shapeArr = undefined;
   }
+
+  function flushSaveSync() {
+    // Best-effort synchronous flush from beforeunload. writeFile is
+    // async ; we kick it off + rely on the browser keeping the
+    // request in-flight (most browsers honour keepalive fetches up
+    // to 64 KiB which covers a typical .ods).
+    if (!dirty) return;
+    try { void save(); } catch { /* ignore */ }
+  }
+
+  function onBeforeUnload() {
+    flushSaveSync();
+  }
+
+  onMount(() => {
+    window.addEventListener('beforeunload', onBeforeUnload);
+  });
 
   onDestroy(() => {
     if (saveTimer) clearTimeout(saveTimer);
+    if (dirty) void save();
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('beforeunload', onBeforeUnload);
+    }
     detachProvider();
     if (hf) { try { hf.destroy(); } catch { /* ignore */ } hf = undefined; }
   });
 
+  let loadSeq = 0;
   async function load() {
+    const seq = ++loadSeq;
     status = 'loading';
     try {
       const r = await fetch(
         '/api/projects/' + encodeURIComponent(project) + '/files/' + encodeURIComponent(file),
       );
+      if (seq !== loadSeq) return;
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const buf = await r.arrayBuffer();
+      if (seq !== loadSeq) return;
+      let parsedSheets: ODSSheet[];
       if (buf.byteLength === 0) {
-        sheets = [blankSheet('Sheet1')];
+        parsedSheets = [blankSheet('Sheet1')];
       } else {
         const parsed = await parseODS(buf);
-        sheets = parsed.sheets.length > 0 ? parsed.sheets : [blankSheet('Sheet1')];
+        if (seq !== loadSeq) return;
+        parsedSheets = parsed.sheets.length > 0 ? parsed.sheets : [blankSheet('Sheet1')];
       }
+      sheets = parsedSheets;
       activeSheet = 0;
       selRow = 0;
       selCol = 0;
@@ -391,6 +571,7 @@
       status = 'ready';
       dirty = false;
     } catch (e) {
+      if (seq !== loadSeq) return;
       status = 'error';
       errorMessage = e instanceof Error ? e.message : String(e);
     }
@@ -633,6 +814,10 @@
   }
 
   function onCellKey(r: number, c: number, e: KeyboardEvent) {
+    // Ctrl+Shift+Tab is a reserved escape hatch : always let the
+    // browser handle it so power users can tab out of the grid
+    // even from a deep interior cell.
+    if (e.key === 'Tab' && e.ctrlKey && e.shiftKey) return;
     // Modifier-combos (Cmd/Ctrl + key) flow through so the user
     // can copy / paste / undo / etc. without us hijacking.
     if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -641,10 +826,18 @@
     // event.
     if (NAV_KEYS.has(e.key)) e.stopPropagation();
     switch (e.key) {
-      case 'Tab':
+      case 'Tab': {
+        // Let the browser tab out at the boundary so the user can
+        // reach the next focusable widget instead of being trapped.
+        const sh = sheets[activeSheet];
+        const lastRow = Math.max(0, (sh?.cells.length ?? 1) - 1);
+        const lastCol = Math.max(0, (sh?.cells[r]?.length ?? 1) - 1);
+        if (!e.shiftKey && r === lastRow && c === lastCol) return;
+        if (e.shiftKey && r === 0 && c === 0) return;
         e.preventDefault();
         navigateTo(r, e.shiftKey ? c - 1 : c + 1);
         return;
+      }
       case 'Enter':
         e.preventDefault();
         navigateTo(r + 1, c);
@@ -735,6 +928,7 @@
     for (let i = 0; i < cols; i++) row.push({ display: '', value: '', type: 'string' });
     sh.cells.push(row);
     sheets = sheets;
+    if (!applyingRemote) pushShape();
     markDirty();
   }
 
@@ -744,6 +938,7 @@
       row.push({ display: '', value: '', type: 'string' });
     }
     sheets = sheets;
+    if (!applyingRemote) pushShape();
     markDirty();
   }
 
@@ -751,6 +946,7 @@
     const name = 'Sheet' + (sheets.length + 1);
     sheets = [...sheets, blankSheet(name)];
     activeSheet = sheets.length - 1;
+    if (!applyingRemote) pushShape();
     markDirty();
   }
 
@@ -770,7 +966,7 @@
 
   $effect(() => {
     project; file;
-    if (file) load();
+    if (file) void load();
   });
 </script>
 
@@ -784,9 +980,9 @@
     <!-- T9 V0.4 : Excel-style formatting cluster. Each button
          applies to the current selection (cell, row, column, or
          whole sheet). -->
-    <button type="button" title="Bold (Cmd/Ctrl+B)" class="btn btn-ghost btn-xs font-bold" onclick={toggleBold} data-testid="ods-bold">B</button>
-    <button type="button" title="Italic (Cmd/Ctrl+I)" class="btn btn-ghost btn-xs italic" onclick={toggleItalic} data-testid="ods-italic">I</button>
-    <button type="button" title="Underline (Cmd/Ctrl+U)" class="btn btn-ghost btn-xs underline" onclick={toggleUnderline} data-testid="ods-underline">U</button>
+    <button type="button" title="Bold (Cmd/Ctrl+B)" aria-pressed={isBold} class="btn btn-ghost btn-xs font-bold" onclick={toggleBold} data-testid="ods-bold">B</button>
+    <button type="button" title="Italic (Cmd/Ctrl+I)" aria-pressed={isItalic} class="btn btn-ghost btn-xs italic" onclick={toggleItalic} data-testid="ods-italic">I</button>
+    <button type="button" title="Underline (Cmd/Ctrl+U)" aria-pressed={isUnderline} class="btn btn-ghost btn-xs underline" onclick={toggleUnderline} data-testid="ods-underline">U</button>
     <label class="btn btn-ghost btn-xs px-1 inline-flex items-center gap-1" title="Text colour">
       <span class="font-bold">A</span>
       <input type="color" value="#000000" class="w-4 h-4 p-0 border-0 bg-transparent cursor-pointer"
@@ -806,10 +1002,10 @@
              data-testid="ods-border-color" />
     </label>
     <span class="divider divider-horizontal mx-0"></span>
-    <button type="button" title="Align left"   class="btn btn-ghost btn-xs" onclick={() => setAlign('left')}>⇤</button>
-    <button type="button" title="Align centre" class="btn btn-ghost btn-xs" onclick={() => setAlign('center')}>≡</button>
-    <button type="button" title="Align right"  class="btn btn-ghost btn-xs" onclick={() => setAlign('right')}>⇥</button>
-    <button type="button" title="Justify"      class="btn btn-ghost btn-xs" onclick={() => setAlign('justify')}>☰</button>
+    <button type="button" title="Align left"   aria-label="Align left"   class="btn btn-ghost btn-xs" onclick={() => setAlign('left')}>⇤</button>
+    <button type="button" title="Align centre" aria-label="Align centre" class="btn btn-ghost btn-xs" onclick={() => setAlign('center')}>≡</button>
+    <button type="button" title="Align right"  aria-label="Align right"  class="btn btn-ghost btn-xs" onclick={() => setAlign('right')}>⇥</button>
+    <button type="button" title="Justify"      aria-label="Justify"      class="btn btn-ghost btn-xs" onclick={() => setAlign('justify')}>☰</button>
     <select
       class="select select-bordered select-xs"
       title="Font family"
@@ -880,11 +1076,17 @@
 
   <!-- Sheet tabs -->
   {#if sheets.length > 1}
-    <div class="tabs tabs-boxed px-2 py-1 border-b border-base-300 bg-base-200">
+    <div
+      class="tabs tabs-box px-2 py-1 border-b border-base-300 bg-base-200"
+      role="tablist"
+      aria-label="Sheets"
+    >
       {#each sheets as sh, i (sh.name + i)}
         <button
           class="tab tab-xs"
           class:tab-active={i === activeSheet}
+          role="tab"
+          aria-selected={i === activeSheet}
           onclick={() => { activeSheet = i; selectCell(0, 0); }}
           data-testid="ods-sheet-tab"
           data-sheet={sh.name}
