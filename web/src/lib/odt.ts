@@ -180,6 +180,15 @@ function mimeForExt(path: string): string {
     case 'webp': return 'image/webp';
     case 'bmp': return 'image/bmp';
     case 'tif': case 'tiff': return 'image/tiff';
+    case 'mp4': return 'video/mp4';
+    case 'webm': return 'video/webm';
+    case 'ogv': return 'video/ogg';
+    case 'mov': return 'video/quicktime';
+    case 'mp3': return 'audio/mpeg';
+    case 'ogg': return 'audio/ogg';
+    case 'wav': return 'audio/wav';
+    case 'flac': return 'audio/flac';
+    case 'm4a': return 'audio/mp4';
     default: return 'application/octet-stream';
   }
 }
@@ -573,25 +582,67 @@ function emitInline(node: Node, styles: Map<string, StyleHints>, pictures: Recor
           + '" data-body="' + escapeAttr(bodyHTML)
           + '">' + escapeHTML(cite) + '</sup>';
     } else if (ln === 'frame') {
-      // draw:frame wraps draw:image (and other media). Find the
-      // image child + resolve its href against the pictures map.
-      // External http(s) hrefs pass through as-is ; internal
-      // Pictures/* refs become data URLs.
+      // T12 : draw:frame can wrap several shapes :
+      //   draw:image    → <img>
+      //   draw:text-box → <aside class="odt-textbox">…</aside>
+      //   draw:plugin   → <video> / <audio> (movie or sound)
       const img = el.getElementsByTagNameNS(NS.draw, 'image')[0];
-      const href = img?.getAttributeNS(NS.xlink, 'href') ?? '';
-      let src = href;
-      if (href && !/^https?:|^data:/.test(href)) {
-        // The href is a relative ZIP path. The Pictures-map key is
-        // the same path verbatim ; if absent, fall back to the raw
-        // href so the editor at least shows a broken-image icon
-        // instead of silently dropping the media.
-        src = pictures[href] ?? href;
-      }
-      // Pull the on-page name/title for alt text if present.
+      const textBox = el.getElementsByTagNameNS(NS.draw, 'text-box')[0];
+      const plugin = el.getElementsByTagNameNS(NS.draw, 'plugin')[0];
       const alt = el.getAttributeNS(NS.draw, 'name') ?? '';
-      out += '<img src="' + escapeAttr(src) + '"'
-          + (alt ? ' alt="' + escapeAttr(alt) + '"' : '')
-          + '>';
+      const wAttr = el.getAttributeNS(NS.svg, 'width') ?? '';
+      const hAttr = el.getAttributeNS(NS.svg, 'height') ?? '';
+      const sizeStyle = (wAttr ? 'width:' + wAttr + ';' : '')
+                     + (hAttr ? 'height:' + hAttr + ';' : '');
+      if (img) {
+        const href = img.getAttributeNS(NS.xlink, 'href') ?? '';
+        let src = href;
+        if (href && !/^https?:|^data:/.test(href)) {
+          src = pictures[href] ?? href;
+        }
+        out += '<img src="' + escapeAttr(src) + '"'
+            + (alt ? ' alt="' + escapeAttr(alt) + '"' : '')
+            + (sizeStyle ? ' style="' + sizeStyle + '"' : '')
+            + '>';
+      } else if (textBox) {
+        // T12 text frame : walk text:p / text:h children of the
+        // text-box. emitInline doesn't have access to the
+        // paraStyles/listKinds maps, so we surface every child as
+        // a plain <p>/<h?> with inline content only — nested
+        // headings + paragraphs round-trip, lists + tables inside
+        // a text frame are V0.2 work.
+        let inner = '';
+        for (const child of Array.from(textBox.children)) {
+          const cln = child.localName;
+          if (cln === 'p') {
+            inner += '<p>' + emitInline(child, styles, pictures) + '</p>';
+          } else if (cln === 'h') {
+            const lvl = Math.min(6, Math.max(1, Number(child.getAttributeNS(NS.text, 'outline-level') ?? '1')));
+            inner += '<h' + lvl + '>' + emitInline(child, styles, pictures) + '</h' + lvl + '>';
+          } else {
+            // Unknown child — just pull its inline content.
+            inner += emitInline(child, styles, pictures);
+          }
+        }
+        out += '<aside class="odt-textbox"'
+            + (alt ? ' data-name="' + escapeAttr(alt) + '"' : '')
+            + (sizeStyle ? ' style="' + sizeStyle + '"' : '')
+            + '>' + inner + '</aside>';
+      } else if (plugin) {
+        const href = plugin.getAttributeNS(NS.xlink, 'href') ?? '';
+        const mime = plugin.getAttributeNS(NS.draw, 'mime-type') ?? '';
+        let src = href;
+        if (href && !/^https?:|^data:/.test(href)) src = pictures[href] ?? href;
+        const audio = mime.startsWith('audio/') || /\.(mp3|ogg|wav|flac|m4a)$/i.test(href);
+        const tag = audio ? 'audio' : 'video';
+        out += '<' + tag + ' controls src="' + escapeAttr(src) + '"'
+            + (alt ? ' data-name="' + escapeAttr(alt) + '"' : '')
+            + (sizeStyle && !audio ? ' style="' + sizeStyle + '"' : '')
+            + '></' + tag + '>';
+      } else {
+        // Unknown draw:frame contents — preserve as nothing rather
+        // than emitting a half-broken structure.
+      }
     } else {
       // Unknown inline tag → recurse.
       out += emitInline(el, styles, pictures);
@@ -639,6 +690,10 @@ ${extras}  </office:meta>
 };
 
 interface CollectedImage { path: string; bytes: Uint8Array; mime: string; }
+// T12 : audio/video embeds. Same packaging shape as images (Pictures/
+// folder, manifest entry, xlink:href). Kept as a separate type so
+// downstream sites can branch on it if needed.
+interface CollectedMedia { path: string; bytes: Uint8Array; mime: string; kind: 'video' | 'audio'; }
 
 // writeODT : produce an ODT byte stream from a contenteditable HTML
 // snippet. `now` is injected so tests can pin a deterministic
@@ -658,25 +713,29 @@ export async function writeODT(
   userDefined?: Record<string, string>,
 ): Promise<Uint8Array> {
   const collected: CollectedImage[] = [];
-  const contentXML = htmlToContentXML(html, collected, preservedAutoStyles);
+  const mediaCollected: CollectedMedia[] = [];
+  const contentXML = htmlToContentXML(html, collected, mediaCollected, preservedAutoStyles);
 
   const zip = new JSZip();
   // The mimetype entry must be first + uncompressed.
   zip.file('mimetype', 'application/vnd.oasis.opendocument.text', { compression: 'STORE' });
-  zip.folder('META-INF')!.file('manifest.xml', buildManifest(collected));
+  zip.folder('META-INF')!.file('manifest.xml', buildManifest(collected, mediaCollected));
   zip.file('meta.xml', META_TEMPLATE(now, userDefined));
   zip.file('content.xml', contentXML);
-  for (const img of collected) {
-    zip.file(img.path, img.bytes);
-  }
+  for (const img of collected) zip.file(img.path, img.bytes);
+  for (const m of mediaCollected) zip.file(m.path, m.bytes);
   return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
 }
 
-function buildManifest(images: CollectedImage[]): string {
+function buildManifest(images: CollectedImage[], media: CollectedMedia[]): string {
   let extras = '';
   for (const img of images) {
     extras += '  <manifest:file-entry manifest:full-path="' + img.path
            + '" manifest:media-type="' + img.mime + '"/>\n';
+  }
+  for (const m of media) {
+    extras += '  <manifest:file-entry manifest:full-path="' + m.path
+           + '" manifest:media-type="' + m.mime + '"/>\n';
   }
   return `<?xml version="1.0" encoding="UTF-8"?>
 <manifest:manifest xmlns:manifest="${NS.manifest}" manifest:version="1.2">
@@ -691,7 +750,7 @@ ${extras}</manifest:manifest>
 // emitted by the WYSIWYG and produces an ODF content.xml with
 // per-document automatic-styles for the bold/italic/underline runs
 // we encounter.
-function htmlToContentXML(html: string, collected: CollectedImage[], preservedAutoStyles: string): string {
+function htmlToContentXML(html: string, collected: CollectedImage[], mediaCollected: CollectedMedia[], preservedAutoStyles: string): string {
   let root: Element;
   try {
     const doc = new DOMParser().parseFromString(
@@ -780,10 +839,40 @@ function htmlToContentXML(html: string, collected: CollectedImage[], preservedAu
   let footnoteSeq = 0;
   const noteIdFor: NoteIdFor = () => 'ftn' + (++footnoteSeq);
 
+  // T12 : media packaging. data: URLs from new <video>/<audio>
+  // captures land under Pictures/mediaN.<ext> alongside the
+  // images ; the manifest gets an entry per media file so Word /
+  // LibreOffice can locate the asset.
+  const mediaRefFor: MediaRef = (src, kind) => {
+    if (!src) return { href: '', mime: kind === 'audio' ? 'audio/mpeg' : 'video/mp4' };
+    if (/^https?:/.test(src)) {
+      // External URL — pass through verbatim ; the consumer's
+      // application has to fetch it. Set mime to the best guess
+      // based on the file extension.
+      const mime = mimeForExt(src);
+      return { href: src, mime: mime === 'application/octet-stream'
+        ? (kind === 'audio' ? 'audio/mpeg' : 'video/mp4')
+        : mime };
+    }
+    if (src.startsWith('data:')) {
+      const m = /^data:([^;]+);base64,(.*)$/.exec(src);
+      if (!m) return { href: '', mime: 'application/octet-stream' };
+      const mime = m[1];
+      const b64 = m[2];
+      const ext = extForMime(mime);
+      const idx = mediaCollected.length + 1;
+      const path = 'Pictures/media' + idx + '.' + ext;
+      mediaCollected.push({ path, mime, bytes: base64Decode(b64), kind });
+      return { href: path, mime };
+    }
+    return { href: src, mime: mimeForExt(src) };
+  };
+
   const writeCtx: WriteCtx = {
     styleNameFor,
     paraStyleNameFor,
     imageRefFor,
+    mediaRefFor,
     noteIdFor,
     markListKind: (k: ListKind) => { if (k === 'ol') usedOL = true; else usedUL = true; },
     markPagebreak: () => { usedPagebreak = true; },
@@ -888,6 +977,15 @@ function extForMime(mime: string): string {
     case 'image/webp': return 'webp';
     case 'image/bmp': return 'bmp';
     case 'image/tiff': return 'tiff';
+    case 'video/mp4': return 'mp4';
+    case 'video/webm': return 'webm';
+    case 'video/ogg': return 'ogv';
+    case 'video/quicktime': return 'mov';
+    case 'audio/mpeg': return 'mp3';
+    case 'audio/ogg': return 'ogg';
+    case 'audio/wav': case 'audio/wave': case 'audio/x-wav': return 'wav';
+    case 'audio/flac': return 'flac';
+    case 'audio/mp4': return 'm4a';
     default: return 'bin';
   }
 }
@@ -903,12 +1001,14 @@ function base64Decode(b64: string): Uint8Array {
 }
 
 type ImageRef = (src: string, alt: string) => string;
+type MediaRef = (src: string, kind: 'video' | 'audio') => { href: string; mime: string };
 type NoteIdFor = () => string;
 
 interface WriteCtx {
   styleNameFor: (h: StyleHints) => string | null;
   paraStyleNameFor: (existingStyle: string, ph: ParaHints) => string | null;
   imageRefFor: ImageRef;
+  mediaRefFor: MediaRef;
   noteIdFor: NoteIdFor;
   markListKind: (k: ListKind) => void;
   markPagebreak: () => void;
@@ -1059,6 +1159,41 @@ function emitODTBlock(node: Node, fmt: StyleHints, ctx: WriteCtx): string {
     const alt = (el as HTMLImageElement).getAttribute('alt') ?? '';
     return '      <text:p>' + ctx.imageRefFor(src, alt) + '</text:p>\n';
   }
+  // T12 : <aside class="odt-textbox"> → <draw:frame><draw:text-box>
+  if (tag === 'aside' && (el.getAttribute('class') ?? '').includes('odt-textbox')) {
+    const name = el.getAttribute('data-name') ?? '';
+    const inline = (el.getAttribute('style') ?? '');
+    const w = /width\s*:\s*([^;]+)/.exec(inline)?.[1]?.trim() ?? '4in';
+    const h = /height\s*:\s*([^;]+)/.exec(inline)?.[1]?.trim() ?? '2in';
+    let inner = '';
+    for (const c of Array.from(el.childNodes)) inner += emitODTBlock(c, fmt, ctx);
+    return '      <text:p>'
+         + '<draw:frame' + (name ? ' draw:name="' + escapeAttr(name) + '"' : '')
+         + ' text:anchor-type="paragraph"'
+         + ' svg:width="' + escapeAttr(w) + '"'
+         + ' svg:height="' + escapeAttr(h) + '"><draw:text-box>'
+         + inner
+         + '</draw:text-box></draw:frame>'
+         + '</text:p>\n';
+  }
+  // T12 : <video> / <audio> → <draw:frame><draw:plugin>
+  if (tag === 'video' || tag === 'audio') {
+    const src = el.getAttribute('src') ?? '';
+    const name = el.getAttribute('data-name') ?? '';
+    const ref = ctx.mediaRefFor(src, tag);
+    const inline = (el.getAttribute('style') ?? '');
+    const w = /width\s*:\s*([^;]+)/.exec(inline)?.[1]?.trim() ?? (tag === 'audio' ? '1in' : '4in');
+    const h = /height\s*:\s*([^;]+)/.exec(inline)?.[1]?.trim() ?? (tag === 'audio' ? '0.3in' : '3in');
+    return '      <text:p>'
+         + '<draw:frame' + (name ? ' draw:name="' + escapeAttr(name) + '"' : '')
+         + ' svg:width="' + escapeAttr(w) + '"'
+         + ' svg:height="' + escapeAttr(h) + '">'
+         + '<draw:plugin xlink:href="' + escapeAttr(ref.href) + '"'
+         + ' xlink:type="simple" xlink:show="embed" xlink:actuate="onLoad"'
+         + ' draw:mime-type="' + escapeAttr(ref.mime) + '"/>'
+         + '</draw:frame>'
+         + '</text:p>\n';
+  }
   // Unknown : descend transparently as a paragraph wrapper.
   return '      <text:p>' + emitODTInline(el, fmt, ctx) + '</text:p>\n';
 }
@@ -1195,6 +1330,55 @@ function emitODTInline(node: Node, fmt: StyleHints, ctx: WriteCtx): string {
       const src = (el as HTMLImageElement).getAttribute('src') ?? '';
       const alt = (el as HTMLImageElement).getAttribute('alt') ?? '';
       out += ctx.imageRefFor(src, alt);
+      continue;
+    } else if (tag === 'video' || tag === 'audio') {
+      // T12 : media at INLINE position. The reader emits the
+      // <audio>/<video> inside a <text:p> wrapper, so writeODT
+      // sees them via emitODTInline (not emitODTBlock).
+      const src = el.getAttribute('src') ?? '';
+      const name = el.getAttribute('data-name') ?? '';
+      const ref = ctx.mediaRefFor(src, tag);
+      const inline = (el.getAttribute('style') ?? '');
+      const w = /width\s*:\s*([^;]+)/.exec(inline)?.[1]?.trim() ?? (tag === 'audio' ? '1in' : '4in');
+      const h = /height\s*:\s*([^;]+)/.exec(inline)?.[1]?.trim() ?? (tag === 'audio' ? '0.3in' : '3in');
+      out += '<draw:frame'
+          + (name ? ' draw:name="' + escapeAttr(name) + '"' : '')
+          + ' svg:width="' + escapeAttr(w) + '"'
+          + ' svg:height="' + escapeAttr(h) + '">'
+          + '<draw:plugin xlink:href="' + escapeAttr(ref.href) + '"'
+          + ' xlink:type="simple" xlink:show="embed" xlink:actuate="onLoad"'
+          + ' draw:mime-type="' + escapeAttr(ref.mime) + '"/>'
+          + '</draw:frame>';
+      continue;
+    } else if (tag === 'aside' && (el.getAttribute('class') ?? '').includes('odt-textbox')) {
+      // T12 inline path : an <aside.odt-textbox> dropped via the
+      // toolbar lands inside the active <p>. Emit as a <draw:frame>
+      // <draw:text-box> right where it sits.
+      const name = el.getAttribute('data-name') ?? '';
+      const inline = el.getAttribute('style') ?? '';
+      const w = /width\s*:\s*([^;]+)/.exec(inline)?.[1]?.trim() ?? '4in';
+      const h = /height\s*:\s*([^;]+)/.exec(inline)?.[1]?.trim() ?? '2in';
+      let inner = '';
+      for (const c of Array.from(el.childNodes)) {
+        if (c.nodeType === 1) {
+          const cTag = (c as Element).tagName.toLowerCase();
+          if (cTag === 'p' || cTag === 'div') {
+            inner += '<text:p>' + emitODTInline(c, fmt, ctx) + '</text:p>';
+          } else {
+            inner += '<text:p>' + emitODTInline(c, fmt, ctx) + '</text:p>';
+          }
+        } else if (c.nodeType === 3) {
+          const t = c.textContent ?? '';
+          if (t.trim()) inner += '<text:p>' + escapeHTML(t) + '</text:p>';
+        }
+      }
+      out += '<draw:frame'
+          + (name ? ' draw:name="' + escapeAttr(name) + '"' : '')
+          + ' text:anchor-type="paragraph"'
+          + ' svg:width="' + escapeAttr(w) + '"'
+          + ' svg:height="' + escapeAttr(h) + '">'
+          + '<draw:text-box>' + inner + '</draw:text-box>'
+          + '</draw:frame>';
       continue;
     } else if (tag === 'sup') {
       // Non-footnote <sup> = explicit superscript run.

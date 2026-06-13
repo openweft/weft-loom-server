@@ -348,6 +348,86 @@
     onInput();
   }
 
+  // T12 : insertTextFrame drops a draw:text-box-style box at the
+  // caret. It's an editable <aside class="odt-textbox"> with a
+  // visible border ; round-trips through writeODT as <draw:frame>
+  // <draw:text-box> on save.
+  function insertTextFrame() {
+    editorEl.focus();
+    const aside = document.createElement('aside');
+    aside.className = 'odt-textbox';
+    aside.contentEditable = 'true';
+    aside.style.width = '12cm';
+    aside.style.height = '4cm';
+    const p = document.createElement('p');
+    p.textContent = 'Text frame — replace this content.';
+    aside.appendChild(p);
+    const sel = window.getSelection();
+    let range: Range;
+    if (sel && sel.rangeCount > 0 && editorEl.contains(sel.getRangeAt(0).startContainer)) {
+      range = sel.getRangeAt(0);
+      range.deleteContents();
+    } else {
+      range = document.createRange();
+      range.selectNodeContents(editorEl);
+      range.collapse(false);
+    }
+    range.insertNode(aside);
+    range.setStartAfter(aside);
+    range.collapse(true);
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+    onInput();
+  }
+
+  // T12 : insertMedia opens a file picker, loads the chosen media
+  // as a data: URL, and drops an <audio>/<video> element at the
+  // caret. The writer collects the bytes + repackages them under
+  // Pictures/mediaN.<ext> in the ODF zip.
+  function insertMedia() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'audio/*,video/*';
+    input.style.display = 'none';
+    document.body.appendChild(input);
+    input.addEventListener('change', async () => {
+      const file = input.files?.[0];
+      input.remove();
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        editorEl.focus();
+        const isAudio = file.type.startsWith('audio/');
+        const el = document.createElement(isAudio ? 'audio' : 'video');
+        el.setAttribute('controls', '');
+        el.setAttribute('src', String(reader.result));
+        el.setAttribute('data-name', file.name);
+        if (!isAudio) {
+          el.style.maxWidth = '100%';
+          el.style.display = 'block';
+        }
+        const sel = window.getSelection();
+        let range: Range;
+        if (sel && sel.rangeCount > 0 && editorEl.contains(sel.getRangeAt(0).startContainer)) {
+          range = sel.getRangeAt(0);
+          range.deleteContents();
+        } else {
+          range = document.createRange();
+          range.selectNodeContents(editorEl);
+          range.collapse(false);
+        }
+        range.insertNode(el);
+        range.setStartAfter(el);
+        range.collapse(true);
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+        onInput();
+      };
+      reader.readAsDataURL(file);
+    });
+    input.click();
+  }
+
   // T10 : insertField surfaces an ODT field at the caret. The
   // kind is picked from a small prompt() list ; user-field-get
   // also asks for the variable name. Round-trips as a
@@ -615,6 +695,8 @@
     <button type="button" title="Insert comment"     class="btn btn-ghost btn-xs" onclick={() => insertComment()}>💬</button>
     <button type="button" title="Insert page break"  class="btn btn-ghost btn-xs" onclick={() => insertPageBreak()}>⤓</button>
     <button type="button" title="Insert field (page#, date, title, $var…)" class="btn btn-ghost btn-xs" onclick={() => insertField()}>{`{f}`}</button>
+    <button type="button" title="Insert text frame" class="btn btn-ghost btn-xs" onclick={() => insertTextFrame()}>▭</button>
+    <button type="button" title="Insert audio / video" class="btn btn-ghost btn-xs" onclick={() => insertMedia()}>🎬</button>
     <span class="divider divider-horizontal mx-0"></span>
     <label title="Text colour" class="btn btn-ghost btn-xs px-1 inline-flex items-center gap-1">
       <span class="font-bold">A</span>
@@ -872,6 +954,37 @@
     padding: 0 0.2em;
     cursor: help;
   }
+  /* T12 : ODT text frame visualisation. Floating box with a
+     visible border + light shadow so the user can see the frame
+     is separate from the surrounding flow. Round-trips as
+     <draw:frame><draw:text-box>. */
+  .wysiwyg-surface :global(aside.odt-textbox) {
+    display: block;
+    margin: 0.6em auto;
+    padding: 0.6em;
+    border: 1px dashed rgba(0, 100, 200, 0.5);
+    background: rgba(0, 130, 220, 0.04);
+    border-radius: 4px;
+    min-height: 2em;
+    position: relative;
+  }
+  .wysiwyg-surface :global(aside.odt-textbox)::before {
+    content: 'cadre';
+    position: absolute;
+    top: -0.7em;
+    left: 0.6em;
+    font-size: 0.65em;
+    background: var(--fallback-b1, #fff);
+    padding: 0 0.3em;
+    color: rgba(0, 100, 200, 0.7);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .wysiwyg-surface :global(video),
+  .wysiwyg-surface :global(audio) {
+    margin: 0.6em 0;
+  }
+
   /* T10 : visible badge for ODT fields. The user sees [date],
      [#], [$ClientName] etc. on a pale blue chip so they know
      they're editing a dynamic value, not literal text. */
