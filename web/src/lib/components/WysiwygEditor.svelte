@@ -31,6 +31,15 @@
   // Debounce timer for save-on-change : ~600 ms after the last
   // keystroke we serialise + PUT. Keeps the keystroke loop tight.
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
+  // dirty flips true on every keystroke + false at the start of
+  // save(). The toolbar status badge reads it to show "modifié"
+  // vs "enregistré" so the user sees at a glance whether the file
+  // is in sync with disk.
+  let dirty = $state(false);
+  // savedAt is the timestamp of the last successful save ; the
+  // toolbar shows "il y a Ns" / "à HH:MM" so the user can audit the
+  // auto-save cadence.
+  let savedAt = $state<number | null>(null);
 
   function format(): 'rtf' | 'odt' {
     return file.toLowerCase().endsWith('.odt') ? 'odt' : 'rtf';
@@ -116,6 +125,8 @@
       if (!r.ok && r.status !== 204) throw new Error('PUT ' + r.status);
       etag = r.headers.get('etag') ?? etag;
       status = 'ready';
+      dirty = false;
+      savedAt = Date.now();
     } catch (e) {
       status = 'error';
       errorMessage = e instanceof Error ? e.message : String(e);
@@ -123,9 +134,35 @@
   }
 
   function onInput() {
+    dirty = true;
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(save, 600);
   }
+
+  // saveNow cancels the debounced auto-save + writes immediately.
+  // Wired to the toolbar's 💾 button + Cmd+S handler so the user can
+  // force an explicit checkpoint without waiting the 600 ms.
+  async function saveNow() {
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = undefined; }
+    await save();
+  }
+
+  // savedLabel : how long ago the last save landed, surfaced next
+  // to the save icon. Updated by a 30 s tick so the user sees the
+  // string drift without it churning every render.
+  let nowTick = $state(Date.now());
+  $effect(() => {
+    const id = setInterval(() => { nowTick = Date.now(); }, 30000);
+    return () => clearInterval(id);
+  });
+  const savedLabel = $derived(() => {
+    if (!savedAt) return '';
+    const delta = Math.max(0, nowTick - savedAt);
+    if (delta < 60_000) return 'il y a ' + Math.floor(delta / 1000) + 's';
+    if (delta < 3600_000) return 'il y a ' + Math.floor(delta / 60_000) + ' min';
+    const d = new Date(savedAt);
+    return 'à ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  });
 
   // Toolbar actions wrap document.execCommand. The API is deprecated
   // in spec but still works in every shipping browser engine + it's
@@ -435,7 +472,7 @@
     if (e.key === 'b') { e.preventDefault(); exec('bold'); }
     else if (e.key === 'i') { e.preventDefault(); exec('italic'); }
     else if (e.key === 'u') { e.preventDefault(); exec('underline'); }
-    else if (e.key === 's') { e.preventDefault(); save(); }
+    else if (e.key === 's') { e.preventDefault(); void saveNow(); }
   }
 
   // Reload when the active file changes (the parent wraps us in
@@ -557,11 +594,35 @@
     <span class="divider divider-horizontal mx-0"></span>
     <button type="button" title="Undo (⌘Z)"  class="btn btn-ghost btn-xs" onclick={() => exec('undo')}>↶</button>
     <button type="button" title="Redo (⌘⇧Z)" class="btn btn-ghost btn-xs" onclick={() => exec('redo')}>↷</button>
+    <span class="divider divider-horizontal mx-0"></span>
+    <!-- Explicit save button : visible 💾 + status badge so the user
+         never has to wonder whether their changes are on disk.
+         Cmd+S also routes here through the keyboard handler. -->
+    <button
+      type="button"
+      title={dirty ? 'Enregistrer (⌘S) — modifications non enregistrées' : 'Enregistrer maintenant (⌘S)'}
+      class="btn btn-xs gap-1"
+      class:btn-primary={dirty}
+      class:btn-ghost={!dirty}
+      onclick={() => { void saveNow(); }}
+      disabled={status === 'saving' || !file}
+      data-testid="wysiwyg-save"
+    >
+      <span class="text-base leading-none">💾</span>
+      <span class="hidden sm:inline">{dirty ? 'Enregistrer' : 'Enregistré'}</span>
+    </button>
     <div class="flex-1"></div>
     {#if status === 'saving'}
-      <span class="opacity-60 text-xs">saving…</span>
+      <span class="text-xs flex items-center gap-1">
+        <span class="loading loading-spinner loading-xs"></span>
+        enregistrement…
+      </span>
     {:else if status === 'error'}
-      <span class="text-error text-xs" title={errorMessage}>error</span>
+      <span class="text-error text-xs" title={errorMessage}>⚠ erreur</span>
+    {:else if status === 'ready' && dirty}
+      <span class="text-warning text-xs" title="Modifications non enregistrées">● modifié</span>
+    {:else if status === 'ready' && savedAt}
+      <span class="opacity-50 text-xs">✓ {savedLabel()}</span>
     {:else if status === 'ready'}
       <span class="opacity-50 text-xs uppercase">{format()}</span>
     {/if}
