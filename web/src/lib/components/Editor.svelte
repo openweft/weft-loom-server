@@ -136,17 +136,91 @@
   // Cursor + selection + word-count stats — emitted to App.svelte
   // which pipes them into the StatusBar. The CM updateListener
   // below calls this on every doc or selection change.
+  //
+  // Hot path : called on every keystroke. The earlier implementation
+  // materialised the ENTIRE document to a JS string + regex-split on
+  // whitespace whenever the selection was empty (the common case),
+  // costing O(N) per keystroke on multi-KB docs. We now :
+  //   1. emit line/col/selectionLen synchronously (cheap : doc.lineAt
+  //      is O(log N) ; selection bookkeeping is O(1)).
+  //   2. for selections, count words off the (small) selection slice
+  //      synchronously — selecting is a deliberate action so the user
+  //      tolerates the burst.
+  //   3. for caret-only, re-emit the LAST known word count immediately
+  //      and schedule a debounced rescan (250 ms quiet) before
+  //      surfacing the fresh value.
+  //   4. for docs over 100 KB we count runs-of-non-whitespace in a
+  //      single linear pass over the doc text iterator — same answer
+  //      as the regex split but no intermediate array.
+  // See perf-audit-2026-06-14 H2.
+  const WORD_COUNT_DEBOUNCE_MS = 250;
+  const WORD_COUNT_LINEAR_THRESHOLD = 100 * 1024;
+  let cachedWords = 0;
+  let wordsDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function countWordsInString(s: string): number {
+    return s.split(/\s+/).filter(Boolean).length;
+  }
+  // Linear non-whitespace-run count without materialising the full
+  // doc as a single JS string. CodeMirror's Text.iter yields chunks
+  // we can walk character-by-character, tracking whether the previous
+  // char was whitespace to detect word boundaries. Result matches
+  // `s.split(/\s+/).filter(Boolean).length` for ASCII + UTF-16 BMP.
+  function countWordsLinear(doc: import('@codemirror/state').Text): number {
+    let words = 0;
+    let prevWS = true;
+    const iter = doc.iter();
+    while (!iter.next().done) {
+      const chunk = iter.value;
+      for (let i = 0; i < chunk.length; i++) {
+        const c = chunk.charCodeAt(i);
+        // ASCII whitespace + common Unicode line breaks. The previous
+        // regex was /\s+/ which is JS \s — this approximates it well
+        // for the codepoints typists actually produce.
+        const isWS = c === 32 || c === 9 || c === 10 || c === 13 || c === 11 || c === 12 || c === 160;
+        if (prevWS && !isWS) words++;
+        prevWS = isWS;
+      }
+    }
+    return words;
+  }
+
+  function recomputeFullDocWords() {
+    if (!view) return;
+    const doc = view.state.doc;
+    cachedWords = doc.length >= WORD_COUNT_LINEAR_THRESHOLD
+      ? countWordsLinear(doc)
+      : countWordsInString(doc.toString());
+    // Re-emit with the up-to-date count + current cursor position.
+    if (!view) return;
+    const sel = view.state.selection.main;
+    if (sel.from !== sel.to) return; // selection took over ; its own emit wins
+    const lineObj = view.state.doc.lineAt(sel.head);
+    const col = sel.head - lineObj.from + 1;
+    onCursorStats?.({ line: lineObj.number, col, selectionLen: 0, words: cachedWords });
+  }
+
   function updateCursorStats() {
     if (!view) return;
     const sel = view.state.selection.main;
     const lineObj = view.state.doc.lineAt(sel.head);
     const col = sel.head - lineObj.from + 1;
     const selLen = sel.to - sel.from;
-    const text = selLen > 0
-      ? view.state.doc.sliceString(sel.from, sel.to)
-      : view.state.doc.toString();
-    const words = text.split(/\s+/).filter(Boolean).length;
-    onCursorStats?.({ line: lineObj.number, col, selectionLen: selLen, words });
+    if (selLen > 0) {
+      // Selection : count synchronously off the (typically small) slice.
+      const text = view.state.doc.sliceString(sel.from, sel.to);
+      const words = countWordsInString(text);
+      onCursorStats?.({ line: lineObj.number, col, selectionLen: selLen, words });
+      return;
+    }
+    // Caret-only : keep cursor position live ; surface cached word
+    // count immediately + schedule a debounced rescan.
+    onCursorStats?.({ line: lineObj.number, col, selectionLen: 0, words: cachedWords });
+    if (wordsDebounceTimer) clearTimeout(wordsDebounceTimer);
+    wordsDebounceTimer = setTimeout(() => {
+      wordsDebounceTimer = undefined;
+      recomputeFullDocWords();
+    }, WORD_COUNT_DEBOUNCE_MS);
   }
 
   // Compartments for the settings panel : font / tab / line numbers /
@@ -224,9 +298,12 @@
 
   // Refresh the lint Compartment whenever the global compile
   // diagnostics change so squiggles + gutter markers appear / clear
-  // without the user having to retype in the editor.
+  // without the user having to retype in the editor. We track the
+  // microtask-coalesced `version` counter instead of `items.length` so
+  // a streamed batch of 30-50 diagnostics fires this effect ONCE per
+  // compile instead of once per item. See perf-audit-2026-06-14 L1.
   $effect(() => {
-    void compileDiagnostics.items.length;
+    void compileDiagnostics.version;
     if (!view) return;
     view.dispatch({
       effects: lintCompartment.reconfigure(lintExtension(language, file)),
@@ -963,8 +1040,18 @@
     // is broken inside our binding. If we see updates but the
     // server log still shows only heartbeats, the WS provider isn't
     // forwarding them.
+    // Gated : the unconditional version flooded the console on every
+    // keystroke (~5-15 ms per stroke through the DevTools reflection
+    // bridge). Now opt-in via `window.weftLoomVerbose = true` in a DEV
+    // build only — production users never pay. See perf-audit-2026-06-14
+    // H1.
     ydoc!.on('update', (update: Uint8Array, origin: unknown) => {
-      console.log('[ydoc.update]', { bytes: update.length, origin: String(origin) });
+      // Vite injects `import.meta.env.DEV` ; the cast keeps the
+      // tsconfig (no @types/vite) happy without pulling in client.d.ts.
+      const env = (import.meta as unknown as { env?: { DEV?: boolean } }).env;
+      if (env?.DEV && (window as unknown as { weftLoomVerbose?: boolean }).weftLoomVerbose) {
+        console.log('[ydoc.update]', { bytes: update.length, origin: String(origin) });
+      }
     });
 
     // Debug API : window.__weftDebug.insert(s) writes s directly to
@@ -1060,6 +1147,13 @@
 
   onDestroy(() => {
     bindingDetach?.();
+    // Cancel the debounced word-count rescan : the editor's about to
+    // be torn down so emitting cursor stats from a stale `view`
+    // reference would NPE in StatusBar.
+    if (wordsDebounceTimer) {
+      clearTimeout(wordsDebounceTimer);
+      wordsDebounceTimer = undefined;
+    }
     // Flush any pending save before tearing down so a fast file switch
     // doesn't lose the user's last keystrokes.
     if (saveDebounce) {

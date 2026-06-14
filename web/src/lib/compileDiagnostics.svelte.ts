@@ -17,12 +17,29 @@ export interface CompileDiagnostic {
 
 class CompileDiagnosticsStore {
   items = $state<CompileDiagnostic[]>([]);
+  // Batch-coalesced version counter. Subscribers that only care that
+  // the diagnostic SET changed (not which individual item arrived) read
+  // this instead of `items.length` so they fire once per compile burst
+  // rather than once per streamed item. `clear()` bumps synchronously
+  // (a fresh compile is its own boundary) ; `push()` schedules a single
+  // microtask-deferred bump that coalesces all pushes in the same tick.
+  // See perf-audit-2026-06-14.md L1.
+  version = $state<number>(0);
+  private bumpScheduled = false;
 
   push(d: CompileDiagnostic) {
     this.items = [...this.items, d];
+    if (!this.bumpScheduled) {
+      this.bumpScheduled = true;
+      queueMicrotask(() => {
+        this.bumpScheduled = false;
+        this.version++;
+      });
+    }
   }
   clear() {
     this.items = [];
+    this.version++;
   }
   // Filter to the diagnostics that apply to the given file. When
   // a diagnostic has no file (typical for pdfTeX `l.42` markers)
