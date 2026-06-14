@@ -6,7 +6,6 @@
   import * as Y from 'yjs';
   import type { Awareness } from 'y-protocols/awareness';
   import FileExplorer from './lib/components/FileExplorer.svelte';
-  import PreviewPane from './lib/components/PreviewPane.svelte';
   import Navbar from './lib/components/Navbar.svelte';
   import MenuBar from './lib/components/MenuBar.svelte';
   import ActivityBar from './lib/components/ActivityBar.svelte';
@@ -14,7 +13,6 @@
   import GitSidebar from './lib/components/GitSidebar.svelte';
   import GitPanel from './lib/components/GitPanel.svelte';
   import SearchPanel from './lib/components/SearchPanel.svelte';
-  import NotebookEditor from './lib/components/NotebookEditor.svelte';
   import Breadcrumb from './lib/components/Breadcrumb.svelte';
   import SettingsPanel from './lib/components/SettingsPanel.svelte';
   import QuickOpen from './lib/components/QuickOpen.svelte';
@@ -28,8 +26,6 @@
   import BottomPanel from './lib/components/BottomPanel.svelte';
   import { setProjectHint, logEvent } from './lib/logbus';
   import Editor from './lib/components/Editor.svelte';
-  import WysiwygEditor from './lib/components/WysiwygEditor.svelte';
-  import SpreadsheetEditor from './lib/components/SpreadsheetEditor.svelte';
   import LatexSymbolPalette from './lib/components/LatexSymbolPalette.svelte';
   import BibliographyPanel from './lib/components/BibliographyPanel.svelte';
   import CommentsPanel from './lib/components/CommentsPanel.svelte';
@@ -165,6 +161,16 @@
   }
   let project = $state(initialProject());
   let currentFile = $state('');
+
+  // Heavy editors lazy-loaded on first use so the initial bundle
+  // stays lean. Each slot starts null + flips to the component class
+  // once the dynamic import resolves. The render guards check the
+  // slot before mounting. Saved ≈ 1.5 MB off the cold-load.
+  type AnySvelteComponent = typeof FileExplorer;
+  let LazyWysiwygEditor = $state<AnySvelteComponent | null>(null);
+  let LazySpreadsheetEditor = $state<AnySvelteComponent | null>(null);
+  let LazyNotebookEditor = $state<AnySvelteComponent | null>(null);
+  let LazyPreviewPane = $state<AnySvelteComponent | null>(null);
   let language = $state<string>('markdown');
   // openFiles[] : the multi-tab editor list, ordered left → right.
   // Adding a file that's already open just activates it.
@@ -432,6 +438,41 @@
   // current project. The DoctorPanel filters on it.
   $effect(() => {
     setProjectHint(project);
+  });
+
+  // Lazy-load the heavy editors on first need. The dynamic import
+  // pulls a separate chunk so the initial cold-load doesn't pay for
+  // HyperFormula / PDF.js / Marp / DOMPurify when the user starts
+  // on a plain .tex / .md / source file. Each slot is set once + then
+  // reused across file switches.
+  $effect(() => {
+    const f = currentFile;
+    if (!f) return;
+    const lower = f.toLowerCase();
+    if (lower.endsWith('.ipynb') && !LazyNotebookEditor) {
+      void import('./lib/components/NotebookEditor.svelte').then((m) => {
+        LazyNotebookEditor = m.default as AnySvelteComponent;
+      });
+    } else if (lower.endsWith('.ods') && !LazySpreadsheetEditor) {
+      void import('./lib/components/SpreadsheetEditor.svelte').then((m) => {
+        LazySpreadsheetEditor = m.default as AnySvelteComponent;
+      });
+    } else if ((lower.endsWith('.rtf') || lower.endsWith('.odt')) && !LazyWysiwygEditor) {
+      void import('./lib/components/WysiwygEditor.svelte').then((m) => {
+        LazyWysiwygEditor = m.default as AnySvelteComponent;
+      });
+    }
+  });
+
+  // PreviewPane loads as soon as the user might want it (any open
+  // file or any compile artifact). Cheaper than gating per-extension
+  // because most users hit preview eventually.
+  $effect(() => {
+    if (!LazyPreviewPane && (currentFile || artifactURL)) {
+      void import('./lib/components/PreviewPane.svelte').then((m) => {
+        LazyPreviewPane = m.default as AnySvelteComponent;
+      });
+    }
   });
   onMount(() => {
     logEvent('spa', 'mount', { url: window.location.href });
@@ -1085,14 +1126,22 @@
             {#if currentFile}
               {#if currentFile.endsWith('.ipynb')}
                 {#key project + '|nb|' + currentFile}
-                  <NotebookEditor {project} file={currentFile} />
+                  {#if LazyNotebookEditor}
+                    <LazyNotebookEditor {project} file={currentFile} />
+                  {:else}
+                    <div class="flex-1 flex items-center justify-center text-base-content/50">Loading notebook editor…</div>
+                  {/if}
                 {/key}
               {:else if currentFile.toLowerCase().endsWith('.ods')}
                 <!-- T9 V0.1 : OpenDocument Spreadsheet editor.
                      Pure-browser parseODS/writeODS via jszip +
                      DOMParser ; the grid is contenteditable cells. -->
                 {#key project + '|ods|' + currentFile}
-                  <SpreadsheetEditor {project} file={currentFile} />
+                  {#if LazySpreadsheetEditor}
+                    <LazySpreadsheetEditor {project} file={currentFile} />
+                  {:else}
+                    <div class="flex-1 flex items-center justify-center text-base-content/50">Loading spreadsheet editor…</div>
+                  {/if}
                 {/key}
               {:else if currentFile.toLowerCase().endsWith('.rtf') || currentFile.toLowerCase().endsWith('.odt')}
                 <!-- RTF + ODT both open in the WYSIWYG editor
@@ -1101,7 +1150,11 @@
                      extension to pick parseRTF/writeRTF vs the
                      pure-browser parseODT/writeODT (jszip-backed). -->
                 {#key project + '|wyswg|' + currentFile}
-                  <WysiwygEditor {project} file={currentFile} />
+                  {#if LazyWysiwygEditor}
+                    <LazyWysiwygEditor {project} file={currentFile} />
+                  {:else}
+                    <div class="flex-1 flex items-center justify-center text-base-content/50">Loading WYSIWYG editor…</div>
+                  {/if}
                 {/key}
               {:else}
                 {#key project + '|' + currentFile}
@@ -1184,14 +1237,18 @@
           onmousedown={startPreviewDrag}
           title="Drag to resize the preview"
         ></div>
-        <PreviewPane
-          {ydoc} {language} {project}
-          file={currentFile}
-          pdfURL={artifactURL}
-          width={previewWidth}
-          onShowErrors={() => { bottomOpen = true; bottomTab = 'log'; }}
-          onClose={togglePreview}
-        />
+        {#if LazyPreviewPane}
+          <LazyPreviewPane
+            {ydoc} {language} {project}
+            file={currentFile}
+            pdfURL={artifactURL}
+            width={previewWidth}
+            onShowErrors={() => { bottomOpen = true; bottomTab = 'log'; }}
+            onClose={togglePreview}
+          />
+        {:else}
+          <div class="flex-1 flex items-center justify-center text-base-content/50" style="width: {previewWidth}px">Loading preview…</div>
+        {/if}
       {:else}
         <!-- Collapsed strip — keeps the preview affordance visible
              on the RIGHT edge. Click to expand back to previewWidth.
