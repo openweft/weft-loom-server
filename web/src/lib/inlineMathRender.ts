@@ -110,6 +110,24 @@ function buildDecorations(view: EditorView): DecorationSet {
   return builder.finish();
 }
 
+// cursorInsideAnyMath : O(visible-text) predicate that returns true
+// iff the main selection overlaps any inline-math segment in the
+// current viewport. Same regex pass as buildDecorations but with no
+// widget allocation / RangeSetBuilder churn — the cheap signal we
+// need to short-circuit pure-selection updates.
+function cursorInsideAnyMath(view: EditorView): boolean {
+  const selectionFrom = view.state.selection.main.from;
+  const selectionTo = view.state.selection.main.to;
+  for (const { from, to } of view.visibleRanges) {
+    const text = view.state.doc.sliceString(from, to);
+    const matches = scanMath(text, from);
+    for (const m of matches) {
+      if (selectionFrom <= m.to && selectionTo >= m.from) return true;
+    }
+  }
+  return false;
+}
+
 // inlineMathRender : public CM6 extension. Plug into the LaTeX
 // extension stack in Editor.svelte alongside the language support
 // + autocomplete.
@@ -117,11 +135,26 @@ export function inlineMathRender() {
   return [
     ViewPlugin.fromClass(class {
       decorations: DecorationSet;
+      // Caret-inside-any-math memo : pure caret motion (selectionSet
+      // with no docChange / viewport change) only flips the decoration
+      // set when this predicate's value flips. Skipping the rebuild
+      // when it stays the same saves the widget allocation + the
+      // KaTeX render that toDOM eventually performs on a cache miss.
+      prevCursorInsideMath: boolean;
       constructor(view: EditorView) {
         this.decorations = buildDecorations(view);
+        this.prevCursorInsideMath = cursorInsideAnyMath(view);
       }
       update(u: ViewUpdate) {
-        if (u.docChanged || u.selectionSet || u.viewportChanged) {
+        if (u.docChanged || u.viewportChanged) {
+          this.decorations = buildDecorations(u.view);
+          this.prevCursorInsideMath = cursorInsideAnyMath(u.view);
+          return;
+        }
+        if (u.selectionSet) {
+          const next = cursorInsideAnyMath(u.view);
+          if (next === this.prevCursorInsideMath) return;
+          this.prevCursorInsideMath = next;
           this.decorations = buildDecorations(u.view);
         }
       }

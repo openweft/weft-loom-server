@@ -10,12 +10,22 @@
 // folds. Here every heading is a foldable region by construction.
 
 import { foldService } from '@codemirror/language';
-import type { EditorState } from '@codemirror/state';
+import type { EditorState, Text } from '@codemirror/state';
 
 interface Heading {
   line: number; // 1-based
   level: number; // 0=chapter / h1, 4=paragraph / h5
 }
+
+// scanHeadings cache. CodeMirror's foldService is queried once per
+// candidate gutter line, so on a 5000-line doc with 80 \section commands
+// a single render fires foldFor ~80 times — each call previously walked
+// the full document. Cache the result keyed by state.doc (a Text
+// instance whose identity is stable until a doc change ; on docChanged
+// the EditorState produces a NEW Text and the old entry GCs naturally).
+// One cache per (doc, isLatex) pair — same doc rendered in latex vs
+// markdown mode would produce different heading sets.
+const headingCache = new WeakMap<Text, { latex?: Heading[]; markdown?: Heading[] }>();
 
 const LATEX_RE = /^\s*\\(chapter|section|subsection|subsubsection|paragraph)\*?\s*(?:\[[^\]]*\])?\s*\{/;
 const MD_RE = /^\s{0,3}(#{1,6})\s+\S/;
@@ -29,8 +39,16 @@ const LATEX_LEVEL: Record<string, number> = {
 };
 
 function scanHeadings(state: EditorState, isLatex: boolean): Heading[] {
-  const out: Heading[] = [];
   const doc = state.doc;
+  // Cache lookup : same Text identity → same result. Entries auto-GC
+  // when the EditorState transitions to a new doc (the old Text
+  // becomes unreachable).
+  const cached = headingCache.get(doc);
+  const key = isLatex ? 'latex' : 'markdown';
+  const hit = cached?.[key];
+  if (hit) return hit;
+
+  const out: Heading[] = [];
   // Markdown : track fence to skip headings inside code blocks.
   let inFence = false;
   let fenceCh = '';
@@ -51,6 +69,10 @@ function scanHeadings(state: EditorState, isLatex: boolean): Heading[] {
       if (m) out.push({ line: i, level: LATEX_LEVEL[m[1]] ?? 1 });
     }
   }
+
+  const entry = cached ?? {};
+  entry[key] = out;
+  headingCache.set(doc, entry);
   return out;
 }
 

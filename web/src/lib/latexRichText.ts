@@ -646,14 +646,67 @@ function buildDecorations(view: EditorView): DecorationSet {
   return builder.finish();
 }
 
+// Union regex over the rich-text patterns whose decorations are
+// gated on caret-overlap (footnote / $$…$$ / $…$ / \includegraphics
+// / math environments / tabular / \href). Mark-style decorations
+// (\textbf, \section, \label, …) render the same whether the caret
+// sits on them or not, so they don't affect the predicate.
+const CARET_SENSITIVE_RE = new RegExp(
+  '\\\\footnote\\{[^{}]*\\}' +
+  '|\\$\\$[\\s\\S]+?\\$\\$' +
+  '|(?<!\\$)\\$[^$\\n]+?\\$(?!\\$)' +
+  '|\\\\includegraphics(?:\\[[^\\]]*\\])?\\{[^{}]+\\}' +
+  '|\\\\begin\\{(?:equation\\*?|align\\*?|gather\\*?|multline\\*?|eqnarray\\*?|displaymath)\\}[\\s\\S]*?\\\\end\\{(?:equation\\*?|align\\*?|gather\\*?|multline\\*?|eqnarray\\*?|displaymath)\\}' +
+  '|\\\\begin\\{tabular\\}\\{[^{}]+\\}[\\s\\S]*?\\\\end\\{tabular\\}' +
+  '|\\\\href\\{[^{}]*\\}\\{[^{}]*\\}',
+  'g',
+);
+
+// cursorInsideEligibleRange : O(visible-text) predicate matching
+// "caret inside any rich-text-eligible widget range in the current
+// viewport". Same regex shapes buildDecorations uses (just union'd)
+// minus the per-pattern decoration construction — when this boolean
+// doesn't flip between two selection updates, the decoration set is
+// guaranteed identical, so we can skip the full rebuild.
+function cursorInsideEligibleRange(view: EditorView): boolean {
+  const selRanges = view.state.selection.ranges;
+  for (const { from, to } of view.visibleRanges) {
+    const text = view.state.sliceDoc(from, to);
+    CARET_SENSITIVE_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = CARET_SENSITIVE_RE.exec(text))) {
+      const matchFrom = from + m.index;
+      const matchTo = matchFrom + m[0].length;
+      for (const r of selRanges) {
+        if (r.from <= matchTo && r.to >= matchFrom) return true;
+      }
+    }
+  }
+  return false;
+}
+
 const richTextPlugin = ViewPlugin.fromClass(
   class {
     decorations: DecorationSet;
+    // Caret-inside-eligible-range memo. Pure caret motion only
+    // changes the decoration set when this flips (a caretOverlap
+    // skip starts/stops applying) — otherwise the rebuild produces
+    // the same RangeSetBuilder output.
+    prevInside: boolean;
     constructor(view: EditorView) {
       this.decorations = buildDecorations(view);
+      this.prevInside = cursorInsideEligibleRange(view);
     }
     update(u: ViewUpdate) {
-      if (u.docChanged || u.viewportChanged || u.selectionSet) {
+      if (u.docChanged || u.viewportChanged) {
+        this.decorations = buildDecorations(u.view);
+        this.prevInside = cursorInsideEligibleRange(u.view);
+        return;
+      }
+      if (u.selectionSet) {
+        const next = cursorInsideEligibleRange(u.view);
+        if (next === this.prevInside) return;
+        this.prevInside = next;
         this.decorations = buildDecorations(u.view);
       }
     }

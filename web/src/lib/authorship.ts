@@ -80,13 +80,18 @@ export function authorshipExtension(ytext: Y.Text, awareness: Awareness) {
 
       constructor(view: EditorView) {
         this.decorations = this.build(view);
+        // ytext.observe is the single source of truth — it fires for
+        // BOTH local edits (routed through ybinding's ydoc.transact)
+        // and remote edits. The previous implementation also rebuilt
+        // on update.docChanged, which produced two builds per keystroke.
+        // We also dropped a `view.dispatch({})` no-op that used to
+        // chase its own tail : ViewPlugin's `provide(v => v.decorations)`
+        // contract already re-renders when `this.decorations` is
+        // reassigned, so the dispatch only generated another update
+        // cycle without changing the output.
         const refresh = () => {
           this.decorations = this.build(view);
-          view.dispatch({}); // no-op tx just to re-render with the new
-                              // decorations facet value.
         };
-        // ytext.observe fires every time the document content changes
-        // — local edits + remote edits both flow through here.
         ytext.observe(refresh);
         this.cleanupYjs = () => ytext.unobserve(refresh);
         // awareness.on('change') fires when a peer joins / leaves /
