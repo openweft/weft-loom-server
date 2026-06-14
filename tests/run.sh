@@ -340,8 +340,18 @@ node tests/latex-source-render.mjs
 LATEX_RENDER=$?
 
 echo
+echo "----- AI chat suite -----"
+# Regression guard for the AIChatPanel wiring : POST /ai/chat returns
+# either a 503 stub (no provider on the host — the must-pass CI case)
+# or a 200 SSE stream that delivers at least one data chunk + an
+# event: done terminator. Catches regressions where the panel goes
+# back to a fully client-side stub or the SSE framing breaks.
+node tests/ai-chat.mjs
+AI_CHAT=$?
+
+echo
 echo "==============================================="
-if [ $UI -eq 0 ] && [ $LANG -eq 0 ] && [ $PREVIEW -eq 0 ] && [ $UIENTRY -eq 0 ] && [ $THEMEP -eq 0 ] && [ $WYSIWYG -eq 0 ] && [ $WYSIWYG_ODT -eq 0 ] && [ $WYSIWYG_ODT_TB -eq 0 ] && [ $ODT_TPL -eq 0 ] && [ $LATEX_PAL -eq 0 ] && [ $MARP_PIC -eq 0 ] && [ $BIB_PAN -eq 0 ] && [ $INLINE_MATH -eq 0 ] && [ $OUTLINE -eq 0 ] && [ $PDF_VIEW -eq 0 ] && [ $COMMENTS -eq 0 ] && [ $ODT_FIELDS -eq 0 ] && [ $PAGE_VARS -eq 0 ] && [ $ODT_FRAMES -eq 0 ] && [ $ODT_HF -eq 0 ] && [ $RTF_FIELDS -eq 0 ] && [ $LSP -eq 0 ] && [ $ODS -eq 0 ] && [ $ODS_FX -eq 0 ] && [ $ODS_COL -eq 0 ] && [ $INTERACTIONS -eq 0 ] && [ $ODS_VIRT -eq 0 ] && [ $ODS_NAV -eq 0 ] && [ $ODS_LAY -eq 0 ] && [ $ODS_FMT -eq 0 ] && [ $HIST -eq 0 ] && [ $LATEX_RENDER -eq 0 ]; then
+if [ $UI -eq 0 ] && [ $LANG -eq 0 ] && [ $PREVIEW -eq 0 ] && [ $UIENTRY -eq 0 ] && [ $THEMEP -eq 0 ] && [ $WYSIWYG -eq 0 ] && [ $WYSIWYG_ODT -eq 0 ] && [ $WYSIWYG_ODT_TB -eq 0 ] && [ $ODT_TPL -eq 0 ] && [ $LATEX_PAL -eq 0 ] && [ $MARP_PIC -eq 0 ] && [ $BIB_PAN -eq 0 ] && [ $INLINE_MATH -eq 0 ] && [ $OUTLINE -eq 0 ] && [ $PDF_VIEW -eq 0 ] && [ $COMMENTS -eq 0 ] && [ $ODT_FIELDS -eq 0 ] && [ $PAGE_VARS -eq 0 ] && [ $ODT_FRAMES -eq 0 ] && [ $ODT_HF -eq 0 ] && [ $RTF_FIELDS -eq 0 ] && [ $LSP -eq 0 ] && [ $ODS -eq 0 ] && [ $ODS_FX -eq 0 ] && [ $ODS_COL -eq 0 ] && [ $INTERACTIONS -eq 0 ] && [ $ODS_VIRT -eq 0 ] && [ $ODS_NAV -eq 0 ] && [ $ODS_LAY -eq 0 ] && [ $ODS_FMT -eq 0 ] && [ $HIST -eq 0 ] && [ $LATEX_RENDER -eq 0 ] && [ $AI_CHAT -eq 0 ]; then
   echo "  \033[32mALL PASS\033[0m"
   exit 0
 fi
@@ -377,5 +387,6 @@ fi
 [ $ODS_FMT -eq 0 ] && echo "  ods-formatting     : \033[32mPASS\033[0m" || echo "  ods-formatting     : \033[31mFAIL\033[0m"
 [ $HIST -eq 0 ] && echo "  history            : \033[32mPASS\033[0m" || echo "  history            : \033[31mFAIL\033[0m"
 [ $LATEX_RENDER -eq 0 ] && echo "  latex-source-render: \033[32mPASS\033[0m" || echo "  latex-source-render: \033[31mFAIL\033[0m"
+[ $AI_CHAT -eq 0 ] && echo "  ai-chat            : \033[32mPASS\033[0m" || echo "  ai-chat            : \033[31mFAIL\033[0m"
 echo "==============================================="
 exit 1

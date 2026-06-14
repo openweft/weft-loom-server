@@ -274,6 +274,11 @@ func (s *Server) routes() {
 	// to Ollama / Anthropic / OpenAI lands when the backend config
 	// surface is in place.
 	s.mux.HandleFunc("POST /api/projects/{name}/chat", s.requireAuth(s.handleChat))
+	// V0.6 streaming SSE companion. Proxies to a real provider
+	// (Ollama local, Anthropic with ANTHROPIC_API_KEY) when one is
+	// reachable ; 503 + stub JSON otherwise so the SPA shows a
+	// "provider not configured" hint.
+	s.mux.HandleFunc("POST /api/projects/{name}/ai/chat", s.requireAuth(s.handleAIChat))
 	// V0.3 web shell surface — spawns a pty (bash/sh) at the project
 	// working tree and pipes it over a binary WS frame stream. The
 	// xterm.js SPA panel is the terminal UI.

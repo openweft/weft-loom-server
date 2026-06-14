@@ -94,10 +94,15 @@
     busy = true;
     try {
       const active = ai.active();
-      const reply = active && active.kind !== 'server'
-        ? await callExternalProvider(active)
-        : await callServerStub();
-      messages = [...messages, { role: 'assistant', text: reply, ts: Date.now() }];
+      if (active && active.kind !== 'server') {
+        const reply = await callExternalProvider(active);
+        messages = [...messages, { role: 'assistant', text: reply, ts: Date.now() }];
+      } else {
+        // Server path : streams tokens via SSE when a provider is
+        // configured server-side ; falls back to a 503 stub message
+        // we render verbatim so the user sees a clear hint.
+        await callServerStreaming();
+      }
     } catch (e) {
       messages = [
         ...messages,
@@ -108,12 +113,12 @@
     }
   }
 
-  // Server-stub path : the legacy POST /api/projects/{p}/chat ; the
-  // loom-server can prepend project-context server-side (file picker,
-  // sandbox tooling). Used when the user hasn't configured an
-  // external provider.
-  async function callServerStub(): Promise<string> {
-    const resp = await fetch('/api/projects/' + encodeURIComponent(project) + '/chat', {
+  // Server streaming path : POST to /api/projects/{p}/ai/chat,
+  // parse the SSE stream manually (fetch + ReadableStream — the
+  // browser's EventSource only supports GET so we do it by hand)
+  // and append tokens to the latest assistant bubble.
+  async function callServerStreaming(): Promise<void> {
+    const resp = await fetch('/api/projects/' + encodeURIComponent(project) + '/ai/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -122,9 +127,60 @@
         file_content: fileContent(),
       }),
     });
-    if (!resp.ok) throw new Error('HTTP ' + resp.status + ': ' + (await resp.text()));
-    const j = await resp.json();
-    return j.reply || '(no reply)';
+    if (resp.status === 503) {
+      // Provider not configured server-side. Render the stub reply
+      // the server returns so the user sees a clear hint.
+      let stubText = 'AI provider not configured. Install Ollama at http://127.0.0.1:11434 OR set ANTHROPIC_API_KEY on the loom-server, OR configure a client-side provider via the ⚙ menu.';
+      try {
+        const j = await resp.json();
+        if (j && typeof j.reply === 'string' && j.reply.length > 0) stubText = j.reply;
+        else if (j && typeof j.error === 'string') stubText = j.error + (j.hint ? '\n\n' + j.hint : '');
+      } catch {}
+      messages = [...messages, { role: 'system', text: stubText, ts: Date.now() }];
+      return;
+    }
+    if (!resp.ok || !resp.body) {
+      throw new Error('HTTP ' + resp.status + ': ' + (await resp.text()));
+    }
+    // Append an empty assistant bubble we'll stream tokens into.
+    const slot: Message = { role: 'assistant', text: '', ts: Date.now() };
+    messages = [...messages, slot];
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      // SSE events are separated by a blank line.
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const block = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        let eventName = 'message';
+        let dataLine = '';
+        for (const line of block.split('\n')) {
+          if (line.startsWith('event:')) eventName = line.slice(6).trim();
+          else if (line.startsWith('data:')) dataLine += line.slice(5).trim();
+        }
+        if (eventName === 'done') return;
+        if (eventName === 'error') {
+          try {
+            const m = JSON.parse(dataLine);
+            throw new Error(typeof m === 'string' ? m : JSON.stringify(m));
+          } catch (e) {
+            throw e instanceof Error ? e : new Error(String(e));
+          }
+        }
+        if (dataLine) {
+          let token = dataLine;
+          try { token = JSON.parse(dataLine); } catch {}
+          slot.text += String(token);
+          // Trigger Svelte rune reactivity by reassigning the array.
+          messages = [...messages.slice(0, -1), { ...slot }];
+        }
+      }
+    }
   }
 
   // Direct call to an OpenAI-compatible chat-completions endpoint.
