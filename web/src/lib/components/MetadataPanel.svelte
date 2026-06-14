@@ -12,7 +12,7 @@
   // Poll every 1.5 s + ETag short-circuit, same cadence as
   // OutlinePanel so the two never fight for the same file twice.
 
-  import { onMount, onDestroy } from 'svelte';
+  import { onDestroy } from 'svelte';
   import { parseRTF } from '../rtf';
   import { parseODT } from '../odt';
 
@@ -129,12 +129,31 @@
     } catch {}
   }
 
-  onMount(() => {
+  // Reset etag whenever the file changes — the next refresh has to
+  // re-fetch the body because content is keyed per-path.
+  $effect(() => { file; lastSig = ''; });
+  // H5 (perf-audit 2026-06-14) : gate the 1.5 s poll on the collapsed
+  // prop. The panel renders nothing while collapsed (template
+  // line 210), so the fetch+parse loop is pure overhead. This $effect
+  // re-runs whenever `collapsed` or `file` flips :
+  //   - collapsed=true  : tear down any interval, do nothing.
+  //   - collapsed=false : refresh once + setInterval(refresh, 1500).
+  // The teardown closure clears the interval, covering both the
+  // expanded→collapsed transition and component unmount.
+  $effect(() => {
+    if (collapsed) {
+      if (poll) { clearInterval(poll); poll = undefined; }
+      return;
+    }
     refresh();
     poll = setInterval(refresh, 1500);
+    return () => {
+      if (poll) { clearInterval(poll); poll = undefined; }
+    };
   });
-  onDestroy(() => { if (poll) clearInterval(poll); });
-  $effect(() => { file; lastSig = ''; refresh(); });
+  // Backup clear in case any future refactor sidesteps the $effect
+  // cleanup path.
+  onDestroy(() => { if (poll) { clearInterval(poll); poll = undefined; } });
 
   function toggleCollapsed() { onToggle?.(); }
 
