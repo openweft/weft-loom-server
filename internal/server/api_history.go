@@ -212,6 +212,63 @@ func parseAtParam(s string) (time.Time, error) {
 	return time.Parse(time.RFC3339, s)
 }
 
+// handleHistoryLabel attaches / changes / clears a label on a
+// snapshot. Body : { file, at, label }. Empty label clears.
+//
+//	POST /api/projects/{name}/history/label
+//	     { "file":"main.tex", "at":"2026-06-14T12:34:56Z", "label":"v1.0" }
+func (s *Server) handleHistoryLabel(w http.ResponseWriter, r *http.Request) {
+	if s.history == nil {
+		http.Error(w, "history disabled", http.StatusNotFound)
+		return
+	}
+	ident, _ := auth.IdentityFrom(r.Context())
+	var body struct {
+		File  string `json:"file"`
+		At    string `json:"at"`
+		Label string `json:"label"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	if body.File == "" || body.At == "" {
+		http.Error(w, "file + at required", http.StatusBadRequest)
+		return
+	}
+	at, err := parseAtParam(body.At)
+	if err != nil {
+		http.Error(w, "at must be RFC3339 timestamp", http.StatusBadRequest)
+		return
+	}
+	dir, err := s.projectWorkingDir(ident, projectName(r))
+	if err != nil {
+		http.Error(w, "project lookup failed", http.StatusNotFound)
+		return
+	}
+	// Cap label length to prevent silly payloads.
+	const maxLabel = 80
+	label := body.Label
+	if len(label) > maxLabel {
+		label = label[:maxLabel]
+	}
+	resolved, err := s.history.SetLabel(dir, body.File, at, label)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	s.events.Publish(eventbus.Event{
+		Source: "server", Component: "history", Verb: "label.set",
+		Project: projectName(r),
+		Fields: map[string]any{
+			"file":  body.File,
+			"at":    resolved.Format(time.RFC3339Nano),
+			"label": label,
+		},
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"at": resolved, "label": label})
+}
+
 func (s *Server) handleHistoryRestore(w http.ResponseWriter, r *http.Request) {
 	if s.history == nil {
 		http.Error(w, "history disabled", http.StatusNotFound)

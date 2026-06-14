@@ -121,6 +121,59 @@ if (liveAfter === V1) {
   failL('live file matches v1 after restore', 'got ' + JSON.stringify(liveAfter));
 }
 
+// V0.8 labels : attach a label to the older snapshot, list returns
+// it, clearing it makes it disappear.
+const labelResp = await fetch(url('/history/label'), {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ file: FILE, at: olderTs, label: 'v1.0' }),
+});
+if (labelResp.ok) ok('set label POST', 'HTTP ' + labelResp.status); else failL('set label POST', 'HTTP ' + labelResp.status);
+const listed = await list();
+const olderEntry = (listed ?? []).find(e => e.ts === olderTs);
+if (olderEntry?.label === 'v1.0') {
+  ok('label surfaces in list', '"v1.0"');
+} else {
+  failL('label surfaces in list', JSON.stringify(listed));
+}
+// Clear it
+const clrResp = await fetch(url('/history/label'), {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ file: FILE, at: olderTs, label: '' }),
+});
+if (clrResp.ok) {
+  const listed2 = await list();
+  const e2 = (listed2 ?? []).find(e => e.ts === olderTs);
+  if (!e2?.label) {
+    ok('clear label', 'label gone after empty-label POST');
+  } else {
+    failL('clear label', JSON.stringify(e2));
+  }
+} else {
+  failL('clear label POST', 'HTTP ' + clrResp.status);
+}
+
+// V0.8 diff between two snapshots — &to=<other-ts>. We have V1 +
+// V2 in the timeline ; diff (older=V1) vs (newer=V2) should give
+// the same +3 / -2 totals we saw vs the live file earlier.
+const newerTs = entries[0].ts;
+const diff2Resp = await fetch(url(
+  '/history/diff?file=' + encodeURIComponent(FILE)
+  + '&from=' + encodeURIComponent(olderTs)
+  + '&to=' + encodeURIComponent(newerTs)
+));
+if (diff2Resp.ok) {
+  const dv = await diff2Resp.json();
+  if (dv?.summary?.added > 0 && dv?.summary?.removed > 0) {
+    ok('diff between two snapshots', '+' + dv.summary.added + ' / -' + dv.summary.removed);
+  } else {
+    failL('diff between two snapshots', JSON.stringify(dv));
+  }
+} else {
+  failL('diff between two snapshots', 'HTTP ' + diff2Resp.status);
+}
+
 // Binary content : a buffer containing a NUL byte should NOT
 // produce a new history entry.
 const BIN_FILE = 'history-bin-' + Date.now() + '.bin';

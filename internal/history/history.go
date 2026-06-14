@@ -42,6 +42,11 @@ type Entry struct {
 	Author  string    `json:"author"`
 	Size    int       `json:"size"`
 	Content string    `json:"content,omitempty"`
+	// Label is an optional human-readable name attached to this
+	// snapshot ("v1.0", "after review", "before refactor"). Empty
+	// means unlabelled. Mutable via the label sidecar file (see
+	// SetLabel) so the original JSONL stays append-only.
+	Label string `json:"label,omitempty"`
 }
 
 // Store provides per-project history persistence.
@@ -67,6 +72,66 @@ func historyDir(projectDir string) string {
 // create directories.
 func historyFile(projectDir, file string) string {
 	return filepath.Join(historyDir(projectDir), url.PathEscape(file)+".jsonl")
+}
+
+// labelsFile returns the sidecar JSON path holding ts→label
+// mappings. Kept separate from the append-only JSONL so labels can
+// be added / renamed / cleared without rewriting the history.
+func labelsFile(projectDir, file string) string {
+	return filepath.Join(historyDir(projectDir), url.PathEscape(file)+".labels.json")
+}
+
+// loadLabels reads the ts→label map. Returns an empty map when the
+// sidecar doesn't exist yet (no labels set for this file).
+func loadLabels(projectDir, file string) map[string]string {
+	b, err := os.ReadFile(labelsFile(projectDir, file))
+	if err != nil {
+		return map[string]string{}
+	}
+	out := map[string]string{}
+	if err := json.Unmarshal(b, &out); err != nil {
+		return map[string]string{}
+	}
+	return out
+}
+
+// saveLabels atomically writes the ts→label map.
+func saveLabels(projectDir, file string, labels map[string]string) error {
+	if err := os.MkdirAll(historyDir(projectDir), 0o755); err != nil {
+		return fmt.Errorf("history: mkdir labels: %w", err)
+	}
+	b, err := json.Marshal(labels)
+	if err != nil {
+		return err
+	}
+	tmp := labelsFile(projectDir, file) + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, labelsFile(projectDir, file))
+}
+
+// SetLabel attaches a label to the snapshot at `at` (or the closest
+// earlier one). An empty label clears the entry. Returns the
+// resolved TS (so the caller can echo it back) + any error.
+func (s *Store) SetLabel(projectDir, file string, at time.Time, label string) (time.Time, error) {
+	entry, err := s.Snapshot(projectDir, file, at)
+	if err != nil {
+		return time.Time{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	labels := loadLabels(projectDir, file)
+	tsKey := entry.TS.Format(time.RFC3339Nano)
+	if label == "" {
+		delete(labels, tsKey)
+	} else {
+		labels[tsKey] = label
+	}
+	if err := saveLabels(projectDir, file, labels); err != nil {
+		return time.Time{}, err
+	}
+	return entry.TS, nil
 }
 
 // Append snapshots `content` for `file` if at least snapshotInterval
@@ -127,7 +192,7 @@ func (s *Store) Append(projectDir, file, author string, content []byte) (bool, e
 
 // List returns the timeline for a file, newest first. Content is
 // elided to keep the listing response small ; use Snapshot to fetch
-// a single entry's text.
+// a single entry's text. Labels from the sidecar are merged in.
 func (s *Store) List(projectDir, file string) ([]Entry, error) {
 	path := historyFile(projectDir, file)
 	f, err := os.Open(path)
@@ -138,6 +203,7 @@ func (s *Store) List(projectDir, file string) ([]Entry, error) {
 		return nil, err
 	}
 	defer f.Close()
+	labels := loadLabels(projectDir, file)
 	var out []Entry
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
@@ -147,6 +213,9 @@ func (s *Store) List(projectDir, file string) ([]Entry, error) {
 			continue
 		}
 		e.Content = "" // elide
+		if l, ok := labels[e.TS.Format(time.RFC3339Nano)]; ok {
+			e.Label = l
+		}
 		out = append(out, e)
 	}
 	// Newest first.
@@ -188,6 +257,11 @@ func (s *Store) Snapshot(projectDir, file string, at time.Time) (Entry, error) {
 	}
 	if !found {
 		return Entry{}, fmt.Errorf("history: no snapshot at or before %s", at.Format(time.RFC3339))
+	}
+	// Attach the label sidecar if present.
+	labels := loadLabels(projectDir, file)
+	if l, ok := labels[best.TS.Format(time.RFC3339Nano)]; ok {
+		best.Label = l
 	}
 	return best, nil
 }

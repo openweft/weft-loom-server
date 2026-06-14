@@ -11,6 +11,7 @@
     ts: string;
     author: string;
     size: number;
+    label?: string;
   }
   interface SnapshotPayload {
     ts: string;
@@ -55,6 +56,13 @@
   let viewMode = $state<'content' | 'diff'>('diff');
   let diff = $state<DiffPayload | undefined>();
   let diffError = $state<string | undefined>();
+  // Diff target : 'live' compares the selected snapshot against the
+  // current file ; a TS string compares against that other snapshot.
+  let diffTarget = $state<string>('live');
+  // Inline label editing — keyed by ts. Empty string means not
+  // currently editing that entry.
+  let editingLabelTs = $state<string | null>(null);
+  let labelDraft = $state<string>('');
 
   function url(path: string): string {
     return '/api/projects/' + encodeURIComponent(project) + path;
@@ -91,14 +99,60 @@
         preview = await r.json();
       })
       .catch((e) => { logError('history', 'snapshot-failed', e); });
-    const diffP = fetch(url('/history/diff?file=' + encodeURIComponent(file) + '&from=' + encodeURIComponent(ts)))
-      .then(async (r) => {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        diff = await r.json();
-      })
-      .catch((e) => { diffError = String(e); logError('history', 'diff-failed', e); });
+    const diffP = fetchDiff(ts, diffTarget);
     await Promise.allSettled([snapP, diffP]);
   }
+
+  async function fetchDiff(fromTs: string, toRef: string) {
+    diff = undefined;
+    diffError = undefined;
+    const qs = '?file=' + encodeURIComponent(file)
+      + '&from=' + encodeURIComponent(fromTs)
+      + '&to=' + encodeURIComponent(toRef);
+    try {
+      const r = await fetch(url('/history/diff' + qs));
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      diff = await r.json();
+    } catch (e) {
+      diffError = String(e);
+      logError('history', 'diff-failed', e);
+    }
+  }
+
+  async function saveLabel(ts: string, label: string) {
+    try {
+      const r = await fetch(url('/history/label'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file, at: ts, label }),
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      // Refresh so the label surfaces on the timeline immediately.
+      await refresh();
+    } catch (e) {
+      logError('history', 'label-failed', e);
+    }
+  }
+
+  function startEditLabel(e: Entry) {
+    editingLabelTs = e.ts;
+    labelDraft = e.label ?? '';
+  }
+  function commitLabel() {
+    if (!editingLabelTs) return;
+    void saveLabel(editingLabelTs, labelDraft.trim());
+    editingLabelTs = null;
+  }
+  function cancelLabel() {
+    editingLabelTs = null;
+    labelDraft = '';
+  }
+
+  // When the diff-target dropdown changes, re-fetch diff with the
+  // currently-selected from snapshot.
+  $effect(() => {
+    if (selectedTs) void fetchDiff(selectedTs, diffTarget);
+  });
 
   async function restore(ts: string) {
     if (!confirm('Restore the file to this version ? Unsaved changes will be lost (peers will see the rollback too).')) return;
@@ -184,16 +238,51 @@
       {:else}
         {#each entries as e (e.ts)}
           <li>
-            <button
-              type="button"
-              class="w-full px-3 py-2 text-left hover:bg-base-200 border-b border-base-200/50 flex flex-col gap-0.5"
+            <div
+              class="group w-full px-3 py-2 text-left hover:bg-base-200 border-b border-base-200/50 flex flex-col gap-0.5"
               class:bg-base-300={e.ts === selectedTs}
-              onclick={() => loadSnapshot(e.ts)}
-              aria-current={e.ts === selectedTs ? 'true' : undefined}
+              data-testid="hist-entry"
+              data-ts={e.ts}
             >
-              <span class="font-mono text-xs">{shortTime(e.ts)}</span>
-              <span class="text-xs opacity-70">{shortAuthor(e.author)} · {humanBytes(e.size)}</span>
-            </button>
+              <button
+                type="button"
+                class="w-full text-left"
+                onclick={() => loadSnapshot(e.ts)}
+                aria-current={e.ts === selectedTs ? 'true' : undefined}
+              >
+                <span class="font-mono text-xs">{shortTime(e.ts)}</span>
+                {#if e.label}
+                  <span class="badge badge-primary badge-xs ml-1 align-middle" data-testid="hist-label">{e.label}</span>
+                {/if}
+                <span class="block text-xs opacity-70">{shortAuthor(e.author)} · {humanBytes(e.size)}</span>
+              </button>
+              {#if editingLabelTs === e.ts}
+                <div class="flex gap-1 items-center mt-1" data-testid="hist-label-editor">
+                  <input
+                    type="text"
+                    class="input input-xs input-bordered flex-1"
+                    placeholder="Label this version…"
+                    bind:value={labelDraft}
+                    maxlength="80"
+                    onkeydown={(ev) => {
+                      if (ev.key === 'Enter') { ev.preventDefault(); commitLabel(); }
+                      else if (ev.key === 'Escape') { ev.preventDefault(); cancelLabel(); }
+                    }}
+                    data-testid="hist-label-input"
+                  />
+                  <button class="btn btn-xs btn-primary" onclick={commitLabel} data-testid="hist-label-save">Save</button>
+                  <button class="btn btn-xs btn-ghost" onclick={cancelLabel}>×</button>
+                </div>
+              {:else}
+                <button
+                  type="button"
+                  class="text-xs underline opacity-0 group-hover:opacity-60 hover:opacity-100 self-start mt-0.5"
+                  onclick={() => startEditLabel(e)}
+                  data-testid="hist-label-edit"
+                  aria-label="Edit label"
+                >{e.label ? 'Rename label' : 'Add label'}</button>
+              {/if}
+            </div>
           </li>
         {/each}
       {/if}
@@ -216,6 +305,21 @@
             {/if}
           </span>
           <div class="flex items-center gap-1">
+            {#if viewMode === 'diff'}
+              <select
+                class="select select-xs select-bordered"
+                aria-label="Compare against"
+                bind:value={diffTarget}
+                data-testid="hist-diff-target"
+              >
+                <option value="live">vs live file</option>
+                {#each entries as e (e.ts)}
+                  {#if e.ts !== selectedTs}
+                    <option value={e.ts}>vs {e.label ? e.label + ' (' + shortTime(e.ts) + ')' : shortTime(e.ts)}</option>
+                  {/if}
+                {/each}
+              </select>
+            {/if}
             <div role="tablist" class="join" aria-label="View mode">
               <button
                 role="tab"
