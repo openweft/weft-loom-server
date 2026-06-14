@@ -65,8 +65,14 @@ func (s *Server) handleWorkspaceTar(w http.ResponseWriter, r *http.Request) {
 	}
 	// Defence in depth : the caller's identity is already injected by
 	// requireAuth, so re-derive the expected vmid + reject anything
-	// the caller doesn't own.
+	// the caller doesn't own. Also reject an empty Subject — a
+	// malformed-but-verifying token would otherwise produce a stable
+	// hash an attacker could compute offline.
 	ident, _ := auth.IdentityFrom(r.Context())
+	if ident.Subject == "" {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
 	expected := workspace.VMIDForIdentity(workspace.Identity{Subject: ident.Subject})
 	if expected != vmid {
 		s.events.Publish(eventbus.Event{

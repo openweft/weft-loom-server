@@ -733,7 +733,12 @@ function escapeAttr(s: string): string {
 // Whitelist covers all ODF colour/length/family/percentage literals.
 function escapeCss(v: string): string {
   if (!v) return '';
-  return /^[A-Za-z0-9 .,#%()\-]+$/.test(v) ? v : 'inherit';
+  // Allow ' (single quote only — the outer style="…" attribute uses
+  // double quotes ; allowing " here would let a crafted value close
+  // the attribute and inject new HTML). ODT quoted font-family values
+  // use single quotes by convention (e.g. font-family: 'Times New
+  // Roman') so single-quote allowance covers the common case.
+  return /^[A-Za-z0-9 .,#%()'\-]+$/.test(v) ? v : 'inherit';
 }
 
 // ---------------------------------------------------------------

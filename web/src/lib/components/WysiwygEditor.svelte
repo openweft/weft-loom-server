@@ -31,6 +31,11 @@
       'data-attrs', 'data-date-value', 'data-time-value',
       'data-fixed-date', 'data-result', 'data-role',
       'data-text-style-name',
+      // Note : 'contenteditable' deliberately NOT allowed. The host
+      // editorEl is contenteditable via the Svelte template ; nested
+      // contenteditable inside sanitised HTML would let an ODT/RTF
+      // payload create confused-deputy editable regions (clicking a
+      // label spawns an editor where the user didn't expect one).
     ],
     // RETURN_TRUSTED_TYPES is false by default — set explicitly so
     // the return type narrows to `string` for innerHTML / {@html}.

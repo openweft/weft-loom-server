@@ -26,10 +26,59 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	gitobject "github.com/go-git/go-git/v5/plumbing/object"
 	gittransport "github.com/go-git/go-git/v5/plumbing/transport"
+	gitclient "github.com/go-git/go-git/v5/plumbing/transport/client"
 	gitauth "github.com/go-git/go-git/v5/plumbing/transport/http"
 
 	"github.com/openweft/weft-loom-server/internal/auth"
 )
+
+// init installs an SSRF-safe http.Client as go-git's default HTTP
+// transport. The Dialer resolves the hostname once, checks each IP
+// against checkRemoteIP, then dials the *resolved* address — closing
+// the TOCTOU window between the request-time check and the actual
+// connect. Without this, a DNS server controlled by the attacker can
+// return a public IP to the validator and 127.0.0.1 to go-git.
+func init() {
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			ips, err := (&net.Resolver{}).LookupIP(ctx, "ip", host)
+			if err != nil {
+				return nil, err
+			}
+			var firstErr error
+			for _, ip := range ips {
+				if err := checkRemoteIP(ip); err != nil {
+					if firstErr == nil {
+						firstErr = err
+					}
+					continue
+				}
+				d := &net.Dialer{Timeout: 30 * time.Second}
+				conn, derr := d.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+				if derr == nil {
+					return conn, nil
+				}
+				if firstErr == nil {
+					firstErr = derr
+				}
+			}
+			if firstErr == nil {
+				firstErr = fmt.Errorf("git: no usable IP for %s", host)
+			}
+			return nil, firstErr
+		},
+		IdleConnTimeout:       60 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+	}
+	client := &http.Client{Transport: transport, Timeout: 5 * time.Minute}
+	gitclient.InstallProtocol("https", gitauth.NewClient(client))
+	gitclient.InstallProtocol("http", gitauth.NewClient(client))
+}
 
 type gitConfig struct {
 	Provider  string `json:"provider"`
@@ -319,6 +368,13 @@ func (s *Server) checkRemoteHost(host string) error {
 }
 
 func checkRemoteIP(ip net.IP) error {
+	// Normalise IPv4-mapped IPv6 ("::ffff:1.2.3.4") to its v4 form
+	// before the equality / range checks ; ip.IsPrivate / IsLoopback
+	// already DTRT for that input but the explicit 169.254.169.254
+	// compare below uses net.IPv4 which is a 4-byte form.
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+	}
 	switch {
 	case ip.IsLoopback():
 		return fmt.Errorf("git: refusing loopback IP %s", ip)
@@ -326,12 +382,27 @@ func checkRemoteIP(ip net.IP) error {
 		return fmt.Errorf("git: refusing private IP %s", ip)
 	case ip.IsLinkLocalUnicast(), ip.IsLinkLocalMulticast():
 		return fmt.Errorf("git: refusing link-local IP %s", ip)
+	case ip.IsInterfaceLocalMulticast(), ip.IsMulticast():
+		return fmt.Errorf("git: refusing multicast IP %s", ip)
 	case ip.IsUnspecified():
 		return fmt.Errorf("git: refusing unspecified IP %s", ip)
 	case ip.Equal(net.IPv4(169, 254, 169, 254)):
 		return fmt.Errorf("git: refusing cloud metadata IP %s", ip)
+	case isIPv6ULA(ip):
+		return fmt.Errorf("git: refusing IPv6 ULA %s", ip)
 	}
 	return nil
+}
+
+// isIPv6ULA matches the fc00::/7 unique-local range. ip.IsPrivate
+// covers it on Go 1.21+ but we keep the explicit check for clarity +
+// older toolchains.
+func isIPv6ULA(ip net.IP) bool {
+	v6 := ip.To16()
+	if v6 == nil || ip.To4() != nil {
+		return false
+	}
+	return v6[0]&0xfe == 0xfc
 }
 
 // ------------------------------------------------------------------

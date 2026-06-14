@@ -143,16 +143,23 @@
   function highlight(line: string): string {
     const re = makeRegex();
     if (!re) return escape(line);
-    // Use placeholder sentinels so we can HTML-escape the full line
-    // (matched bytes included) AFTER tagging match positions, then
-    // swap the placeholders for the real <mark> wrappers.
-    const OPEN = '\u0001';
-    const CLOSE = '\u0002';
-    const tagged = line.replace(re, (m) => OPEN + m + CLOSE);
-    const escaped = escape(tagged);
-    return escaped
-      .split(OPEN).join('<mark class="bg-warning/40 text-base-content">')
-      .split(CLOSE).join('</mark>');
+    // Walk match positions in the source ; escape each plain segment
+    // + each match independently. No placeholder sentinels — the
+    // previous \u0001 / \u0002 sentinels collided with files
+    // containing those bytes (binary files, malformed UTF-8 windows)
+    // producing unbalanced <mark> tags.
+    let out = '';
+    let pos = 0;
+    let m: RegExpExecArray | null;
+    re.lastIndex = 0;
+    while ((m = re.exec(line)) !== null) {
+      out += escape(line.slice(pos, m.index));
+      out += '<mark class="bg-warning/40 text-base-content">' + escape(m[0]) + '</mark>';
+      pos = m.index + m[0].length;
+      if (m[0].length === 0) re.lastIndex++;
+    }
+    out += escape(line.slice(pos));
+    return out;
   }
   function escape(s: string): string {
     return s

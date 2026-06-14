@@ -100,7 +100,9 @@ func (s *Server) handleCompileArtifact(w http.ResponseWriter, r *http.Request) {
 // stdio LSP. Authenticated like the rest of the project API ; the
 // lang URL param picks the registered server.
 func (s *Server) handleLSP(w http.ResponseWriter, r *http.Request) {
-	loomlsp.HandleWS(w, r, r.PathValue("lang"), s.opts.Logger, s.wsAcceptOpts())
+	ident, _ := auth.IdentityFrom(r.Context())
+	ctx := loomlsp.WithSubject(r.Context(), ident.Subject)
+	loomlsp.HandleWS(w, r.WithContext(ctx), r.PathValue("lang"), s.opts.Logger, s.wsAcceptOpts())
 }
 
 // handleLSPList : reports which LSP servers are actually resolvable

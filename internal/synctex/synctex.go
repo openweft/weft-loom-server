@@ -234,9 +234,21 @@ func sanitiseInputPath(raw, projectRoot string) (string, bool) {
 	if err != nil {
 		return clean, true
 	}
+	// Resolve symlinks on the root before comparison. If the
+	// candidate exists on disk, resolve symlinks on it too so a path
+	// like `.workspace/leak → /etc` lands as /etc and gets rejected.
+	// EvalSymlinks fails on non-existent paths — that's fine, fall
+	// back to the lexical clean (covers the synthetic .synctex paths
+	// the engine emits but never materialises on disk).
+	if resolved, rerr := filepath.EvalSymlinks(rootAbs); rerr == nil {
+		rootAbs = resolved
+	}
 	candidate := clean
 	if !filepath.IsAbs(candidate) {
 		candidate = filepath.Join(rootAbs, candidate)
+	}
+	if resolved, rerr := filepath.EvalSymlinks(candidate); rerr == nil {
+		candidate = resolved
 	}
 	rel, err := filepath.Rel(rootAbs, candidate)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {

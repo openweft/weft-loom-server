@@ -73,17 +73,28 @@ var (
 	lspPerUserCnt = map[string]int{}
 )
 
-// lspSubjectFromRequest extracts a per-user key. We can't import
-// internal/auth from this package (loom-server pulls lsp, not the
-// other way around), so we read the same cookie / bearer prefix the
-// server uses ; in dev mode there's no token so we fall back to
-// "anon" which is what auth.IdentityFrom synthesises.
+// SubjectKey is the request-context key under which the loom-server
+// stashes the authenticated subject before invoking HandleWS. We
+// can't import internal/auth here (loom-server depends on lsp, not
+// the other way round) so we use an unexported empty struct as the
+// key — type-system safe + zero collision risk.
+type subjectCtxKey struct{}
+
+// WithSubject returns a child context tagged with the per-user
+// counter key. Call this in the loom-server handler before HandleWS.
+func WithSubject(ctx context.Context, subject string) context.Context {
+	return context.WithValue(ctx, subjectCtxKey{}, subject)
+}
+
+// lspSubjectFromRequest extracts the per-user counter key. Reads
+// from the context-stashed subject set by WithSubject ; falls back
+// to "anon" so the dev-mode synthesised identity still bucketises.
+// The previous version read the raw Bearer token / cookie value,
+// which doubled the per-user cap whenever the same user held two
+// valid tokens (rotation overlap, multi-device).
 func lspSubjectFromRequest(r *http.Request) string {
-	if h := r.Header.Get("Authorization"); len(h) > len("Bearer ") {
-		return h[len("Bearer "):]
-	}
-	if c, err := r.Cookie("weft-loom"); err == nil && c.Value != "" {
-		return c.Value
+	if v, ok := r.Context().Value(subjectCtxKey{}).(string); ok && v != "" {
+		return v
 	}
 	return "anon"
 }

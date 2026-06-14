@@ -426,19 +426,42 @@ export function parseRTF(rawSrc: string): RTFParsed {
           if (destination === 'info' && param != null) meta.version = String(param);
           break;
         case 'u': {
-          // \uN ? — N is a UTF-16 code point ; the ASCII fallback that
-          // follows is `top.uc` byte(s) long (default 1). Skip exactly
-          // that many code units, regardless of whether they're '?'.
+          // \uN ? — N is a UTF-16 code point ; the ASCII fallback is
+          // `top.uc` "character" long (default 1). Each "character"
+          // can be either a single byte OR a control word (\\'XX,
+          // \\bullet, etc.) — both count as one character per the RTF
+          // spec. The previous loop bailed at the first '\\' which
+          // left the fallback control word to be re-parsed as
+          // document content, producing a duplicate render.
           if (param != null) {
             appendChar(String.fromCharCode(param < 0 ? 0x10000 + param : param));
             let skipped = 0;
             const want = top.uc;
             while (skipped < want && i < N) {
               const c = src[i];
-              if (c === '\\' || c === '{' || c === '}') break;
-              // Whitespace immediately after the control word is the
-              // delimiter, already consumed by the regex — but if any
-              // remains, treat it as part of the fallback char run.
+              if (c === '{' || c === '}') break;
+              if (c === '\\') {
+                // Consume the full control word as one skipped char :
+                // backslash + alphabetics + optional digits + optional
+                // single trailing space delimiter. \\'XX is consumed
+                // as backslash + ' + 2 hex digits.
+                i++; // backslash
+                if (i < N && src[i] === "'") {
+                  // \\'XX
+                  i++;
+                  if (i < N) i++;
+                  if (i < N) i++;
+                } else {
+                  while (i < N && /[A-Za-z]/.test(src[i])) i++;
+                  if (i < N && /[-0-9]/.test(src[i])) {
+                    if (src[i] === '-') i++;
+                    while (i < N && /[0-9]/.test(src[i])) i++;
+                  }
+                  if (i < N && src[i] === ' ') i++;
+                }
+                skipped++;
+                continue;
+              }
               i++;
               skipped++;
             }
