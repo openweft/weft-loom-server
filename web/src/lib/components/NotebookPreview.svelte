@@ -7,9 +7,13 @@
   //   - code     : monospace block + optional syntax tinting + outputs
   //   - raw      : <pre>
   //
-  // Polls the .ipynb file every 1.5 s so edits from the source pane
-  // show up here without inter-component plumbing. A future Yjs-on-
-  // notebook integration would make the poll obsolete.
+  // Refreshes when NotebookEditor dispatches the
+  // `weft-loom-notebook-changed` CustomEvent on save success (M4) ;
+  // filters by matching project + file. A 30 s fallback timer covers
+  // the case where the file was edited by something other than our
+  // own NotebookEditor (server-side change, another tab) — still 20×
+  // less network than the previous 1.5 s poll. A future Yjs-on-
+  // notebook integration would obviate even the fallback.
 
   import { onMount, onDestroy } from 'svelte';
   import { marked } from 'marked';
@@ -33,7 +37,11 @@
   let nb = $state<Notebook | null>(null);
   let err = $state<string | null>(null);
   let lastEtag = '';
-  let poll: ReturnType<typeof setInterval> | undefined;
+  let fallback: ReturnType<typeof setInterval> | undefined;
+  // Drop the 1.5 s setInterval (M4). Refresh on
+  // `weft-loom-notebook-changed` events instead, with a 30 s safety
+  // net for out-of-band edits.
+  const FALLBACK_INTERVAL_MS = 30000;
 
   async function load() {
     if (!file) return;
@@ -60,12 +68,27 @@
     }
   }
 
+  function onNotebookChanged(ev: Event) {
+    const ce = ev as CustomEvent<{ project: string; file: string }>;
+    if (!ce.detail) return;
+    if (ce.detail.project !== project || ce.detail.file !== file) return;
+    // Reset the fallback timer so we don't double-fetch right after
+    // an event-driven refresh.
+    if (fallback) {
+      clearInterval(fallback);
+      fallback = setInterval(load, FALLBACK_INTERVAL_MS);
+    }
+    void load();
+  }
+
   onMount(() => {
     load();
-    poll = setInterval(load, 1500);
+    window.addEventListener('weft-loom-notebook-changed', onNotebookChanged);
+    fallback = setInterval(load, FALLBACK_INTERVAL_MS);
   });
   onDestroy(() => {
-    if (poll) clearInterval(poll);
+    window.removeEventListener('weft-loom-notebook-changed', onNotebookChanged);
+    if (fallback) clearInterval(fallback);
   });
   $effect(() => {
     file;
@@ -73,8 +96,25 @@
     load();
   });
 
+  // Memoise per source (H7) — same pipeline as NotebookEditor pays
+  // marked.parse + DOMPurify.sanitize per markdown cell on every
+  // notebook reassignment. LRU-bounded so long sessions don't leak.
+  const RENDER_CACHE_MAX = 256;
+  const renderCache = new Map<string, string>();
   function renderMarkdown(s: string): string {
-    return DOMPurify.sanitize(marked.parse(s) as string);
+    const hit = renderCache.get(s);
+    if (hit !== undefined) {
+      renderCache.delete(s);
+      renderCache.set(s, hit);
+      return hit;
+    }
+    const html = DOMPurify.sanitize(marked.parse(s) as string);
+    renderCache.set(s, html);
+    if (renderCache.size > RENDER_CACHE_MAX) {
+      const oldest = renderCache.keys().next().value;
+      if (oldest !== undefined) renderCache.delete(oldest);
+    }
+    return html;
   }
 </script>
 

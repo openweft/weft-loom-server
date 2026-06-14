@@ -96,6 +96,14 @@
       );
       if (!r.ok) throw new Error('HTTP ' + r.status);
       dirty = false;
+      // Notify any NotebookPreview rendering the same file so it can
+      // re-fetch immediately without 1.5 s polling (M4). Filtered by
+      // project + file on the listener side.
+      window.dispatchEvent(
+        new CustomEvent('weft-loom-notebook-changed', {
+          detail: { project, file },
+        }),
+      );
     } catch (e) {
       saveErr = String(e);
     } finally {
@@ -130,8 +138,34 @@
 
   // Markdown render : sanitise via DOMPurify so the same protection
   // we apply in the .md preview pane covers notebooks too.
+  //
+  // Memoised per `source` string (H7). Whenever the cells array is
+  // reassigned via `nb.cells = [...]` (run / add / delete / move /
+  // typing in one cell), every {#each} markdown cell would otherwise
+  // pay `marked.parse + DOMPurify.sanitize` again — a 30-cell notebook
+  // with 20 markdown cells dominates the profile with marked.parse.
+  // The cache keys on cell.source so only the cell whose source
+  // actually changed recomputes ; an LRU cap keeps memory bounded
+  // across long edit sessions / cell additions.
+  const RENDER_CACHE_MAX = 256;
+  const renderCache = new Map<string, string>();
   function renderMarkdown(source: string): string {
-    return DOMPurify.sanitize(marked.parse(source) as string);
+    const hit = renderCache.get(source);
+    if (hit !== undefined) {
+      // Refresh recency : delete + set moves the key to the tail
+      // (Map iteration order = insertion order), so eviction below
+      // drops the least-recently-used entry.
+      renderCache.delete(source);
+      renderCache.set(source, hit);
+      return hit;
+    }
+    const html = DOMPurify.sanitize(marked.parse(source) as string);
+    renderCache.set(source, html);
+    if (renderCache.size > RENDER_CACHE_MAX) {
+      const oldest = renderCache.keys().next().value;
+      if (oldest !== undefined) renderCache.delete(oldest);
+    }
+    return html;
   }
 
   // Run a code cell via the workspace exec endpoint. Captures stdout
