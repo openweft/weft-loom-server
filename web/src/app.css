@@ -139,6 +139,10 @@
    rule is scoped to `[data-mobile-touch]` containers so dense desktop
    surfaces (tabs, ActivityBar already at w-12) aren't disturbed. */
 @media (max-width: 767px) {
+  /* Apply to both : the marked element itself (when a control IS the
+     tap target) AND any control nested inside (when the data-* sits
+     on a container). */
+  [data-mobile-touch],
   [data-mobile-touch] button,
   [data-mobile-touch] a,
   [data-mobile-touch] [role="button"] {

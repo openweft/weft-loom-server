@@ -219,12 +219,21 @@ export function presenceCursors(awareness: Awareness): Extension {
 
       constructor(view: EditorView) {
         this.decorations = buildPeerDecorations(view, awareness);
+        // Awareness 'change' can fire SYNCHRONOUSLY from inside our own
+        // throttled broadcast — which itself runs inside a CM update.
+        // Dispatching back into the view there throws
+        // "Calls to EditorView.update are not allowed while an update
+        // is in progress". Defer via requestAnimationFrame so the
+        // rebuild lands on the next tick.
+        let pending = false;
         const refresh = () => {
-          this.decorations = buildPeerDecorations(view, awareness);
-          // Force a re-render — awareness changes don't trigger a CM
-          // update on their own. An empty dispatch is the standard
-          // "rebuild the facets" handshake.
-          view.dispatch({});
+          if (pending) return;
+          pending = true;
+          requestAnimationFrame(() => {
+            pending = false;
+            this.decorations = buildPeerDecorations(view, awareness);
+            view.dispatch({});
+          });
         };
         awareness.on('change', refresh);
         this.cleanup = () => awareness.off('change', refresh);

@@ -122,7 +122,14 @@ await step('sidebar: backdrop click closes it', async () => {
     !!document.querySelector('.weft-mobile-backdrop'),
   );
   assert(hasBackdrop, 'no .weft-mobile-backdrop rendered while sidebar open');
-  await page.click('.weft-mobile-backdrop');
+  // The backdrop covers the full viewport at z-index 40, but the
+  // slide-over sits ON TOP at z-index 50, so a center-of-element
+  // click on the backdrop misses (puppeteer hit-tests at center,
+  // which the sidebar occludes). Real users tap the VISIBLE area
+  // (right of the sidebar) and it works ; the test fires the click
+  // event programmatically so it doesn't depend on coordinate
+  // arithmetic against the sidebar width.
+  await page.evaluate(() => (document.querySelector('.weft-mobile-backdrop')).click());
   await new Promise((r) => setTimeout(r, 350));
   const info = await page.evaluate(() => {
     const slide = document.querySelector('.weft-mobile-sidebar');
