@@ -13,13 +13,13 @@
 
   import { onMount, onDestroy } from 'svelte';
   import {
-    getStatus,
     pull,
     push,
     providerLabel,
     webURL,
     type GitStatus,
   } from '../git';
+  import { gitStatus } from '../gitStatusStore.svelte';
   import SourceGraph from './SourceGraph.svelte';
   import { i18n } from '../i18n.svelte';
 
@@ -31,11 +31,15 @@
 
   let { project, onOpenConfigModal, onSynced }: Props = $props();
 
-  let status = $state<GitStatus | null>(null);
-  let loading = $state(false);
+  // Reactive view onto the shared poll store (M6 — one poller is fanned
+  // out across all subscribers, no more parallel 15 s setIntervals).
+  let status = $derived<GitStatus | null>(gitStatus.status);
+  let loading = $derived<boolean>(gitStatus.loading && !gitStatus.status);
   let busy = $state<'idle' | 'pulling' | 'pushing'>('idle');
-  let err = $state<string | null>(null);
-  let poll: ReturnType<typeof setInterval> | undefined;
+  // Local err for pull/push action failures ; falls back to the
+  // store's err (poll failures) when unset.
+  let localErr = $state<string | null>(null);
+  let err = $derived<string | null>(localErr ?? gitStatus.err);
 
   // Graph pane height (px) : resizable via the drag handle above
   // the SourceGraph header. localStorage persists across sessions.
@@ -70,40 +74,37 @@
     document.addEventListener('mouseup', up);
   }
 
-  async function refresh() {
-    loading = true;
-    err = null;
-    try {
-      status = await getStatus(project);
-    } catch (e) {
-      err = String(e);
-    } finally {
-      loading = false;
-    }
+  // refresh() simply pokes the shared store. Both the explicit retry
+  // button + the project-switch effect use it.
+  function refresh() {
+    localErr = null;
+    gitStatus.refresh();
   }
 
   onMount(() => {
-    refresh();
-    poll = setInterval(refresh, 15_000);
+    gitStatus.setProject(project);
+    gitStatus.start();
   });
   onDestroy(() => {
-    if (poll) clearInterval(poll);
+    gitStatus.stop();
   });
 
-  // Reload when the active project changes.
+  // Reload when the active project changes : hand the new project name
+  // to the shared store so a single refresh covers every subscriber.
   $effect(() => {
-    project;
-    refresh();
+    const p = project;
+    gitStatus.setProject(p);
   });
 
   async function doPull() {
     busy = 'pulling';
-    err = null;
+    localErr = null;
     try {
-      status = await pull(project);
+      const next = await pull(project);
+      gitStatus.status = next;
       onSynced();
     } catch (e) {
-      err = String(e);
+      localErr = String(e);
     } finally {
       busy = 'idle';
     }
@@ -111,11 +112,12 @@
 
   async function doPush() {
     busy = 'pushing';
-    err = null;
+    localErr = null;
     try {
-      status = await push(project);
+      const next = await push(project);
+      gitStatus.status = next;
     } catch (e) {
-      err = String(e);
+      localErr = String(e);
     } finally {
       busy = 'idle';
     }

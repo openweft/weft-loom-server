@@ -12,7 +12,7 @@
   import { deleteFile, type File } from '../api';
   import ContextMenu, { type ContextEntry } from './ContextMenu.svelte';
   import { languageForPath, iconForPath } from '../theme';
-  import { getStatus } from '../git';
+  import { gitStatus } from '../gitStatusStore.svelte';
   import NewFileDialog from './NewFileDialog.svelte';
   import GitPanel from './GitPanel.svelte';
 
@@ -39,25 +39,17 @@
 
   // Git status per file. The map is keyed by repo-relative path so a
   // change like "src/main.tex" lines up with the explorer node's
-  // fullPath. Polled every 15 s ; tolerates the project not being
-  // configured for git (gitChanges stays empty, no badges render).
-  let gitChanges = $state<Map<string, string>>(new Map());
-  let gitPoll: ReturnType<typeof setInterval> | undefined;
-  async function refreshGitStatus() {
-    try {
-      const s = await getStatus(project);
-      if (!s.configured) {
-        if (gitChanges.size > 0) gitChanges = new Map();
-        return;
-      }
-      const next = new Map<string, string>();
-      for (const c of s.changes ?? []) next.set(c.path, c.status);
-      gitChanges = next;
-    } catch {
-      // Best-effort : a transient HTTP error doesn't drop the existing
-      // badges (better to show stale than to flash empty).
-    }
-  }
+  // fullPath. Derived from the shared gitStatusStore — one poller
+  // is fanned out across this explorer + GitSidebar (M6 — was two
+  // independent 15 s setIntervals hitting the same endpoint).
+  let gitChanges = $derived.by<Map<string, string>>(() => {
+    const s = gitStatus.status;
+    if (!s || !s.configured) return new Map<string, string>();
+    const m = new Map<string, string>();
+    for (const c of s.changes ?? []) m.set(c.path, c.status);
+    return m;
+  });
+
   // iconTheme bump : the SettingsPanel dispatches this event on theme
   // switch. Reading `iconBump` inside the template forces Svelte to
   // re-evaluate every `iconForPath(...)` call after the user picks a
@@ -65,18 +57,19 @@
   let iconBump = $state<number>(0);
   function onIconThemeChange() { iconBump++; }
   onMount(() => {
-    refreshGitStatus();
-    gitPoll = setInterval(refreshGitStatus, 15_000);
+    gitStatus.setProject(project);
+    gitStatus.start();
     window.addEventListener('weft-loom-icon-theme-change', onIconThemeChange);
   });
   onDestroy(() => {
-    if (gitPoll) clearInterval(gitPoll);
+    gitStatus.stop();
     window.removeEventListener('weft-loom-icon-theme-change', onIconThemeChange);
   });
-  // Reload on project switch.
+  // Reload on project switch : hand the new project name to the
+  // shared store ; one fetch covers every subscriber.
   $effect(() => {
-    project;
-    refreshGitStatus();
+    const p = project;
+    gitStatus.setProject(p);
   });
 
   // Map a status string to a (badge char, tailwind text colour).
