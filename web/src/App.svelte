@@ -648,6 +648,29 @@
     setTimeout(() => URL.revokeObjectURL(url), 5000);
   }
 
+  // Mobile slide-over sidebar — below md (< 768 px) the ActivityBar
+  // + side panel collapse out of the document flow and slide in from
+  // the left when the Navbar's hamburger toggles `mobileSidebarOpen`.
+  // Desktop renders the same DOM with the slide-over class inert
+  // (the media query in app.css is a no-op ≥ md). We listen to
+  // matchMedia so any in-app state reset (e.g. open a file from the
+  // mobile drawer) can auto-collapse it.
+  let mobileSidebarOpen = $state<boolean>(false);
+  let isMobile = $state<boolean>(false);
+  onMount(() => {
+    const mq = window.matchMedia('(max-width: 767px)');
+    const sync = () => { isMobile = mq.matches; };
+    sync();
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
+  });
+  function toggleMobileSidebar() {
+    mobileSidebarOpen = !mobileSidebarOpen;
+  }
+  function closeMobileSidebar() {
+    mobileSidebarOpen = false;
+  }
+
   // sidebarWidth is the FileExplorer width in px. Persisted to
   // localStorage so the user's drag survives reloads.
   let sidebarWidth = $state<number>(224);
@@ -753,6 +776,9 @@
     if (path && !openFiles.includes(path)) {
       openFiles = [...openFiles, path];
     }
+    // On mobile, opening a file auto-closes the slide-over so the
+    // editor surface is immediately visible. Desktop is a no-op.
+    if (isMobile) mobileSidebarOpen = false;
   }
 
   // openFileByPath : programmatic file-open hook used by tests +
@@ -966,7 +992,7 @@
   }
 </script>
 
-<div class="flex h-screen flex-col bg-base-200">
+<div class="flex h-screen flex-col bg-base-200 weft-loom-shell">
   <MenuBar
     onNewFile={() => alert('Click the + in the file explorer to create a file (menu wiring TBD)')}
     onSwitchProject={() => (projectSwitcherOpen = true)}
@@ -995,8 +1021,29 @@
     {onSwitch}
     {onLanguageChange}
     bind:switcherOpen={projectSwitcherOpen}
+    onToggleMobileSidebar={toggleMobileSidebar}
   />
-  <main class="flex flex-1 overflow-hidden">
+  <main class="flex flex-1 overflow-hidden relative">
+    <!-- Mobile slide-over backdrop — only rendered when the
+         hamburger has been toggled. Clicking it closes the drawer
+         (iOS / Material pattern). Hidden ≥ md via Tailwind. -->
+    {#if mobileSidebarOpen}
+      <button
+        type="button"
+        class="md:hidden weft-mobile-backdrop"
+        aria-label="Close sidebar"
+        onclick={closeMobileSidebar}
+      ></button>
+    {/if}
+    <!-- ActivityBar + side panel : on desktop they sit inline in
+         the flex row ; on mobile they're absolutely-positioned via
+         .weft-mobile-sidebar and slide in from the left when
+         `.open` is added. Keeping the same DOM avoids re-mount
+         flickers when the viewport crosses md. -->
+    <div
+      class="flex h-full md:contents bg-base-100 weft-mobile-sidebar"
+      class:open={mobileSidebarOpen}
+    >
     <ActivityBar
       bind:activeSidebar={sidebarView}
       onSidebar={pickSidebar}
@@ -1008,7 +1055,8 @@
     {#if sidebarView !== 'none'}
     <div
       style="width: {sidebarWidth}px"
-      class="flex-none overflow-hidden flex flex-col h-full min-h-0"
+      class="flex-none overflow-hidden flex flex-col h-full min-h-0 bg-base-100"
+      data-mobile-touch
     >
       {#if sidebarView === 'explorer'}
         <!-- Top : file tree. Bottom : LaTeX outline when a .tex
@@ -1099,11 +1147,15 @@
       {/if}
     </div>
     {/if}
+    </div><!-- /weft-mobile-sidebar wrapper -->
+    <!-- Sidebar resize handle — desktop only ; mobile uses the
+         slide-over and doesn't need (or want) a 1.5 px drag strip
+         that competes with editor scroll gestures. -->
     <div
       role="separator"
       aria-orientation="vertical"
       tabindex="0"
-      class="w-1.5 cursor-col-resize bg-base-300 hover:bg-primary/50 active:bg-primary transition-colors flex-none"
+      class="hidden md:block w-1.5 cursor-col-resize bg-base-300 hover:bg-primary/50 active:bg-primary transition-colors flex-none"
       class:bg-primary={sidebarDragging}
       onmousedown={startSidebarDrag}
       title="Drag to resize the file explorer"
@@ -1225,8 +1277,10 @@
     <!-- Standalone Preview panel docked to the right of the editor
          column. Sibling to ChatRoom / AIChatPanel — not nested inside
          the editor split. Width is user-resizable via the bordered
-         drag handle on its left edge. -->
-    {#if previewable}
+         drag handle on its left edge.
+         Hidden under md so the editor + bottom panel fill the phone
+         viewport ; the user re-enables it on desktop. -->
+    {#if previewable && !isMobile}
       {#if previewOpen}
         <div
           role="separator"
@@ -1273,8 +1327,10 @@
     <!-- Right column : single panel containing AI Assistant +
          Chat as accordions. One ActivityBar button (💬) toggles
          the whole column. Inside, the user collapses / expands
-         each pane individually via its header. -->
-    {#if rightColOpen}
+         each pane individually via its header.
+         Suppressed below md — on a phone the editor takes priority
+         over secondary panels. -->
+    {#if rightColOpen && !isMobile}
       <div
         role="separator"
         aria-orientation="vertical"

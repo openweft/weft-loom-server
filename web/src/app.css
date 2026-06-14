@@ -77,6 +77,75 @@
    = 20% alpha when colorLight isn't pushed). No override needed
    beyond this presence comment ; the library style cascades unchanged. */
 
+/* Mobile responsive sweep — the SPA is desktop-first ; below md
+   (< 768 px) we treat the viewport as a phone : iOS notch + Android
+   gesture-bar are the two common hostile areas, so we honour the
+   safe-area-inset env() vars on the outermost shell to keep chrome
+   out of the camera notch and the home-indicator strip. Tailwind
+   prefixes (md: / lg:) cover the rest. */
+@supports (padding: env(safe-area-inset-top)) {
+  .weft-loom-shell {
+    padding-top: env(safe-area-inset-top);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+/* Touch-friendly tap targets — Apple HIG + Material both recommend
+   ≥ 44 × 44 px hit areas on touch input. On mobile (< 768 px) every
+   button / link that's clickable from the SPA chrome bumps to at
+   least that size so a finger doesn't fat-finger neighbours. The
+   rule is scoped to `[data-mobile-touch]` containers so dense desktop
+   surfaces (tabs, ActivityBar already at w-12) aren't disturbed. */
+@media (max-width: 767px) {
+  [data-mobile-touch] button,
+  [data-mobile-touch] a,
+  [data-mobile-touch] [role="button"] {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
+/* BottomPanel full-height under md — the inline `style="height:Npx"`
+   would otherwise win against Tailwind classes. We use !important
+   on a media-query scoped class so desktop keeps the user's
+   resized px height + mobile gets a flex-1 sized drawer. */
+@media (max-width: 767px) {
+  .weft-bottom-panel-mobile-full {
+    height: auto !important;
+    flex: 1 1 0% !important;
+    min-height: 0;
+  }
+}
+
+/* Mobile slide-over sidebar — when the hamburger toggles
+   `.weft-mobile-sidebar-open` on the body, the FileExplorer +
+   ActivityBar slide in from the left as a single drawer over a
+   semi-opaque backdrop. Desktop layout is untouched ; the
+   selectors are gated on (max-width: 767px). */
+@media (max-width: 767px) {
+  .weft-mobile-sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 50;
+    transform: translateX(-100%);
+    transition: transform 200ms ease-out;
+    box-shadow: 4px 0 16px rgba(0, 0, 0, 0.3);
+  }
+  .weft-mobile-sidebar.open {
+    transform: translateX(0);
+  }
+  .weft-mobile-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: 40;
+  }
+}
+
 /* Print export : the navbar's ⤓ PDF button stamps `.weft-printing`
    onto <body> just before calling window.print(). The rules below
    hide every chrome element so the print dialog only captures the

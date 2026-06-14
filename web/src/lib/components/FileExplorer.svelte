@@ -352,7 +352,13 @@
   }
 </script>
 
-<aside class="w-full h-full min-h-0 bg-base-100 border-r border-base-300 flex flex-col overflow-hidden">
+<!-- data-mobile-touch enlarges every clickable row + header button
+     to 44 × 44 px on viewports below md (see app.css), so finger
+     navigation through the tree doesn't fat-finger neighbours. -->
+<aside
+  class="w-full h-full min-h-0 bg-base-100 border-r border-base-300 flex flex-col overflow-hidden"
+  data-mobile-touch
+>
   <header class="flex items-center justify-between px-3 h-9 border-b border-base-300 bg-base-200">
     <span class="text-xs font-semibold uppercase opacity-60">Files</span>
     <div class="flex gap-1">

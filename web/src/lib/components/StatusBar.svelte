@@ -45,26 +45,30 @@
     <span class="inline-block w-2 h-2 rounded-full {dot}"></span>
     {connText}
   </span>
-  <span class="opacity-80">|</span>
-  <span title="Active project">📁 {project}</span>
-  <span class="opacity-80">|</span>
-  <span title="Editor language">{language}</span>
-  <span class="opacity-80">|</span>
+  <span class="opacity-80 hidden sm:inline">|</span>
+  <span class="hidden sm:inline" title="Active project">📁 {project}</span>
+  <span class="opacity-80 hidden sm:inline">|</span>
+  <span class="hidden sm:inline" title="Editor language">{language}</span>
+  <span class="opacity-80 hidden sm:inline">|</span>
   <span class="truncate" title={currentFile}>{currentFile || i18n.t('status.noFile')}</span>
   <span class="flex-1"></span>
+  <!-- Cursor position + word count are desktop-only — below md
+       they'd squeeze the file path off-screen and the user can't
+       read them anyway on a phone. Hidden, not removed, so the
+       reactive cursor stats keep flowing into the StatusBar. -->
   {#if cursorLine != null && cursorCol != null}
-    <span title="Cursor position">Ln {cursorLine}, Col {cursorCol}</span>
+    <span class="hidden md:inline" title="Cursor position">Ln {cursorLine}, Col {cursorCol}</span>
     {#if selectionLen != null && selectionLen > 0}
-      <span class="opacity-80">|</span>
-      <span title="Selected characters">({selectionLen} selected)</span>
+      <span class="opacity-80 hidden md:inline">|</span>
+      <span class="hidden md:inline" title="Selected characters">({selectionLen} selected)</span>
     {/if}
-    <span class="opacity-80">|</span>
+    <span class="opacity-80 hidden md:inline">|</span>
   {/if}
   {#if wordCount != null && wordCount > 0}
-    <span title="Word count">{wordCount} {wordCount === 1 ? 'word' : 'words'}</span>
-    <span class="opacity-80">|</span>
+    <span class="hidden md:inline" title="Word count">{wordCount} {wordCount === 1 ? 'word' : 'words'}</span>
+    <span class="opacity-80 hidden md:inline">|</span>
   {/if}
-  <span title="Y.Text updates observed (local + remote)">↻ {ytextTick}</span>
-  <span class="opacity-80">|</span>
-  <span title={'weft-loom · ' + i18n.t('app.tagline')}>weft-loom</span>
+  <span class="hidden sm:inline" title="Y.Text updates observed (local + remote)">↻ {ytextTick}</span>
+  <span class="opacity-80 hidden sm:inline">|</span>
+  <span class="hidden sm:inline" title={'weft-loom · ' + i18n.t('app.tagline')}>weft-loom</span>
 </div>

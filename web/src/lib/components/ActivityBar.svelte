@@ -87,6 +87,7 @@
 <aside
   class="flex-none w-12 bg-base-300 flex flex-col items-center justify-between py-2 select-none"
   aria-label="Activity bar"
+  data-mobile-touch
 >
   <div class="flex flex-col items-center gap-1">
     {#each items as it}

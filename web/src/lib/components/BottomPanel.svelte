@@ -88,16 +88,26 @@
 </script>
 
 {#if open}
+  <!-- Mobile (< md) : the bottom drawer takes the full available
+       height of the column so the user actually sees the shell /
+       compile log on a phone screen — a 280 px drawer is most of
+       the viewport but still feels cramped, and resizing via the
+       drag handle is fiddly on touch. The `.weft-bottom-panel-mobile-full`
+       class drops the inline px height and switches to flex-1
+       under (max-width: 767px) ; desktop keeps the resizable px
+       height untouched. -->
   <div
-    class="flex flex-col border-t border-base-300 bg-base-100 flex-none"
+    class="flex flex-col border-t border-base-300 bg-base-100 flex-none weft-bottom-panel-mobile-full"
     style="height: {height}px"
   >
-    <!-- Shared drag handle -->
+    <!-- Shared drag handle — desktop only ; on mobile the drawer
+         takes the full column height so resizing is moot AND the
+         1.5 px strip is a fiddly touch target. -->
     <div
       role="separator"
       tabindex="0"
       aria-orientation="horizontal"
-      class="h-1.5 cursor-row-resize bg-base-300 hover:bg-primary/50 transition-colors"
+      class="hidden md:block h-1.5 cursor-row-resize bg-base-300 hover:bg-primary/50 transition-colors"
       class:bg-primary={dragging}
       onmousedown={startDrag}
     ></div>
