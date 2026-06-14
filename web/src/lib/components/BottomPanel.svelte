@@ -8,8 +8,9 @@
   import CompileLogPanel from './CompileLogPanel.svelte';
   import ShellTabs from './ShellTabs.svelte';
   import DoctorPanel from './DoctorPanel.svelte';
+  import HistoryPanel from './HistoryPanel.svelte';
 
-  type Tab = 'log' | 'shell' | 'doctor';
+  type Tab = 'log' | 'shell' | 'doctor' | 'history';
 
   interface Props {
     project: string;
@@ -39,6 +40,7 @@
   let logChildOpen = $state(true);
   let shellChildOpen = $state(false);
   let doctorChildOpen = $state(false);
+  let historyChildOpen = $state(false);
   let height = $state<number>(280);
   let dragging = $state(false);
 
@@ -57,6 +59,7 @@
     logChildOpen = activeTab === 'log';
     shellChildOpen = activeTab === 'shell';
     doctorChildOpen = activeTab === 'doctor';
+    historyChildOpen = activeTab === 'history';
     try { localStorage.setItem('weft-loom-bottom-tab-v2', activeTab); } catch {}
   });
 
@@ -137,6 +140,17 @@
         <path d="M5.76 2.5C5.98.5 6.17 2.65 6.23 2.86l2.29 8.33 1.75-5.84c.06-.2.24-.34.45-.36.21 0 .41.13.49.32l1.12 2.69H14a.5.5 0 0 1 0 1h-2c-.2 0-.38-.12-.46-.31l-.71-1.7-1.85 6.16c-.06.21-.26.36-.48.36-.22 0-.42-.15-.48-.37l-2.3-8.37-1.24 3.89a.5.5 0 0 1-.48.35H2a.5.5 0 0 1 0-1h1.63L5.27 2.85a.5.5 0 0 1 .48-.35z"/>
       </svg>Doctor</button>
       <button
+        role="tab"
+        class="px-4 h-9 text-xs font-semibold hover:bg-base-100 flex items-center gap-1"
+        class:border-b-2={activeTab === 'history'}
+        class:border-b-primary={activeTab === 'history'}
+        class:bg-base-100={activeTab === 'history'}
+        onclick={() => pickTab('history')}
+      ><svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true">
+        <!-- codicon `history` : clock arrow. -->
+        <path d="M13.507 12.324a7 7 0 0 0-.785-8.435 7.998 7.998 0 0 0-8.92-1.654 8 8 0 0 0-2.435 1.59A8 8 0 0 0 0 9.732V14h4.235l.027.001A8 8 0 0 0 13.507 12.324zM8 14a6 6 0 1 1 0-12 6 6 0 0 1 0 12zM8.5 3v4.299l3.46 1.998-.499.866L7.5 7.876V3h1z"/>
+      </svg>History</button>
+      <button
         class="btn btn-ghost btn-xs ml-auto mr-2 self-center"
         onclick={onCloseRequest}
         title="Hide panel"
@@ -168,6 +182,9 @@
       </div>
       <div class="flex-1 overflow-hidden" class:hidden={!doctorChildOpen}>
         <DoctorPanel {project} bind:open={doctorChildOpen} />
+      </div>
+      <div class="flex-1 overflow-hidden" class:hidden={!historyChildOpen}>
+        <HistoryPanel {project} file={entry} />
       </div>
     </div>
   </div>

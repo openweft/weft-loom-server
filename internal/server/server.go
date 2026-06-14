@@ -32,6 +32,7 @@ import (
 	"github.com/openweft/weft-loom-server/internal/auth"
 	"github.com/openweft/weft-loom-server/internal/compile"
 	"github.com/openweft/weft-loom-server/internal/eventbus"
+	"github.com/openweft/weft-loom-server/internal/history"
 	"github.com/openweft/weft-loom-server/internal/natsbroker"
 	"github.com/openweft/weft-loom-server/internal/project"
 	"github.com/openweft/weft-loom-server/internal/shares"
@@ -106,6 +107,7 @@ type Server struct {
 	warmups    *warmupState
 	toolshare  *toolshare.Manager
 	shares     *shares.Publisher
+	history    *history.Store
 }
 
 // New wires the routes ; returns an http.Handler ready to mount on
@@ -130,6 +132,7 @@ func New(opts Options) (*Server, error) {
 		events:     eventbus.New(),
 		warmups:    newWarmupState(),
 		toolshare:  toolshareFromEnv(),
+		history:    history.New(),
 	}
 	if opts.Auth != nil && opts.Config.AllowHostPty {
 		opts.Logger.Warn("security: AllowHostPty=true in a non-dev config — workspace shell fallback escapes the VM sandbox")
@@ -259,6 +262,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/projects/{name}/git/pull", s.requireAuth(s.handleGitPull))
 	s.mux.HandleFunc("POST /api/projects/{name}/git/push", s.requireAuth(s.handleGitPush))
 	s.mux.HandleFunc("GET /api/projects/{name}/git/log", s.requireAuth(s.handleGitLog))
+	// V0.5 track-changes history : per-file text-snapshot timeline.
+	// Captures via the writeFile hook ; surfaces via these endpoints
+	// for the SPA HistoryPanel.
+	s.mux.HandleFunc("GET /api/projects/{name}/history", s.requireAuth(s.handleHistoryList))
+	s.mux.HandleFunc("GET /api/projects/{name}/history/snapshot", s.requireAuth(s.handleHistorySnapshot))
+	s.mux.HandleFunc("POST /api/projects/{name}/history/restore", s.requireAuth(s.handleHistoryRestore))
 	// V0.3 LLM chat surface — stub responses for now ; full wiring
 	// to Ollama / Anthropic / OpenAI lands when the backend config
 	// surface is in place.

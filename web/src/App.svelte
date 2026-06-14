@@ -182,7 +182,7 @@
   // bind:activeTab to BottomPanel. Navbar buttons set the state
   // directly so a click on 🖥 actually switches the visible tab.
   let bottomOpen = $state<boolean>(true);
-  let bottomTab = $state<'log' | 'shell' | 'doctor'>(loadBottomTab());
+  let bottomTab = $state<'log' | 'shell' | 'doctor' | 'history'>(loadBottomTab());
   // ActivityBar tracks which side panel is showing on the left.
   // 'explorer' default ; 'none' collapses the side bar entirely
   // (VSCode Cmd+B parity).
@@ -387,13 +387,13 @@
   );
   let aiCollapsed = $state<boolean>(false);
   let chatCollapsed = $state<boolean>(true);
-  function loadBottomTab(): 'log' | 'shell' | 'doctor' {
+  function loadBottomTab(): 'log' | 'shell' | 'doctor' | 'history' {
     // Storage key bumped to -v2 so any stale 'log' default from
     // before the tab-reorder ships fresh as 'shell'. Persisting the
     // last-used tab still works, just from a clean slate.
     try {
       const v = localStorage.getItem('weft-loom-bottom-tab-v2');
-      if (v === 'shell' || v === 'log' || v === 'doctor') return v;
+      if (v === 'shell' || v === 'log' || v === 'doctor' || v === 'history') return v;
     } catch {}
     return 'shell';
   }
@@ -401,7 +401,7 @@
     bottomOpen = !bottomOpen;
     try { localStorage.setItem('weft-loom-bottom-open', bottomOpen ? '1' : '0'); } catch {}
   }
-  function openBottomTab(tab: 'log' | 'shell' | 'doctor') {
+  function openBottomTab(tab: 'log' | 'shell' | 'doctor' | 'history') {
     bottomTab = tab;
     bottomOpen = true;
     try { localStorage.setItem('weft-loom-bottom-open', '1'); } catch {}

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -58,10 +59,22 @@ func (s *Server) handleReadFile(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 	ident, _ := auth.IdentityFrom(r.Context())
 	defer r.Body.Close()
-	if err := s.opts.Projects.WriteFile(r.Context(), ident, projectName(r), filePath(r), r.Body); err != nil {
+	// Buffer the body so we can both pass it to the project store AND
+	// hand a copy to the history snapshotter. The history hook needs
+	// the full content ; the WriteFile signature takes an io.Reader so
+	// we can't tee mid-stream without losing one consumer.
+	body, rerr := io.ReadAll(r.Body)
+	if rerr != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": rerr.Error()})
+		return
+	}
+	if err := s.opts.Projects.WriteFile(r.Context(), ident, projectName(r), filePath(r), bytes.NewReader(body)); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	// V0.5 : track-changes history. Debounced per (project, file) so
+	// rapid bursts collapse to one snapshot ; binary files skipped.
+	s.snapshotAfterWrite(ident, projectName(r), filePath(r), body)
 	// V0.3 : git is the source of truth. Every file write resets the
 	// per-project debounce timer ; an idle period of autoPushIdle
 	// seconds triggers a background auto-commit + push. Unconfigured

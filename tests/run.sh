@@ -328,8 +328,14 @@ node tests/ods-formatting.mjs
 ODS_FMT=$?
 
 echo
+echo "----- history suite -----"
+echo
+node tests/history.mjs
+HIST=$?
+
+echo
 echo "==============================================="
-if [ $UI -eq 0 ] && [ $LANG -eq 0 ] && [ $PREVIEW -eq 0 ] && [ $UIENTRY -eq 0 ] && [ $THEMEP -eq 0 ] && [ $WYSIWYG -eq 0 ] && [ $WYSIWYG_ODT -eq 0 ] && [ $WYSIWYG_ODT_TB -eq 0 ] && [ $ODT_TPL -eq 0 ] && [ $LATEX_PAL -eq 0 ] && [ $MARP_PIC -eq 0 ] && [ $BIB_PAN -eq 0 ] && [ $INLINE_MATH -eq 0 ] && [ $OUTLINE -eq 0 ] && [ $PDF_VIEW -eq 0 ] && [ $COMMENTS -eq 0 ] && [ $ODT_FIELDS -eq 0 ] && [ $PAGE_VARS -eq 0 ] && [ $ODT_FRAMES -eq 0 ] && [ $ODT_HF -eq 0 ] && [ $RTF_FIELDS -eq 0 ] && [ $LSP -eq 0 ] && [ $ODS -eq 0 ] && [ $ODS_FX -eq 0 ] && [ $ODS_COL -eq 0 ] && [ $INTERACTIONS -eq 0 ] && [ $ODS_VIRT -eq 0 ] && [ $ODS_NAV -eq 0 ] && [ $ODS_LAY -eq 0 ] && [ $ODS_FMT -eq 0 ]; then
+if [ $UI -eq 0 ] && [ $LANG -eq 0 ] && [ $PREVIEW -eq 0 ] && [ $UIENTRY -eq 0 ] && [ $THEMEP -eq 0 ] && [ $WYSIWYG -eq 0 ] && [ $WYSIWYG_ODT -eq 0 ] && [ $WYSIWYG_ODT_TB -eq 0 ] && [ $ODT_TPL -eq 0 ] && [ $LATEX_PAL -eq 0 ] && [ $MARP_PIC -eq 0 ] && [ $BIB_PAN -eq 0 ] && [ $INLINE_MATH -eq 0 ] && [ $OUTLINE -eq 0 ] && [ $PDF_VIEW -eq 0 ] && [ $COMMENTS -eq 0 ] && [ $ODT_FIELDS -eq 0 ] && [ $PAGE_VARS -eq 0 ] && [ $ODT_FRAMES -eq 0 ] && [ $ODT_HF -eq 0 ] && [ $RTF_FIELDS -eq 0 ] && [ $LSP -eq 0 ] && [ $ODS -eq 0 ] && [ $ODS_FX -eq 0 ] && [ $ODS_COL -eq 0 ] && [ $INTERACTIONS -eq 0 ] && [ $ODS_VIRT -eq 0 ] && [ $ODS_NAV -eq 0 ] && [ $ODS_LAY -eq 0 ] && [ $ODS_FMT -eq 0 ] && [ $HIST -eq 0 ]; then
   echo "  \033[32mALL PASS\033[0m"
   exit 0
 fi
@@ -363,5 +369,6 @@ fi
 [ $ODS_NAV -eq 0 ] && echo "  ods-navigation     : \033[32mPASS\033[0m" || echo "  ods-navigation     : \033[31mFAIL\033[0m"
 [ $ODS_LAY -eq 0 ] && echo "  ods-layout         : \033[32mPASS\033[0m" || echo "  ods-layout         : \033[31mFAIL\033[0m"
 [ $ODS_FMT -eq 0 ] && echo "  ods-formatting     : \033[32mPASS\033[0m" || echo "  ods-formatting     : \033[31mFAIL\033[0m"
+[ $HIST -eq 0 ] && echo "  history            : \033[32mPASS\033[0m" || echo "  history            : \033[31mFAIL\033[0m"
 echo "==============================================="
 exit 1
