@@ -100,16 +100,19 @@ class CaretWidget extends WidgetType {
     );
   }
   toDOM(): HTMLElement {
+    // The wrapper is the visible caret bar. The label rides on a
+    // ::after pseudo-element driven by CSS `content: attr(data-name)`
+    // so it shows up visually but DOESN'T contribute to the parent
+    // .cm-line's .textContent — keeps tests + accessibility tooling
+    // that read line text from picking up "peer-name" as if it were
+    // real document content.
     const wrap = document.createElement('span');
     wrap.className = 'cm-peer-caret';
     wrap.setAttribute('data-client-id', String(this.clientID));
     wrap.setAttribute('data-name', this.name);
+    wrap.setAttribute('aria-hidden', 'true');
     wrap.style.borderLeftColor = this.color;
-    const label = document.createElement('span');
-    label.className = 'cm-peer-caret-label';
-    label.style.backgroundColor = this.color;
-    label.textContent = this.name;
-    wrap.appendChild(label);
+    wrap.style.setProperty('--cm-peer-color', this.color);
     return wrap;
   }
   ignoreEvent(): boolean {

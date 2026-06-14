@@ -2,7 +2,7 @@
   import { onMount, onDestroy, untrack } from 'svelte';
   import { logEvent, logError } from '../logbus';
   import { Compartment, EditorState } from '@codemirror/state';
-  import { EditorView, keymap } from '@codemirror/view';
+  import { EditorView, keymap, drawSelection, rectangularSelection, crosshairCursor } from '@codemirror/view';
   import { authorshipExtension } from '../authorship';
   import {
     defaultKeymap,
@@ -54,7 +54,7 @@
   import { commentDecorations, setCommentRanges, type CommentRange } from '../commentDecorations';
   import { citeHover } from '../citeHover';
   import { bib } from '../bibStore.svelte';
-  import { search, searchKeymap } from '@codemirror/search';
+  import { search, searchKeymap, selectNextOccurrence } from '@codemirror/search';
   import { EditorState as ES, type Extension } from '@codemirror/state';
   import { lineNumbers as lineNumbersExt } from '@codemirror/view';
 
@@ -705,6 +705,17 @@
       extensions: [
         lineNumbersCompartment.of(lineNumExt()),
         history(),
+        // Multi-cursor : Alt-click adds a cursor at the clicked spot,
+        // Cmd+D selects the next occurrence of the current selection,
+        // Cmd+Shift+L selects every occurrence. Standard VSCode UX.
+        // drawSelection replaces the native browser cursor with CM's
+        // own rendering, which is the only way to PAINT more than one
+        // caret at a time. allowMultipleSelections opts the state into
+        // a SelectionRange[] instead of a single anchor/head pair.
+        EditorState.allowMultipleSelections.of(true),
+        drawSelection(),
+        rectangularSelection(),
+        crosshairCursor(),
         indentOnInput(),
         bracketMatching(),
         syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
@@ -746,6 +757,12 @@
           // Cmd+] / Cmd+[ : indent / outdent (matches VSCode + JetBrains).
           { key: 'Mod-]', run: indentMore },
           { key: 'Mod-[', run: indentLess },
+          // Multi-cursor : VSCode-equivalent shortcuts.
+          // Cmd+D selects the next occurrence of the current selection
+          // (or grows the selection from the cursor word). Repeating
+          // Cmd+D adds further occurrences. selectNextOccurrence is
+          // CodeMirror's own implementation — same semantics as VSCode.
+          { key: 'Mod-d', run: selectNextOccurrence },
         ]),
         languageCompartment.of(languagePack(language)),
         // Custom Y.Text ↔ CodeMirror two-way binding. Replaces

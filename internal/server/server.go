@@ -270,6 +270,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/projects/{name}/history/diff", s.requireAuth(s.handleHistoryDiff))
 	s.mux.HandleFunc("POST /api/projects/{name}/history/label", s.requireAuth(s.handleHistoryLabel))
 	s.mux.HandleFunc("POST /api/projects/{name}/history/restore", s.requireAuth(s.handleHistoryRestore))
+	// V0.9 project export : stream the whole project as a ZIP. Used
+	// by the Navbar "⤓ Download" button for one-click backups +
+	// offline review.
+	s.mux.HandleFunc("GET /api/projects/{name}/export.zip", s.requireAuth(s.handleProjectExport))
 	// V0.3 LLM chat surface — stub responses for now ; full wiring
 	// to Ollama / Anthropic / OpenAI lands when the backend config
 	// surface is in place.

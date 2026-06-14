@@ -123,16 +123,19 @@ await new Promise((r) => setTimeout(r, 300));
 const decorState = await page.evaluate(() => {
   const carets = Array.from(document.querySelectorAll('.cm-peer-caret'));
   const selections = Array.from(document.querySelectorAll('.cm-peer-selection'));
-  const first = carets[0];
-  const label = first?.querySelector('.cm-peer-caret-label');
-  const rect = first?.getBoundingClientRect();
+  // Filter to the synthetic test peer (clientID 999999) — when the
+  // test runs after another suite that left a real awareness peer
+  // alive, querying by index 0 would pick the wrong one. The label
+  // now lives on a ::after pseudo-element so we read the name from
+  // the data-name attribute instead of a child node's textContent.
+  const adaCaret = carets.find((el) => el.getAttribute('data-client-id') === '999999');
+  const rect = adaCaret?.getBoundingClientRect();
   return {
     caretCount: carets.length,
     selectionCount: selections.length,
-    dataName: first?.getAttribute('data-name') ?? null,
-    dataClientID: first?.getAttribute('data-client-id') ?? null,
-    labelText: label?.textContent ?? null,
-    borderColor: first ? getComputedStyle(first).borderLeftColor : null,
+    dataName: adaCaret?.getAttribute('data-name') ?? null,
+    dataClientID: adaCaret?.getAttribute('data-client-id') ?? null,
+    borderColor: adaCaret ? getComputedStyle(adaCaret).borderLeftColor : null,
     rectLeft: rect?.left ?? null,
     rectTop: rect?.top ?? null,
     selectionStyle: selections[0]?.getAttribute('style') ?? null,
@@ -145,7 +148,7 @@ if (decorState.caretCount >= 1) {
   failL('caret rendered', 'no .cm-peer-caret in DOM : ' + JSON.stringify(decorState));
 }
 if (decorState.dataName === 'Ada') {
-  ok('caret label', 'data-name="Ada" + label text=' + JSON.stringify(decorState.labelText));
+  ok('caret label', 'data-name="Ada" (rendered via CSS ::after)');
 } else {
   failL('caret label', 'expected Ada, got ' + JSON.stringify(decorState));
 }

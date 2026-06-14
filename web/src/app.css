@@ -97,12 +97,19 @@
   vertical-align: text-top;
   pointer-events: none;
 }
-.cm-editor .cm-peer-caret-label {
+/* Peer-caret label uses ::after + content: attr(data-name) so the
+   peer's name renders visually but DOESN'T contribute to the parent
+   .cm-line's .textContent. Real document text stays clean from
+   awareness pollution — tests + a11y tooling that read line content
+   no longer see "alice" mixed into the buffer. */
+.cm-editor .cm-peer-caret::after {
+  content: attr(data-name);
   position: absolute;
   bottom: 100%;
   left: -1px;
   padding: 1px 6px;
   border-radius: 3px 3px 3px 0;
+  background-color: var(--cm-peer-color, hsl(0, 0%, 60%));
   font-family: ui-sans-serif, system-ui, sans-serif;
   font-size: 10px;
   font-weight: 600;
@@ -113,6 +120,8 @@
   pointer-events: none;
   z-index: 10;
 }
+/* Legacy class kept for the now-deleted child <span> ; harmless. */
+.cm-editor .cm-peer-caret-label { display: none; }
 .cm-editor .cm-peer-selection {
   background-color: rgba(120, 120, 120, 0.18);
 }

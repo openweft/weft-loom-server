@@ -543,6 +543,28 @@
     exportPDFViaHTML();
   }
 
+  // V0.9 : whole-project ZIP backup. Hits
+  // GET /api/projects/<p>/export.zip which streams a deflate archive
+  // of every non-directory file in the project. The browser drives
+  // the download via an <a download> click — no fetch + Blob round
+  // trip needed for files up to a few hundred MB, which keeps
+  // memory low. We use the project name + a date stamp as the
+  // suggested filename ; the server sets Content-Disposition too but
+  // some browsers honour the anchor's `download` attribute first.
+  function exportProjectZip() {
+    if (!project) return;
+    const stamp = new Date().toISOString().slice(0, 10);
+    const url = '/api/projects/' + encodeURIComponent(project) + '/export.zip';
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = project + '-' + stamp + '.zip';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => a.remove(), 1000);
+    logEvent('project', 'export-zip', { project });
+  }
+
   // exportPDFViaCompile fires a compile job and polls until the
   // artifact URL is ready, then triggers a download. The CompileLog
   // panel also auto-opens so the user sees streaming TeX errors.
@@ -1047,6 +1069,7 @@
     onToggleCollab={toggleCollab}
     onCompile={toggleLog}
     onExportPDF={exportPDF}
+    onExportProjectZip={exportProjectZip}
     onRevisionMode={() => onRevisionToggle(!revisionMode)}
     onOpenSettings={() => (settingsOpen = true)}
   />

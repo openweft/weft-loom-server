@@ -27,6 +27,7 @@
     onToggleCollab: () => void;
     onCompile: () => void;
     onExportPDF: () => void;
+    onExportProjectZip: () => void;
     onRevisionMode: () => void;
     onOpenSettings: () => void;
   }
@@ -42,6 +43,7 @@
     onToggleCollab,
     onCompile,
     onExportPDF,
+    onExportProjectZip,
     onRevisionMode,
     onOpenSettings,
   }: Props = $props();
@@ -59,6 +61,8 @@
           { kind: 'item', labelKey: 'menu.file.new', shortcut: 'Cmd+N', action: onNewFile },
           { kind: 'divider' },
           { kind: 'item', labelKey: 'menu.file.switchProject', shortcut: 'Cmd+P', action: onSwitchProject },
+          { kind: 'divider' },
+          { kind: 'item', labelKey: 'menu.file.exportZip', action: onExportProjectZip },
           { kind: 'divider' },
           { kind: 'item', labelKey: 'menu.file.settings', shortcut: 'Cmd+,', action: onOpenSettings },
         ] as Item[],
