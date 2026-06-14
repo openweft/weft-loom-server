@@ -191,15 +191,49 @@
     }
   }
 
+  // Adaptive debounce window (M5 of the 2026-06-14 perf audit).
+  // writeODT zips the entire ODF container — for multi-page documents
+  // that's 50-200 ms of sync work on the main thread. Scale the
+  // debounce by the current doc size so big docs don't pay the spike
+  // between every keystroke pause. RTF stays at 600 ms because
+  // writeRTF is a sync string build (no zip).
+  function pickDebounce(): number {
+    if (format() !== 'odt') return 600;
+    const len = editorEl?.innerHTML.length ?? 0;
+    if (len > 200_000) return 3000;
+    if (len > 50_000) return 1500;
+    return 600;
+  }
+
+  // Idle-scheduled save : requestIdleCallback waits until the browser
+  // is actually idle, so the serialise + zip lands between frames
+  // instead of stalling the next keystroke. Safari before 2025 lacks
+  // the API ; fall back to a plain setTimeout(0) there.
+  function scheduleSave() {
+    type IdleWindow = Window & {
+      requestIdleCallback?: (
+        cb: () => void,
+        opts?: { timeout?: number },
+      ) => number;
+    };
+    const w = window as IdleWindow;
+    if (typeof w.requestIdleCallback === 'function') {
+      // 2 s timeout so a hot main thread can't starve the save forever.
+      w.requestIdleCallback(() => { void save(); }, { timeout: 2000 });
+    } else {
+      setTimeout(() => { void save(); }, 0);
+    }
+  }
+
   function onInput() {
     dirty = true;
     if (saveTimer) clearTimeout(saveTimer);
-    saveTimer = setTimeout(save, 600);
+    saveTimer = setTimeout(scheduleSave, pickDebounce());
   }
 
   // saveNow cancels the debounced auto-save + writes immediately.
   // Wired to the toolbar's 💾 button + Cmd+S handler so the user can
-  // force an explicit checkpoint without waiting the 600 ms.
+  // force an explicit checkpoint without waiting the debounce.
   async function saveNow() {
     if (saveTimer) { clearTimeout(saveTimer); saveTimer = undefined; }
     await save();
@@ -207,9 +241,17 @@
 
   // savedLabel : how long ago the last save landed, surfaced next
   // to the save icon. Updated by a 30 s tick so the user sees the
-  // string drift without it churning every render.
+  // string drift without it churning every render. Only tick while
+  // `savedAt` is set AND was within the last hour ; beyond that the
+  // label degrades to "à HH:MM" which is static, so the interval is
+  // pure overhead (L3 of the 2026-06-14 perf audit).
   let nowTick = $state(Date.now());
   $effect(() => {
+    if (!savedAt) return;
+    if (nowTick - savedAt > 3600_000) return;
+    // Force one tick now so the relative label re-renders when this
+    // effect kicks back in after `savedAt` flips from null.
+    nowTick = Date.now();
     const id = setInterval(() => { nowTick = Date.now(); }, 30000);
     return () => clearInterval(id);
   });
