@@ -77,6 +77,46 @@
    = 20% alpha when colorLight isn't pushed). No override needed
    beyond this presence comment ; the library style cascades unchanged. */
 
+/* In-editor presence cursors (presence.ts). The ViewPlugin in
+   presence.ts inserts a zero-width widget at each remote peer's
+   `head` offset plus a mark decoration spanning their selection. The
+   per-peer color lands as inline style on `.cm-peer-caret` (border-
+   left-color) and `.cm-peer-caret-label` (background-color), so the
+   rules below only own layout + the base presentation. Kept here in
+   the global stylesheet (rather than only in the extension's
+   baseTheme) so editor remounts / theme switches don't lose the
+   styling — and so the puppeteer test can assert the visual classes
+   regardless of CodeMirror's StyleModule layering. */
+.cm-editor .cm-peer-caret {
+  position: relative;
+  display: inline-block;
+  width: 0;
+  height: 1em;
+  border-left: 2px solid hsl(0, 0%, 60%);
+  margin-left: -1px;
+  vertical-align: text-top;
+  pointer-events: none;
+}
+.cm-editor .cm-peer-caret-label {
+  position: absolute;
+  bottom: 100%;
+  left: -1px;
+  padding: 1px 6px;
+  border-radius: 3px 3px 3px 0;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: white;
+  white-space: nowrap;
+  user-select: none;
+  pointer-events: none;
+  z-index: 10;
+}
+.cm-editor .cm-peer-selection {
+  background-color: rgba(120, 120, 120, 0.18);
+}
+
 /* Mobile responsive sweep — the SPA is desktop-first ; below md
    (< 768 px) we treat the viewport as a phone : iOS notch + Android
    gesture-bar are the two common hostile areas, so we honour the

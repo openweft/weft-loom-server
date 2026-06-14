@@ -350,6 +350,17 @@ node tests/ai-chat.mjs
 AI_CHAT=$?
 
 echo
+echo "----- Presence cursors suite -----"
+# Regression guard for the in-editor presence cursors : every remote
+# peer state carrying a { cursor: { anchor, head } } field must
+# decorate the editor with a .cm-peer-caret (with data-name + a
+# per-peer colored border) and, when the range is non-empty, a
+# .cm-peer-selection mark. The local view also broadcasts its own
+# cursor into awareness on every selection change so peers see us.
+node tests/presence-cursors.mjs
+PRESENCE=$?
+
+echo
 echo "----- Mobile responsive layout suite -----"
 # Regression guard for the < 768 px responsive sweep : navbar
 # hamburger button, slide-over sidebar, dropped StatusBar fields
@@ -360,7 +371,7 @@ MOBILE=$?
 
 echo
 echo "==============================================="
-if [ $UI -eq 0 ] && [ $LANG -eq 0 ] && [ $PREVIEW -eq 0 ] && [ $UIENTRY -eq 0 ] && [ $THEMEP -eq 0 ] && [ $WYSIWYG -eq 0 ] && [ $WYSIWYG_ODT -eq 0 ] && [ $WYSIWYG_ODT_TB -eq 0 ] && [ $ODT_TPL -eq 0 ] && [ $LATEX_PAL -eq 0 ] && [ $MARP_PIC -eq 0 ] && [ $BIB_PAN -eq 0 ] && [ $INLINE_MATH -eq 0 ] && [ $OUTLINE -eq 0 ] && [ $PDF_VIEW -eq 0 ] && [ $COMMENTS -eq 0 ] && [ $ODT_FIELDS -eq 0 ] && [ $PAGE_VARS -eq 0 ] && [ $ODT_FRAMES -eq 0 ] && [ $ODT_HF -eq 0 ] && [ $RTF_FIELDS -eq 0 ] && [ $LSP -eq 0 ] && [ $ODS -eq 0 ] && [ $ODS_FX -eq 0 ] && [ $ODS_COL -eq 0 ] && [ $INTERACTIONS -eq 0 ] && [ $ODS_VIRT -eq 0 ] && [ $ODS_NAV -eq 0 ] && [ $ODS_LAY -eq 0 ] && [ $ODS_FMT -eq 0 ] && [ $HIST -eq 0 ] && [ $LATEX_RENDER -eq 0 ] && [ $AI_CHAT -eq 0 ] && [ $MOBILE -eq 0 ]; then
+if [ $UI -eq 0 ] && [ $LANG -eq 0 ] && [ $PREVIEW -eq 0 ] && [ $UIENTRY -eq 0 ] && [ $THEMEP -eq 0 ] && [ $WYSIWYG -eq 0 ] && [ $WYSIWYG_ODT -eq 0 ] && [ $WYSIWYG_ODT_TB -eq 0 ] && [ $ODT_TPL -eq 0 ] && [ $LATEX_PAL -eq 0 ] && [ $MARP_PIC -eq 0 ] && [ $BIB_PAN -eq 0 ] && [ $INLINE_MATH -eq 0 ] && [ $OUTLINE -eq 0 ] && [ $PDF_VIEW -eq 0 ] && [ $COMMENTS -eq 0 ] && [ $ODT_FIELDS -eq 0 ] && [ $PAGE_VARS -eq 0 ] && [ $ODT_FRAMES -eq 0 ] && [ $ODT_HF -eq 0 ] && [ $RTF_FIELDS -eq 0 ] && [ $LSP -eq 0 ] && [ $ODS -eq 0 ] && [ $ODS_FX -eq 0 ] && [ $ODS_COL -eq 0 ] && [ $INTERACTIONS -eq 0 ] && [ $ODS_VIRT -eq 0 ] && [ $ODS_NAV -eq 0 ] && [ $ODS_LAY -eq 0 ] && [ $ODS_FMT -eq 0 ] && [ $HIST -eq 0 ] && [ $LATEX_RENDER -eq 0 ] && [ $AI_CHAT -eq 0 ] && [ $PRESENCE -eq 0 ] && [ $MOBILE -eq 0 ]; then
   echo "  \033[32mALL PASS\033[0m"
   exit 0
 fi
@@ -397,6 +408,7 @@ fi
 [ $HIST -eq 0 ] && echo "  history            : \033[32mPASS\033[0m" || echo "  history            : \033[31mFAIL\033[0m"
 [ $LATEX_RENDER -eq 0 ] && echo "  latex-source-render: \033[32mPASS\033[0m" || echo "  latex-source-render: \033[31mFAIL\033[0m"
 [ $AI_CHAT -eq 0 ] && echo "  ai-chat            : \033[32mPASS\033[0m" || echo "  ai-chat            : \033[31mFAIL\033[0m"
+[ $PRESENCE -eq 0 ] && echo "  presence-cursors   : \033[32mPASS\033[0m" || echo "  presence-cursors   : \033[31mFAIL\033[0m"
 [ $MOBILE -eq 0 ] && echo "  mobile-layout      : \033[32mPASS\033[0m" || echo "  mobile-layout      : \033[31mFAIL\033[0m"
 echo "==============================================="
 exit 1

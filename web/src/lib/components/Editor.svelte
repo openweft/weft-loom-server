@@ -73,6 +73,7 @@
   import { WebsocketProvider } from 'y-websocket';
   import { yjsBinding, YORIGIN_LOCAL } from '../ybinding';
   import type { Awareness } from 'y-protocols/awareness';
+  import { presenceCursors } from '../presence';
   import type { Identity } from '../identity';
   import { readFile, writeFile } from '../api';
 
@@ -576,6 +577,13 @@
       avatar: identity.avatar,
     });
     onAwareness?.(provider.awareness);
+    // Expose the live Awareness handle on window so tests (and the
+    // odd power-user) can inject synthetic peer states without needing
+    // a second browser tab. The presence.ts ViewPlugin listens on the
+    // same object's 'change' event, so any `setLocalState` /
+    // `setLocalStateField` call from outside will re-trigger a
+    // decoration rebuild end-to-end exactly like a remote peer would.
+    (window as unknown as { weftLoomAwareness?: Awareness }).weftLoomAwareness = provider.awareness;
     const ytextKey = file && file !== '' ? 'file:' + file : 'codemirror';
     const ytext = ydoc.getText(ytextKey);
 
@@ -643,6 +651,14 @@
         // peers lives in app.css against the .cm-y* classes the
         // y-protocols Awareness state already exposes.
         binding.extension,
+        // Real-time presence : remote peers' carets + selection
+        // ranges decorate the editor surface live, driven by the
+        // same Yjs Awareness map CollaboratorsSidebar reads. Every
+        // local selection change broadcasts a `cursor` field into
+        // awareness (throttled at 50 ms) so peers see us too. The
+        // extension is unconditional — when no peers are connected
+        // it simply paints nothing.
+        presenceCursors(provider.awareness),
         // Authorship colouring goes through a Compartment so the
         // toggle button in the navbar can swap it in / out without
         // rebuilding the whole EditorState.
