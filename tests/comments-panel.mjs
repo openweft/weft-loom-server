@@ -107,21 +107,63 @@ if (afterResolve.resolvedClass && afterResolve.resolvedAnchor) {
   failL('resolve toggle', JSON.stringify(afterResolve));
 }
 
-// Delete.
+// V0.7 threaded replies : open the Reply form, type, send, verify
+// the reply renders nested under the thread root + the count badge
+// surfaces. Re-open the toggle (so the resolve test's "Re-open"
+// click — the Resolve button became "Re-open" after the earlier
+// toggle) doesn't interfere : we just check counts.
 await page.evaluate(() => {
-  const btns = Array.from(document.querySelectorAll('[data-testid="comment-entry"] button'))
-    .filter(b => b.textContent?.includes('Delete'));
+  const btns = Array.from(document.querySelectorAll('[data-testid="reply-toggle"]'));
   btns[0]?.click();
+});
+await new Promise((r) => setTimeout(r, 250));
+await page.evaluate(() => {
+  const ta = document.querySelector('[data-testid="reply-input"]');
+  if (!ta) return;
+  ta.value = 'First reply body.';
+  ta.dispatchEvent(new Event('input', { bubbles: true }));
+});
+await new Promise((r) => setTimeout(r, 100));
+await page.evaluate(() => document.querySelector('[data-testid="reply-send"]')?.click());
+await new Promise((r) => setTimeout(r, 500));
+const replyState = await page.evaluate(() => {
+  const replies = Array.from(document.querySelectorAll('[data-testid="comment-reply"]'))
+    .map((el) => el.querySelector('.comment-body')?.textContent);
+  const countBadge = document.querySelector('[data-testid="reply-count"]')?.textContent;
+  return { replies, countBadge };
+});
+if (replyState.replies.length === 1 && replyState.replies[0] === 'First reply body.') {
+  ok('reply added under thread root', '1 reply rendered');
+} else {
+  failL('reply added under thread root', JSON.stringify(replyState));
+}
+if (replyState.countBadge && replyState.countBadge.includes('1')) {
+  ok('reply count badge', replyState.countBadge.trim());
+} else {
+  failL('reply count badge', JSON.stringify(replyState));
+}
+
+// Delete cascades : deleting the thread root removes replies too.
+await page.evaluate(() => {
+  // Find the root's Delete button (NOT the reply's). The root's
+  // .comment-actions block is the LAST child of .thread-root.
+  const root = document.querySelector('.thread-root');
+  if (!root) return;
+  const actions = root.querySelector(':scope > .comment-actions');
+  const btns = actions ? Array.from(actions.querySelectorAll('button')) : [];
+  const del = btns.find((b) => b.textContent?.includes('Delete'));
+  del?.click();
 });
 await new Promise((r) => setTimeout(r, 500));
 const afterDelete = await page.evaluate(() => ({
   entries: document.querySelectorAll('[data-testid="comment-entry"]').length,
+  replies: document.querySelectorAll('[data-testid="comment-reply"]').length,
   anchor: !!document.querySelector('.cm-comment-anchor'),
 }));
-if (afterDelete.entries === 0 && !afterDelete.anchor) {
-  ok('delete', 'comment + anchor both removed');
+if (afterDelete.entries === 0 && afterDelete.replies === 0 && !afterDelete.anchor) {
+  ok('cascade delete', 'root + reply + anchor all removed');
 } else {
-  failL('delete', JSON.stringify(afterDelete));
+  failL('cascade delete', JSON.stringify(afterDelete));
 }
 
 await browser.close();

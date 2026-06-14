@@ -40,6 +40,28 @@
   let resolved = $state<Record<string, { from: number; to: number } | null>>({});
   let pendingBody = $state('');
   let lastSelection = $state<{ from: number; to: number; text: string } | null>(null);
+  // Per-thread reply drafts. Keyed by the thread-root comment id ;
+  // typing in one reply box doesn't leak into another.
+  let replyDrafts = $state<Record<string, string>>({});
+  // Tracks which thread-root has its reply textarea expanded. Clean
+  // UX : only one reply form open at a time, click "Reply" to toggle.
+  let replyOpen = $state<string | null>(null);
+  // Derived view : top-level threads (comments without parentId)
+  // grouped with their replies. Replies are sorted by ts ascending so
+  // they read top→bottom chronologically inside each thread.
+  type Thread = { root: CommentRecord; replies: CommentRecord[] };
+  const threads = $derived.by((): Thread[] => {
+    const roots = comments.filter((c) => !c.parentId);
+    const byParent = new Map<string, CommentRecord[]>();
+    for (const c of comments) {
+      if (!c.parentId) continue;
+      const arr = byParent.get(c.parentId) ?? [];
+      arr.push(c);
+      byParent.set(c.parentId, arr);
+    }
+    for (const arr of byParent.values()) arr.sort((a, b) => a.ts - b.ts);
+    return roots.map((r) => ({ root: r, replies: byParent.get(r.id) ?? [] }));
+  });
 
   let arr: Y.Array<Y.Map<unknown>> | undefined;
   let observer: (() => void) | undefined;
@@ -129,11 +151,64 @@
 
   function deleteComment(id: string) {
     if (!arr || !ydoc) return;
+    // Threaded comments : when deleting a thread root we cascade
+    // through replies in the same transaction so peers see a clean
+    // disappearance. Deleting a reply leaves the root + siblings.
     ydoc.transact(() => {
       const all = arr!.toArray();
-      const idx = all.findIndex(m => m.get('id') === id);
-      if (idx >= 0) arr!.delete(idx, 1);
+      // Pre-compute ids to drop : the target + (when target is a
+      // root) every direct/indirect reply that points back at it.
+      const toDrop = new Set<string>([id]);
+      let grew = true;
+      while (grew) {
+        grew = false;
+        for (const m of all) {
+          const p = m.get('parentId') as string | undefined;
+          const ownId = m.get('id') as string;
+          if (p && toDrop.has(p) && !toDrop.has(ownId)) {
+            toDrop.add(ownId);
+            grew = true;
+          }
+        }
+      }
+      // Delete from highest index to lowest so indices stay valid.
+      const indices: number[] = [];
+      for (let i = 0; i < all.length; i++) {
+        if (toDrop.has(all[i].get('id') as string)) indices.push(i);
+      }
+      indices.reverse();
+      for (const i of indices) arr!.delete(i, 1);
     }, 'comment-delete');
+  }
+
+  function addReply(rootId: string) {
+    if (!arr || !ydoc || !file) return;
+    const body = (replyDrafts[rootId] ?? '').trim();
+    if (!body) return;
+    // Replies inherit the root thread's anchor range — they reference
+    // the same span of text, so no new from/to needed. We still store
+    // empty number[] in the CRDT shape so commentFromMap doesn't bork
+    // on missing fields ; the renderer skips anchor decoration for
+    // replies.
+    const rec: CommentRecord = {
+      id: genId(),
+      from: [],
+      to: [],
+      body,
+      authorId:    identity?.id ?? 'anon',
+      authorName:  identity?.name ?? 'Anonymous',
+      authorColor: identity?.color ?? '#888',
+      resolved: false,
+      ts: Date.now(),
+      parentId: rootId,
+    };
+    ydoc.transact(() => { arr!.push([newCommentMap(rec)]); }, 'comment-reply');
+    replyDrafts = { ...replyDrafts, [rootId]: '' };
+    replyOpen = null;
+  }
+
+  function toggleReplyOpen(id: string) {
+    replyOpen = replyOpen === id ? null : id;
   }
 
   function onJump(c: CommentRecord) {
@@ -204,44 +279,93 @@
             >Add comment</button>
           </div>
           <div class="comments-list">
-            {#each comments as c (c.id)}
+            {#each threads as t (t.root.id)}
               <div
-                class="comment"
-                class:resolved={c.resolved}
+                class="comment thread-root"
+                class:resolved={t.root.resolved}
                 data-testid="comment-entry"
-                data-id={c.id}
+                data-id={t.root.id}
               >
                 <button
                   type="button"
                   class="comment-jump"
-                  onclick={() => onJump(c)}
-                  title={resolved[c.id] ? 'Jump to anchor' : 'Anchor lost (text deleted)'}
+                  onclick={() => onJump(t.root)}
+                  title={resolved[t.root.id] ? 'Jump to anchor' : 'Anchor lost (text deleted)'}
                 >
                   <div class="comment-head">
-                    <span class="comment-author" style="color: {c.authorColor}">{c.authorName}</span>
-                    <span class="comment-ts">{formatTime(c.ts)}</span>
-                    {#if c.resolved}
+                    <span class="comment-author" style="color: {t.root.authorColor}">{t.root.authorName}</span>
+                    <span class="comment-ts">{formatTime(t.root.ts)}</span>
+                    {#if t.root.resolved}
                       <span class="badge badge-ghost badge-xs">resolved</span>
                     {/if}
-                    {#if !resolved[c.id]}
+                    {#if !resolved[t.root.id]}
                       <span class="badge badge-warning badge-xs">orphan</span>
                     {/if}
+                    {#if t.replies.length > 0}
+                      <span class="badge badge-info badge-xs" data-testid="reply-count">
+                        {t.replies.length} {t.replies.length === 1 ? 'reply' : 'replies'}
+                      </span>
+                    {/if}
                   </div>
-                  <div class="comment-body">{c.body}</div>
+                  <div class="comment-body">{t.root.body}</div>
                 </button>
+                {#each t.replies as r (r.id)}
+                  <div class="comment reply" data-testid="comment-reply" data-id={r.id}>
+                    <div class="comment-head">
+                      <span class="comment-author" style="color: {r.authorColor}">{r.authorName}</span>
+                      <span class="comment-ts">{formatTime(r.ts)}</span>
+                    </div>
+                    <div class="comment-body">{r.body}</div>
+                    <div class="comment-actions">
+                      <button
+                        class="btn btn-ghost btn-xs text-error"
+                        onclick={() => deleteComment(r.id)}
+                        aria-label="Delete reply"
+                      >Delete</button>
+                    </div>
+                  </div>
+                {/each}
+                {#if replyOpen === t.root.id}
+                  <div class="reply-compose" data-testid="reply-compose">
+                    <textarea
+                      class="textarea textarea-bordered textarea-sm w-full"
+                      rows="2"
+                      placeholder="Reply…"
+                      bind:value={replyDrafts[t.root.id]}
+                      data-testid="reply-input"
+                    ></textarea>
+                    <div class="flex gap-1 mt-1">
+                      <button
+                        class="btn btn-primary btn-xs"
+                        onclick={() => addReply(t.root.id)}
+                        disabled={!(replyDrafts[t.root.id] ?? '').trim()}
+                        data-testid="reply-send"
+                      >Send</button>
+                      <button
+                        class="btn btn-ghost btn-xs"
+                        onclick={() => (replyOpen = null)}
+                      >Cancel</button>
+                    </div>
+                  </div>
+                {/if}
                 <div class="comment-actions">
                   <button
                     class="btn btn-ghost btn-xs"
-                    onclick={() => toggleResolved(c.id)}
-                  >{c.resolved ? 'Re-open' : 'Resolve'}</button>
+                    onclick={() => toggleReplyOpen(t.root.id)}
+                    data-testid="reply-toggle"
+                  >{replyOpen === t.root.id ? 'Close reply' : 'Reply'}</button>
+                  <button
+                    class="btn btn-ghost btn-xs"
+                    onclick={() => toggleResolved(t.root.id)}
+                  >{t.root.resolved ? 'Re-open' : 'Resolve'}</button>
                   <button
                     class="btn btn-ghost btn-xs text-error"
-                    onclick={() => deleteComment(c.id)}
+                    onclick={() => deleteComment(t.root.id)}
                   >Delete</button>
                 </div>
               </div>
             {/each}
-            {#if comments.length === 0}
+            {#if threads.length === 0}
               <div class="opacity-50 text-xs p-2 text-center">
                 No comments yet. Select some text in the editor + write a comment above.
               </div>
@@ -294,6 +418,21 @@
     border: 1px solid rgba(0, 0, 0, 0.08);
   }
   .comment.resolved { opacity: 0.5; }
+  /* Replies render nested under their root thread with a left rail
+     so the visual hierarchy is clear. */
+  .comment.reply {
+    margin: 0.4rem 0 0 1rem;
+    padding: 0.35rem 0.5rem;
+    background: rgba(0, 0, 0, 0.02);
+    border-left: 2px solid rgba(0, 100, 200, 0.3);
+    border-radius: 0 0.3rem 0.3rem 0;
+  }
+  .reply-compose {
+    margin: 0.4rem 0 0 1rem;
+    padding: 0.3rem;
+    background: rgba(0, 100, 200, 0.04);
+    border-radius: 0.3rem;
+  }
   .comment-jump {
     display: block;
     width: 100%;

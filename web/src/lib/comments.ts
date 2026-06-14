@@ -36,6 +36,11 @@ export interface CommentRecord {
   // deletes them. Mirrors Overleaf's "resolve" gesture.
   resolved: boolean;
   ts: number;
+  // V0.7 threaded comments : when set, this comment is a reply to
+  // another comment in the same array. Top-level comments (thread
+  // roots) leave it undefined. Replies don't carry their own from/to
+  // anchors — the renderer falls back to the root's range.
+  parentId?: string;
 }
 
 // Comments live as a Y.Array of Y.Map<field,value>. Each comment is a
@@ -59,6 +64,7 @@ export function newCommentMap(rec: CommentRecord): Y.Map<unknown> {
   m.set('authorColor', rec.authorColor);
   m.set('resolved', rec.resolved);
   m.set('ts', rec.ts);
+  if (rec.parentId) m.set('parentId', rec.parentId);
   return m;
 }
 
