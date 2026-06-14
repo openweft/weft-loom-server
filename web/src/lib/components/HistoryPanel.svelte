@@ -18,6 +18,23 @@
     size: number;
     content: string;
   }
+  interface DiffLine {
+    kind: 'add' | 'remove' | 'context';
+    text: string;
+    oldLineNum: number;
+    newLineNum: number;
+  }
+  interface DiffHunk {
+    oldStart: number;
+    newStart: number;
+    lines: DiffLine[];
+  }
+  interface DiffPayload {
+    from: string;
+    to: string;
+    summary: { added: number; removed: number };
+    hunks: DiffHunk[];
+  }
   interface Props {
     project: string;
     file: string;
@@ -32,6 +49,12 @@
   let restoring = $state(false);
   let restoreError = $state<string | undefined>();
   let lastRefresh = $state(0);
+  // View mode for the right pane :
+  //   'content' = full snapshot text (V0.5)
+  //   'diff'    = unified diff snapshot ↔ live file
+  let viewMode = $state<'content' | 'diff'>('diff');
+  let diff = $state<DiffPayload | undefined>();
+  let diffError = $state<string | undefined>();
 
   function url(path: string): string {
     return '/api/projects/' + encodeURIComponent(project) + path;
@@ -58,13 +81,23 @@
   async function loadSnapshot(ts: string) {
     selectedTs = ts;
     preview = undefined;
-    try {
-      const r = await fetch(url('/history/snapshot?file=' + encodeURIComponent(file) + '&at=' + encodeURIComponent(ts)));
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      preview = await r.json();
-    } catch (e) {
-      logError('history', 'snapshot-failed', e);
-    }
+    diff = undefined;
+    diffError = undefined;
+    // Kick off BOTH in parallel — the user can toggle the view mode
+    // without an extra round-trip.
+    const snapP = fetch(url('/history/snapshot?file=' + encodeURIComponent(file) + '&at=' + encodeURIComponent(ts)))
+      .then(async (r) => {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        preview = await r.json();
+      })
+      .catch((e) => { logError('history', 'snapshot-failed', e); });
+    const diffP = fetch(url('/history/diff?file=' + encodeURIComponent(file) + '&from=' + encodeURIComponent(ts)))
+      .then(async (r) => {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        diff = await r.json();
+      })
+      .catch((e) => { diffError = String(e); logError('history', 'diff-failed', e); });
+    await Promise.allSettled([snapP, diffP]);
   }
 
   async function restore(ts: string) {
@@ -166,24 +199,95 @@
       {/if}
     </ul>
 
-    <!-- Preview pane -->
+    <!-- Preview pane : header + (diff | content) body -->
     <div class="flex-1 flex flex-col overflow-hidden">
-      {#if !preview}
+      {#if !preview && !diff}
         <div class="flex-1 flex items-center justify-center text-base-content/50 text-xs">
           Select a snapshot to preview it.
         </div>
       {:else}
-        <div class="flex items-center justify-between px-3 py-2 border-b border-base-300 bg-base-200/50">
-          <span class="font-mono text-xs">{shortTime(preview.ts)} · {shortAuthor(preview.author)}</span>
-          <button
-            type="button"
-            class="btn btn-xs btn-warning"
-            onclick={() => restore(preview!.ts)}
-            disabled={restoring}
-            aria-label="Restore this version"
-          >{restoring ? 'Restoring…' : 'Restore this version'}</button>
+        <div class="flex items-center justify-between px-3 py-2 border-b border-base-300 bg-base-200/50 gap-2">
+          <span class="font-mono text-xs">
+            {shortTime(preview?.ts ?? selectedTs ?? '')}
+            · {shortAuthor(preview?.author ?? '')}
+            {#if diff?.summary}
+              <span class="ml-2 text-success" data-testid="diff-added">+{diff.summary.added}</span>
+              <span class="text-error" data-testid="diff-removed">−{diff.summary.removed}</span>
+            {/if}
+          </span>
+          <div class="flex items-center gap-1">
+            <div role="tablist" class="join" aria-label="View mode">
+              <button
+                role="tab"
+                type="button"
+                class="join-item btn btn-xs"
+                class:btn-active={viewMode === 'diff'}
+                onclick={() => (viewMode = 'diff')}
+                aria-selected={viewMode === 'diff'}
+                data-testid="hist-view-diff"
+              >Diff</button>
+              <button
+                role="tab"
+                type="button"
+                class="join-item btn btn-xs"
+                class:btn-active={viewMode === 'content'}
+                onclick={() => (viewMode = 'content')}
+                aria-selected={viewMode === 'content'}
+                data-testid="hist-view-content"
+              >Content</button>
+            </div>
+            <button
+              type="button"
+              class="btn btn-xs btn-warning"
+              onclick={() => preview && restore(preview.ts)}
+              disabled={restoring || !preview}
+              aria-label="Restore this version"
+            >{restoring ? 'Restoring…' : 'Restore this version'}</button>
+          </div>
         </div>
-        <pre class="flex-1 overflow-auto p-3 font-mono text-xs whitespace-pre-wrap break-words">{preview.content}</pre>
+        {#if viewMode === 'diff'}
+          <div class="flex-1 overflow-auto" data-testid="hist-diff-body">
+            {#if diffError}
+              <div class="px-3 py-2 text-error text-xs">{diffError}</div>
+            {:else if !diff}
+              <div class="px-3 py-2 opacity-50 text-xs">Loading diff…</div>
+            {:else if diff.hunks.length === 0}
+              <div class="px-3 py-3 opacity-60 text-xs">No differences vs the live file.</div>
+            {:else}
+              <table class="font-mono text-xs w-full border-collapse">
+                <tbody>
+                  {#each diff.hunks as h, hi (hi)}
+                    {#if hi > 0}
+                      <tr class="bg-base-200/70 text-base-content/60">
+                        <td colspan="3" class="px-3 py-1 text-center">⋯</td>
+                      </tr>
+                    {/if}
+                    {#each h.lines as l, li (hi + ':' + li)}
+                      <tr
+                        class="border-b border-base-200/40"
+                        class:bg-success={l.kind === 'add'}
+                        class:bg-error={l.kind === 'remove'}
+                        class:bg-opacity-10={l.kind !== 'context'}
+                      >
+                        <td class="w-12 text-right pr-2 select-none text-base-content/40">
+                          {l.oldLineNum > 0 ? l.oldLineNum : ''}
+                        </td>
+                        <td class="w-12 text-right pr-2 select-none text-base-content/40">
+                          {l.newLineNum > 0 ? l.newLineNum : ''}
+                        </td>
+                        <td class="px-2 whitespace-pre-wrap break-words">
+                          <span class="text-base-content/40 mr-1 select-none">{l.kind === 'add' ? '+' : l.kind === 'remove' ? '−' : ' '}</span>{l.text}
+                        </td>
+                      </tr>
+                    {/each}
+                  {/each}
+                </tbody>
+              </table>
+            {/if}
+          </div>
+        {:else}
+          <pre class="flex-1 overflow-auto p-3 font-mono text-xs whitespace-pre-wrap break-words" data-testid="hist-content-body">{preview?.content ?? ''}</pre>
+        {/if}
       {/if}
     </div>
   </div>

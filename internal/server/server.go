@@ -267,6 +267,7 @@ func (s *Server) routes() {
 	// for the SPA HistoryPanel.
 	s.mux.HandleFunc("GET /api/projects/{name}/history", s.requireAuth(s.handleHistoryList))
 	s.mux.HandleFunc("GET /api/projects/{name}/history/snapshot", s.requireAuth(s.handleHistorySnapshot))
+	s.mux.HandleFunc("GET /api/projects/{name}/history/diff", s.requireAuth(s.handleHistoryDiff))
 	s.mux.HandleFunc("POST /api/projects/{name}/history/restore", s.requireAuth(s.handleHistoryRestore))
 	// V0.3 LLM chat surface — stub responses for now ; full wiring
 	// to Ollama / Anthropic / OpenAI lands when the backend config

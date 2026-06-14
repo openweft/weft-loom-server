@@ -71,6 +71,38 @@ if (snapResp.ok) {
   failL('snapshot fetch', 'HTTP ' + snapResp.status);
 }
 
+// Diff vs live : older snapshot is V1, live file is V2 — expect
+// 2 removed (header + body line) + 3 added (new header + 2 new
+// lines). Hunks non-empty. Done BEFORE restore so the live file
+// genuinely differs.
+const diffPreResp = await fetch(url('/history/diff?file=' + encodeURIComponent(FILE) + '&from=' + encodeURIComponent(olderTs)));
+if (diffPreResp.ok) {
+  const dv = await diffPreResp.json();
+  if (dv && Array.isArray(dv.hunks) && dv.hunks.length > 0) {
+    ok('diff vs live returns hunks', dv.hunks.length + ' hunk(s)');
+  } else {
+    failL('diff vs live returns hunks', JSON.stringify(dv));
+  }
+  const totalAdd = dv.summary?.added ?? 0;
+  const totalRem = dv.summary?.removed ?? 0;
+  if (totalAdd > 0 && totalRem > 0) {
+    ok('diff summary counts', '+' + totalAdd + ' / −' + totalRem);
+  } else {
+    failL('diff summary counts', JSON.stringify(dv.summary));
+  }
+  const kinds = new Set();
+  for (const h of dv.hunks) {
+    for (const ln of h.lines) kinds.add(ln.kind);
+  }
+  if (kinds.has('add') && kinds.has('remove')) {
+    ok('diff includes add + remove lines');
+  } else {
+    failL('diff includes add + remove lines', JSON.stringify(Array.from(kinds)));
+  }
+} else {
+  failL('diff fetch', 'HTTP ' + diffPreResp.status);
+}
+
 // Restore : POST puts V1 back to live file
 const restoreResp = await fetch(url('/history/restore'), {
   method: 'POST',

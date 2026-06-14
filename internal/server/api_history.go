@@ -116,6 +116,102 @@ func (s *Server) handleHistorySnapshot(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, entry)
 }
 
+// handleHistoryDiff returns a line-based diff between two snapshots,
+// or between one snapshot and the current live file.
+//
+//	GET /api/projects/{p}/history/diff
+//	     ?file=<path>
+//	     &from=<rfc3339>
+//	     [&to=<rfc3339>|live]    (default: live)
+//
+// Response : { from, to, summary: {added, removed}, hunks: [{...}] }
+func (s *Server) handleHistoryDiff(w http.ResponseWriter, r *http.Request) {
+	if s.history == nil {
+		http.Error(w, "history disabled", http.StatusNotFound)
+		return
+	}
+	ident, _ := auth.IdentityFrom(r.Context())
+	file := r.URL.Query().Get("file")
+	fromStr := r.URL.Query().Get("from")
+	toStr := r.URL.Query().Get("to")
+	if toStr == "" {
+		toStr = "live"
+	}
+	if file == "" || fromStr == "" {
+		http.Error(w, "file + from query params required", http.StatusBadRequest)
+		return
+	}
+	fromTs, ferr := parseAtParam(fromStr)
+	if ferr != nil {
+		http.Error(w, "from must be RFC3339 timestamp", http.StatusBadRequest)
+		return
+	}
+	dir, err := s.projectWorkingDir(ident, projectName(r))
+	if err != nil {
+		http.Error(w, "project lookup failed", http.StatusNotFound)
+		return
+	}
+	fromEntry, err := s.history.Snapshot(dir, file, fromTs)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	var toContent, toLabel string
+	if toStr == "live" {
+		// Compare against the file on disk via the project store.
+		body, lerr := s.opts.Projects.ReadFile(r.Context(), ident, projectName(r), file)
+		if lerr != nil {
+			http.Error(w, "live file unreadable: "+lerr.Error(), http.StatusNotFound)
+			return
+		}
+		buf := make([]byte, 0, 4096)
+		buf2 := make([]byte, 4096)
+		for {
+			n, rerr := body.Read(buf2)
+			if n > 0 {
+				buf = append(buf, buf2[:n]...)
+			}
+			if rerr != nil {
+				break
+			}
+		}
+		_ = body.Close()
+		toContent = string(buf)
+		toLabel = "live"
+	} else {
+		toTs, terr := parseAtParam(toStr)
+		if terr != nil {
+			http.Error(w, "to must be RFC3339 timestamp or 'live'", http.StatusBadRequest)
+			return
+		}
+		toEntry, terr2 := s.history.Snapshot(dir, file, toTs)
+		if terr2 != nil {
+			http.Error(w, terr2.Error(), http.StatusNotFound)
+			return
+		}
+		toContent = toEntry.Content
+		toLabel = toEntry.TS.Format(time.RFC3339Nano)
+	}
+	hunks := history.DiffLines(fromEntry.Content, toContent)
+	summary := history.SummariseDiff(hunks)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"from":    fromEntry.TS.Format(time.RFC3339Nano),
+		"to":      toLabel,
+		"summary": summary,
+		"hunks":   hunks,
+	})
+}
+
+// parseAtParam accepts an RFC3339 / RFC3339Nano timestamp string. The
+// SPA emits ts values verbatim from history.Entry.TS so they're
+// always nanosecond precision in practice.
+func parseAtParam(s string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return t, nil
+	}
+	return time.Parse(time.RFC3339, s)
+}
+
 func (s *Server) handleHistoryRestore(w http.ResponseWriter, r *http.Request) {
 	if s.history == nil {
 		http.Error(w, "history disabled", http.StatusNotFound)
