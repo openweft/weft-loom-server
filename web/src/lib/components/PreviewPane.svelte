@@ -167,6 +167,56 @@
   // can share the catalogue with this preview. marpThemeStyle returns a
   // safe default for unknown themes.
 
+  // M2 (perf-audit 2026-06-14) : 350 ms feels live at ~3 Hz refresh
+  // without strangling the main thread on big files (the previous
+  // 100 ms ran the full marked+KaTeX+highlight.js+DOMPurify pipeline
+  // ten times per second).
+  const RENDER_DEBOUNCE_MS = 350;
+
+  // M2 : module-scope memoisation cache. Key = cheap cyclic hash of
+  // (language, theme-ish marker, src length + first 64 B + last 64 B).
+  // Capped at 16 entries with LRU eviction (Map preserves insertion
+  // order — delete-then-set on hit moves the key to the most-recent
+  // slot). Exact equality is overkill ; the goal is to avoid the full
+  // pipeline on "same source as last tick" — the dominant case while
+  // the document sits idle between keystrokes.
+  const RENDER_CACHE_MAX = 16;
+  const renderCache = new Map<string, string>();
+
+  function renderHashKey(lang: string, src: string): string {
+    const n = src.length;
+    if (n <= 128) return lang + '|' + n + '|' + src;
+    // Cyclic 32-bit accumulator over the head + tail slices ; cheap
+    // and stable. Collisions are tolerable (the worst case is one
+    // missed cache hit) — we just want to detect "identical buffer".
+    let h = 2166136261 >>> 0;
+    const head = src.slice(0, 64);
+    const tail = src.slice(n - 64);
+    for (let i = 0; i < head.length; i++) h = Math.imul(h ^ head.charCodeAt(i), 16777619) >>> 0;
+    for (let i = 0; i < tail.length; i++) h = Math.imul(h ^ tail.charCodeAt(i), 16777619) >>> 0;
+    return lang + '|' + n + '|' + h.toString(36);
+  }
+
+  function cacheGet(key: string): string | undefined {
+    const v = renderCache.get(key);
+    if (v === undefined) return undefined;
+    // LRU bump : re-insert moves the key to the tail.
+    renderCache.delete(key);
+    renderCache.set(key, v);
+    return v;
+  }
+
+  function cachePut(key: string, html: string): void {
+    if (renderCache.has(key)) renderCache.delete(key);
+    renderCache.set(key, html);
+    while (renderCache.size > RENDER_CACHE_MAX) {
+      // First key in insertion order = least recently used.
+      const first = renderCache.keys().next().value;
+      if (first === undefined) break;
+      renderCache.delete(first);
+    }
+  }
+
   // renderMarkdown : detects a YAML front-matter `marp: true` and
   // falls into the Marp slide renderer ; otherwise plain GFM with
   // KaTeX math. DOMPurify-sanitised in both cases.
@@ -227,6 +277,16 @@
   }
 
   function render(src: string) {
+    // M2 : memoise by (language, src-fingerprint). The pdfURL toggle
+    // is folded into the cache key for latex so a freshly-arrived
+    // PDF doesn't return a stale placeholder. Notebooks bypass this
+    // function entirely (NotebookPreview owns its own rendering).
+    const cacheKey = renderHashKey(language + (language === 'latex' ? (pdfURL ? ':pdf' : ':src') : ''), src);
+    const hit = cacheGet(cacheKey);
+    if (hit !== undefined) {
+      html = hit;
+      return;
+    }
     switch (language) {
       case 'markdown':
         html = renderMarkdown(src);
@@ -258,6 +318,7 @@
           escapeHTML(src) +
           '</pre>';
     }
+    cachePut(cacheKey, html);
   }
 
   function scheduleRender() {
@@ -271,7 +332,7 @@
         rendering = false;
         firstRenderDone = true;
       }
-    }, 100);
+    }, RENDER_DEBOUNCE_MS);
   }
 
   // Re-subscribe when ydoc changes (different project).
