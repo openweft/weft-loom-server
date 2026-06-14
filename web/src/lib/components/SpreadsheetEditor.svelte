@@ -11,7 +11,7 @@
 
   import { parseODS, writeODS, columnLabel, blankSheet, type ODSSheet, type ODSCell } from '../ods';
   import { writeFile } from '../api';
-  import { HyperFormula } from 'hyperformula';
+  import { HyperFormula, type ExportedChange, ExportedCellChange } from 'hyperformula';
   import * as Y from 'yjs';
   import { WebsocketProvider } from 'y-websocket';
   import { onDestroy, onMount } from 'svelte';
@@ -204,17 +204,27 @@
   // drags + window resizes. ResizeObserver is supported in every
   // browser loom targets ; no polyfill needed.
   let resizeObs: ResizeObserver | undefined;
+  // Track the scrollEl identity the observer is currently bound to. The
+  // $effect re-runs whenever any tracked state read inside it changes ;
+  // if scrollEl identity is unchanged we keep the existing observer
+  // instead of churning a disconnect + new ResizeObserver per re-run.
+  let observedScrollEl: HTMLDivElement | undefined;
   $effect(() => {
     if (!scrollEl) return;
     viewportW = scrollEl.clientWidth;
     viewportH = scrollEl.clientHeight;
+    if (resizeObs && observedScrollEl === scrollEl) {
+      // Same scroll element : keep the existing observer. The final
+      // disconnect happens in onDestroy.
+      return;
+    }
     resizeObs?.disconnect();
+    observedScrollEl = scrollEl;
     resizeObs = new ResizeObserver(() => {
       viewportW = scrollEl.clientWidth;
       viewportH = scrollEl.clientHeight;
     });
     resizeObs.observe(scrollEl);
-    return () => resizeObs?.disconnect();
   });
 
   // Visible window in cell coordinates ; clamped to MAX_*.
@@ -316,9 +326,71 @@
       try {
         const cell = sheets[si].cells[r][c];
         const hfValue = cellToHF(cell);
-        hf.setCellContents({ sheet: si, row: r, col: c }, [[hfValue]]);
-        recomputeDisplayCache();
+        const changes = hf.setCellContents({ sheet: si, row: r, col: c }, [[hfValue]]);
+        updateDisplayCache(changes);
       } catch { /* ignore */ }
+    }
+  }
+
+  // replayRemoteCells : batched apply of the initial Y.Map snapshot.
+  // Avoids the per-cell `sheets = sheets` reactivity churn + per-cell
+  // updateDisplayCache that applyRemoteCell would trigger for each entry ;
+  // does one HF batch + one reactivity trigger + one full-cache seed at
+  // the end. Mirrors M3 of the perf audit (no nested transacts on seed).
+  function replayRemoteCells(map: NonNullable<typeof cellsMap>) {
+    let touched = false;
+    const apply = (key: string, value: {
+      display: string;
+      value: string | number | boolean;
+      type: string;
+      formula?: string;
+    } | undefined) => {
+      const parts = key.split(':');
+      if (parts.length !== 3) return;
+      const [si, r, c] = parts.map(Number);
+      if (Number.isNaN(si) || Number.isNaN(r) || Number.isNaN(c)) return;
+      if (!sheets[si]) {
+        pendingCells.set(key, value);
+        return;
+      }
+      ensureCell(si, r, c);
+      const cell = sheets[si].cells[r][c];
+      if (value === undefined) {
+        cell.display = '';
+        cell.value = '';
+        cell.type = 'string';
+        delete cell.formula;
+      } else {
+        cell.display = value.display;
+        cell.value = value.value;
+        cell.type = value.type as ODSCell['type'];
+        if (value.formula) cell.formula = value.formula;
+        else delete cell.formula;
+      }
+      if (hf) {
+        try {
+          hf.setCellContents({ sheet: si, row: r, col: c }, [[cellToHF(cell)]]);
+        } catch { /* ignore */ }
+      }
+      touched = true;
+    };
+    if (hf) {
+      // HF batch() coalesces dependent recomputation into a single pass.
+      try {
+        hf.batch(() => {
+          for (const [k, v] of map.entries()) apply(k, v);
+        });
+      } catch {
+        for (const [k, v] of map.entries()) apply(k, v);
+      }
+    } else {
+      for (const [k, v] of map.entries()) apply(k, v);
+    }
+    if (touched) {
+      sheets = sheets; // single reactivity trigger after the full replay
+      // Seed (not incremental update) once at the end : we touched many
+      // cells and don't have a consolidated ExportedChange[] from HF.
+      seedDisplayCache();
     }
   }
 
@@ -443,11 +515,13 @@
           if (!cellsMap || !ydoc || !shapeArr) return;
           const empty = cellsMap.size === 0 && shapeArr.length === 0;
           if (!empty) {
-            // Some peer already seeded ; pull whatever's there.
+            // Some peer already seeded ; pull whatever's there. Batch
+            // the HF updates so the cascade fires once per replay
+            // instead of once per cell.
             applyingRemote = true;
             try {
               if (shapeArr.length > 0) applyShape(shapeArr.toArray());
-              for (const [k, v] of cellsMap.entries()) applyRemoteCell(k, v);
+              replayRemoteCells(cellsMap);
             } finally {
               applyingRemote = false;
             }
@@ -466,18 +540,27 @@
             applyingRemote = true;
             try {
               if (shapeArr.length > 0) applyShape(shapeArr.toArray());
-              for (const [k, v] of cellsMap.entries()) applyRemoteCell(k, v);
+              replayRemoteCells(cellsMap);
             } finally {
               applyingRemote = false;
             }
             return;
           }
           pushShape();
+          // Inline cellsMap.set directly inside the outer transact so
+          // we don't open one nested ydoc.transact per cell (10k cells =
+          // 10k transacts otherwise). The observer at line ~498 already
+          // filters by origin === 'ods-seed' so semantics are preserved.
           ydoc.transact(() => {
             sheets.forEach((sh, si) => {
               sh.cells.forEach((row, r) => {
-                row.forEach((_cell, c) => {
-                  pushCellToYMap(si, r, c);
+                row.forEach((cell, c) => {
+                  cellsMap!.set(cellKey(si, r, c), {
+                    display: cell.display,
+                    value: cell.value,
+                    type: cell.type,
+                    formula: cell.formula,
+                  });
                 });
               });
             });
@@ -544,6 +627,9 @@
     }
     detachProvider();
     if (hf) { try { hf.destroy(); } catch { /* ignore */ } hf = undefined; }
+    resizeObs?.disconnect();
+    resizeObs = undefined;
+    observedScrollEl = undefined;
   });
 
   let loadSeq = 0;
@@ -625,7 +711,7 @@
     hf = HyperFormula.buildFromSheets(sheetsData, {
       licenseKey: 'gpl-v3', // HyperFormula is dual GPLv3 / commercial ; we use GPLv3
     });
-    recomputeDisplayCache();
+    seedDisplayCache();
   }
   function cellToHF(c: ODSCell): string | number | boolean | null {
     if (c.formula) {
@@ -639,7 +725,11 @@
     if (c.type === 'boolean') return Boolean(c.value);
     return c.display || null;
   }
-  function recomputeDisplayCache() {
+  // seedDisplayCache : full-scan rebuild of the formula-result cache.
+  // Runs ONCE per workbook load, inside rebuildHF. On the keystroke
+  // path use updateDisplayCache(changes) which only touches the cells
+  // HyperFormula's setCellContents reported as changed.
+  function seedDisplayCache() {
     if (!hf) return;
     const next = new Map<string, string>();
     sheets.forEach((sh, si) => {
@@ -654,6 +744,35 @@
       });
     });
     displayCache = next;
+  }
+  // updateDisplayCache : incremental update from HF's setCellContents
+  // changeset. Loops only the changed addresses (typically 1-10 per
+  // keystroke even with chained dependents) instead of scanning every
+  // cell of every sheet. Drops entries for cells that no longer have
+  // a formula in the local model so stale formula-result strings don't
+  // ghost the literal value that replaced them.
+  function updateDisplayCache(changes: ExportedChange[]) {
+    if (!hf) return;
+    let mutated = false;
+    const next = new Map(displayCache);
+    for (const ch of changes) {
+      if (!(ch instanceof ExportedCellChange)) continue;
+      const { sheet, row, col } = ch.address;
+      const key = sheet + ':' + row + ':' + col;
+      const localCell = sheets[sheet]?.cells[row]?.[col];
+      if (localCell?.formula) {
+        if (ch.newValue != null) {
+          next.set(key, String(ch.newValue));
+        } else {
+          next.delete(key);
+        }
+      } else if (next.has(key)) {
+        // Cell no longer has a formula locally : drop the stale entry.
+        next.delete(key);
+      }
+      mutated = true;
+    }
+    if (mutated) displayCache = next;
   }
 
   // displayValue : what the user sees in the grid cell. Formula
@@ -703,8 +822,8 @@
       // Push the new formula into HF so dependents recompute.
       if (hf) {
         try {
-          hf.setCellContents({ sheet: activeSheet, row: r, col: c }, [[value]]);
-          recomputeDisplayCache();
+          const changes = hf.setCellContents({ sheet: activeSheet, row: r, col: c }, [[value]]);
+          updateDisplayCache(changes);
         } catch { /* ignore — bad formula keeps showing source */ }
       }
     } else if (/^-?\d+(\.\d+)?$/.test(value)) {
@@ -726,8 +845,8 @@
           cell.type === 'float' ? Number(value) :
           cell.type === 'boolean' ? value.toLowerCase() === 'true' :
           value;
-        hf.setCellContents({ sheet: activeSheet, row: r, col: c }, [[hfValue]]);
-        recomputeDisplayCache();
+        const changes = hf.setCellContents({ sheet: activeSheet, row: r, col: c }, [[hfValue]]);
+        updateDisplayCache(changes);
       } catch { /* ignore */ }
     }
     sheets = sheets; // trigger reactivity
@@ -961,9 +1080,26 @@
     markDirty();
   }
 
-  // savedLabel : how long ago the last save landed.
+  // savedLabel : how long ago the last save landed. Only tick while
+  // `savedAt` is set AND the save is within the last hour ; beyond that
+  // the label degrades to "à HH:MM" which is static, so the interval is
+  // pure overhead (L3 of the 2026-06-14 perf audit). We re-evaluate the
+  // gating inside the interval itself so the effect's deps stay limited
+  // to `savedAt` (not `nowTick`, which the interval mutates).
   $effect(() => {
-    const id = setInterval(() => { nowTick = Date.now(); }, 30000);
+    if (!savedAt) return;
+    const savedAtSnap = savedAt;
+    if (Date.now() - savedAtSnap > 3600_000) return;
+    nowTick = Date.now();
+    const id = setInterval(() => {
+      const delta = Date.now() - savedAtSnap;
+      nowTick = Date.now();
+      if (delta > 3600_000) {
+        // Past the "il y a … min" window : the label is static
+        // "à HH:MM" from here on. Stop ticking.
+        clearInterval(id);
+      }
+    }, 30000);
     return () => clearInterval(id);
   });
   const savedLabel = $derived(() => {
