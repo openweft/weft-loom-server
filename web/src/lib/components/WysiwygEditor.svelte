@@ -17,12 +17,20 @@
   // generate ourselves (parseODT / parseRTF). DOMPurify drops these
   // data-* attributes by default ; we need them for the writeback path
   // (annotations, footnotes, bookmarks, fields, style hints).
+  // Generated from `grep -hoE "data-[a-z][a-z0-9-]+" odt.ts rtf.ts | sort -u`.
+  // Missing entries silently break the writer round-trip — the audit caught
+  // data-fixed-date / data-date-value / data-time-value / data-result /
+  // data-role / data-text-style-name / data-attrs being stripped here even
+  // though the writer reads them back.
   const SANITIZE_OPTS = {
     ADD_ATTR: [
       'data-fmt', 'data-name', 'data-bookmark', 'data-anchor',
       'data-footnote-id', 'data-style-name', 'data-id', 'data-body',
       'data-kind', 'data-creator', 'data-date', 'data-band',
-      'data-odt-style', 'data-placeholder', 'contenteditable',
+      'data-odt-style', 'data-placeholder',
+      'data-attrs', 'data-date-value', 'data-time-value',
+      'data-fixed-date', 'data-result', 'data-role',
+      'data-text-style-name',
     ],
     // RETURN_TRUSTED_TYPES is false by default — set explicitly so
     // the return type narrows to `string` for innerHTML / {@html}.
@@ -674,39 +682,36 @@
     });
   });
 
-  // beforeunload : if the user closes the tab/navigates away with
-  // unsaved edits, fire off a best-effort flush. sendBeacon is the
-  // only API guaranteed to deliver during unload ; we fall back to a
-  // synchronous fetch (keepalive flag) when beacon isn't available.
-  function onBeforeUnload() {
+  // beforeunload : two responsibilities.
+  // 1. RTF : writeRTF is sync, so we serialise the buffer + ship via
+  //    sendBeacon for a real best-effort write during unload.
+  // 2. ODT : writeODT is async (jszip gzip). We CAN'T await here, and
+  //    writing raw HTML to a .odt file on disk corrupts it irrecoverably
+  //    (next parseODT fails). Instead we fall back to the browser's
+  //    built-in unsaved-changes prompt by setting returnValue / calling
+  //    preventDefault — that gives the user a chance to cancel the
+  //    navigation and save normally.
+  function onBeforeUnload(e: BeforeUnloadEvent) {
     if (!dirty) return;
     if (saveTimer) { clearTimeout(saveTimer); saveTimer = undefined; }
     try {
-      let body: BodyInit;
-      if (format() === 'odt') {
-        // sendBeacon needs sync-serialisable bytes ; writeODT is async
-        // because it gzips through jszip. We can't await here — fall
-        // back to fetch(keepalive) which the browser will run on a
-        // best-effort basis during unload.
-        const headers: Record<string, string> = {};
-        if (etag) headers['If-Match'] = etag;
-        void fetch(
-          '/api/projects/' + encodeURIComponent(project) + '/files/' + encodeURIComponent(file),
-          { method: 'PUT', body: editorEl?.innerHTML ?? '', headers, keepalive: true },
-        );
+      const url = '/api/projects/' + encodeURIComponent(project) + '/files/' + encodeURIComponent(file);
+      if (format() === 'rtf') {
+        const body = writeRTF(editorEl?.innerHTML ?? '');
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon(url, new Blob([body], { type: 'application/rtf' }));
+        } else {
+          const headers: Record<string, string> = {};
+          if (etag) headers['If-Match'] = etag;
+          void fetch(url, { method: 'PUT', body, headers, keepalive: true });
+        }
         return;
       }
-      body = writeRTF(editorEl?.innerHTML ?? '');
-      const url = '/api/projects/' + encodeURIComponent(project) + '/files/' + encodeURIComponent(file);
-      if (navigator.sendBeacon) {
-        navigator.sendBeacon(url, new Blob([body], { type: 'application/rtf' }));
-      } else {
-        const headers: Record<string, string> = {};
-        if (etag) headers['If-Match'] = etag;
-        void fetch(url, { method: 'PUT', body, headers, keepalive: true });
-      }
-    } catch (e) {
-      logError('wysiwyg', 'beforeunload_flush', e);
+      // ODT : surface the browser's built-in unsaved-changes prompt.
+      e.preventDefault();
+      e.returnValue = '';
+    } catch (err) {
+      logError('wysiwyg', 'beforeunload_flush', err);
     }
   }
 

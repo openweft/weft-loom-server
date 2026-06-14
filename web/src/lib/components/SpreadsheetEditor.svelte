@@ -381,26 +381,29 @@
     }
   }
 
-  async function claimSeed(): Promise<boolean> {
-    // Designated-seeder protocol mirrored from Editor.svelte. Only
-    // the peer that wins /api/seed-claim pushes local cells ; everyone
-    // else waits for Yjs sync to deliver them. The endpoint returns
-    // 200 OK on win, 409 on conflict.
-    if (!file) return false;
+  // Designated-seeder protocol mirrored from Editor.svelte. Three
+  // outcomes : 'won' (this peer should seed), 'lost' (server explicitly
+  // refused — another peer is seeding, do NOT fall back), 'unknown'
+  // (endpoint missing in dev — caller may fall back to clientID race).
+  type SeedClaim = 'won' | 'lost' | 'unknown';
+  async function claimSeed(): Promise<SeedClaim> {
+    if (!file) return 'unknown';
     try {
       const url = '/api/projects/' + encodeURIComponent(project)
         + '/seed-claim/cells:' + file.split('/').map(encodeURIComponent).join('/');
       const resp = await fetch(url, { method: 'POST' });
       if (resp.status === 409) {
-        // Another peer is seeding ; wait briefly + bail.
         await new Promise((r) => setTimeout(r, 3000));
-        return false;
+        return 'lost';
       }
-      return resp.ok;
+      if (resp.ok) return 'won';
+      if (resp.status === 404 || resp.status === 501) return 'unknown';
+      return 'lost';
     } catch {
-      // Endpoint may not exist in dev — fall back to clientID race
-      // resolution at the call site.
-      return false;
+      // Network failure or endpoint absent — treat as "no signal" and
+      // let the caller decide. Crucially we do NOT return 'lost' here :
+      // a missing endpoint in dev shouldn't deadlock the seed.
+      return 'unknown';
     }
   }
 
@@ -450,8 +453,13 @@
             }
             return;
           }
-          const won = await claimSeed();
-          const shouldSeed = won || (!won && isLowestClientID());
+          const claim = await claimSeed();
+          // 'lost' = server explicitly refused — never seed.
+          // 'won' = always seed. 'unknown' = endpoint missing, fall back
+          // to lowest-clientID. The previous version conflated 'lost'
+          // and 'unknown' and let a peer override the server refusal.
+          if (claim === 'lost') return;
+          const shouldSeed = claim === 'won' || (claim === 'unknown' && isLowestClientID());
           if (!shouldSeed) return;
           // Re-check emptiness in case a peer seeded while we waited.
           if (cellsMap.size > 0 || shapeArr.length > 0) {
@@ -506,6 +514,9 @@
     if (ydoc) { try { ydoc.destroy(); } catch { /* ignore */ } ydoc = undefined; }
     cellsMap = undefined;
     shapeArr = undefined;
+    // Clear the cross-peer buffer so a stale cell from workbook A
+    // doesn't replay into workbook B when we attach to a new file.
+    pendingCells.clear();
   }
 
   function flushSaveSync() {

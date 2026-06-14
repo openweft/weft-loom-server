@@ -1051,17 +1051,20 @@
     const ac = new AbortController();
     const prevDetach = lspDetach;
     lspDetach = undefined;
+    // Captures the detach + client this run installs. The cleanup
+    // returned from the effect closes over these, so a destroy that
+    // fires mid-await still tears down the work the async block
+    // eventually finishes — no orphan onChange listener.
+    let runDetach: (() => void) | undefined;
+    let runClient: LSPClient | undefined;
+    let cancelled = false;
     untrack(() => {
       void (async () => {
-        // First-time fetch of the manifest.
         if (lspAvailable === undefined) {
           lspAvailable = await fetchAvailableLanguages({ signal: ac.signal });
         }
-        if (gen !== lspGen) return;
+        if (cancelled || gen !== lspGen) return;
         const slug = lspSlugFor(language);
-        // Tear down a previous client if the language no longer needs
-        // one, OR if we're switching to a different file (so didClose
-        // fires before re-opening with the new uri).
         if (lspClient) {
           try { lspClient.dispose(); } catch { /* ignore */ }
           lspClient = undefined;
@@ -1072,32 +1075,46 @@
           rootUri: 'file:///' + project,
           workspaceFolderName: project,
         });
+        runClient = c;
         try {
           await c.ready;
         } catch {
           try { c.dispose(); } catch { /* ignore */ }
+          if (runClient === c) runClient = undefined;
           return;
         }
-        if (gen !== lspGen) {
+        if (cancelled || gen !== lspGen) {
           try { c.dispose(); } catch { /* ignore */ }
+          if (runClient === c) runClient = undefined;
           return;
         }
         lspClient = c;
-        // Stream the current file content. We re-read from the ytext
-        // so the LSP sees the exact buffer the user is editing.
         const text = ydoc?.getText('file:' + file).toString() ?? '';
         c.didOpen('file://' + file, slug, text);
-        // Re-run the lint extension every time the server pushes new
-        // diagnostics so the gutter + tooltip surface them.
         const detach = c.onChange(() => {
           if (view) view.dispatch({ effects: [] });
         });
-        lspDetach = typeof detach === 'function' ? detach : undefined;
+        // Window between onChange registration and the cancelled check :
+        // if cleanup fired during c.ready / didOpen, dispose now.
+        if (cancelled || gen !== lspGen) {
+          try { if (typeof detach === 'function') detach(); } catch { /* ignore */ }
+          try { c.dispose(); } catch { /* ignore */ }
+          if (lspClient === c) lspClient = undefined;
+          if (runClient === c) runClient = undefined;
+          return;
+        }
+        runDetach = typeof detach === 'function' ? detach : undefined;
+        lspDetach = runDetach;
       })();
     });
     return () => {
+      cancelled = true;
       ac.abort();
       prevDetach?.();
+      runDetach?.();
+      if (runClient && runClient !== lspClient) {
+        try { runClient.dispose(); } catch { /* ignore */ }
+      }
     };
   });
 </script>
