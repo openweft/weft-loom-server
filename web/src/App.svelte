@@ -29,7 +29,7 @@
   import LatexSymbolPalette from './lib/components/LatexSymbolPalette.svelte';
   import BibliographyPanel from './lib/components/BibliographyPanel.svelte';
   import CommentsPanel from './lib/components/CommentsPanel.svelte';
-  import { commentsArray, commentFromMap, resolveAnchors } from './lib/comments';
+  import { commentsArray, commentFromMap, resolveAnchors, type CommentRecord } from './lib/comments';
   import type { CommentRange } from './lib/commentDecorations';
   import TabBar from './lib/components/TabBar.svelte';
   import NewFileDialog from './lib/components/NewFileDialog.svelte';
@@ -811,32 +811,68 @@
       weftLoomWriteODT?: unknown;
     };
     w.weftLoomOpenFile = openFileByPath;
-    // T6 : keep the editor's comment decorations in sync with the
-    // ydoc's comments Y.Array. Re-resolves anchors on every Yjs
-    // observe tick so concurrent edits rebase the highlighted
-    // ranges automatically. Capture arr/ytext/rebuild locally so the
-    // cleanup at the end of this effect can detach the observers — a
-    // bare arr.observe() leaks the handler when ydoc/currentFile
-    // change because the next effect run wires up a new pair.
+    // T6 / H4 : single owner of comment-anchor resolution. The editor
+    // decoration AND the CommentsPanel list both consume the same
+    // resolved snapshot — App.svelte runs ytext.observe + observeDeep
+    // ONCE and broadcasts the result. Before the H4 fix, CommentsPanel
+    // duplicated this observer pair and ran resolveAnchors per comment
+    // a SECOND time on every Yjs tick (50 comments × 2 = 100 decodes
+    // per keystroke).
+    //
+    // Rebuilds are debounced 50ms so a burst of Y.Map.set calls (e.g.
+    // an undo that reinserts many comments, or a fast typer) collapses
+    // into a single anchor-resolution pass.
     let commentArr: Y.Array<Y.Map<unknown>> | null = null;
     let commentYText: Y.Text | null = null;
     let commentRebuild: (() => void) | null = null;
+    let commentRebuildTimer: ReturnType<typeof setTimeout> | null = null;
     if (ydoc && currentFile) {
       const arr = commentsArray(ydoc, currentFile);
       const ytext = ydoc.getText('file:' + currentFile);
-      const rebuild = () => {
+      const file = currentFile;
+      const doRebuild = () => {
+        const comments: CommentRecord[] = [];
+        const resolved: Record<string, { from: number; to: number } | null> = {};
         const ranges: CommentRange[] = [];
         for (const m of arr.toArray()) {
           const c = commentFromMap(m);
+          comments.push(c);
           const r = resolveAnchors(ydoc!, ytext, c);
+          resolved[c.id] = r;
           if (r) ranges.push({ id: c.id, from: r.from, to: r.to, resolved: c.resolved });
         }
-        const fn = (window as unknown as {
+        // 1) Editor decoration sink — paints the dotted-underline marks.
+        const setRanges = (window as unknown as {
           weftLoomSetCommentRanges?: (r: CommentRange[]) => void;
         }).weftLoomSetCommentRanges;
-        if (typeof fn === 'function') fn(ranges);
+        if (typeof setRanges === 'function') setRanges(ranges);
+        // 2) CommentsPanel sink — store the snapshot on window + fire
+        //    an event so CommentsPanel can refresh its list without
+        //    re-running ytext.observe / arr.observeDeep itself.
+        (window as unknown as {
+          weftLoomCommentRanges?: {
+            file: string;
+            comments: CommentRecord[];
+            resolved: Record<string, { from: number; to: number } | null>;
+            ranges: CommentRange[];
+          };
+        }).weftLoomCommentRanges = { file, comments, resolved, ranges };
+        try {
+          window.dispatchEvent(new CustomEvent('weft-loom-comments-resolved', {
+            detail: { file },
+          }));
+        } catch { /* CustomEvent unsupported (very old browsers) — fine */ }
       };
-      rebuild();
+      const rebuild = () => {
+        if (commentRebuildTimer != null) return; // already pending
+        commentRebuildTimer = setTimeout(() => {
+          commentRebuildTimer = null;
+          doRebuild();
+        }, 50);
+      };
+      // Initial population is synchronous — first-paint shouldn't wait
+      // for the debounce window.
+      doRebuild();
       // observeDeep so toggleResolved (cmap.set('resolved', …) inside
       // CommentsPanel) re-fires the editor's anchor decoration rebuild.
       // arr.observe() alone misses nested Y.Map field mutations.
@@ -945,6 +981,13 @@
     return () => {
       if (commentArr && commentRebuild) commentArr.unobserveDeep(commentRebuild);
       if (commentYText && commentRebuild) commentYText.unobserve(commentRebuild);
+      if (commentRebuildTimer != null) {
+        clearTimeout(commentRebuildTimer);
+        commentRebuildTimer = null;
+      }
+      // Drop the snapshot so a stale window hook can't feed the panel
+      // when the user navigates to a file with no ydoc.
+      delete (window as unknown as { weftLoomCommentRanges?: unknown }).weftLoomCommentRanges;
     };
   });
 

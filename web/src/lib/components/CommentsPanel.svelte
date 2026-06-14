@@ -18,8 +18,8 @@
 
   import * as Y from 'yjs';
   import {
-    commentsArray, encodeRP, resolveAnchors, genId,
-    newCommentMap, commentFromMap,
+    commentsArray, encodeRP, genId,
+    newCommentMap,
     type CommentRecord,
   } from '../comments';
   import type { Identity } from '../identity';
@@ -64,39 +64,44 @@
   });
 
   let arr: Y.Array<Y.Map<unknown>> | undefined;
-  let observer: (() => void) | undefined;
 
-  // Watch the comments array + rebuild local state every time it
-  // changes (local OR remote). We resolve anchors against the live
-  // ytext so the panel hides comments whose target was deleted.
+  // H4 fix : the panel no longer runs its own ytext.observe +
+  // arr.observeDeep — App.svelte owns the single comment-anchor
+  // resolver and broadcasts the snapshot via `window.weftLoomCommentRanges`
+  // + a `weft-loom-comments-resolved` CustomEvent. The panel just
+  // consumes that snapshot, so a keystroke decodes anchors ONCE
+  // (instead of twice — once for the editor decoration, once for the
+  // panel list).
+  //
+  // `arr` is still resolved here because addComment / toggleResolved /
+  // deleteComment / addReply need to write back into the Y.Array.
   $effect(() => {
-    if (observer) { observer(); observer = undefined; }
-    arr = undefined;
     comments = [];
     resolved = {};
+    arr = undefined;
     if (!ydoc || !file) return;
-    const a = commentsArray(ydoc, file);
-    arr = a;
-    const ytext = ydoc.getText('file:' + file);
-    const rebuild = () => {
-      const list = a.toArray().map(commentFromMap);
-      comments = list;
-      const res: Record<string, { from: number; to: number } | null> = {};
-      for (const c of list) {
-        res[c.id] = resolveAnchors(ydoc, ytext, c);
-      }
-      resolved = res;
+    arr = commentsArray(ydoc, file);
+    const pickSnapshot = () => {
+      const snap = (window as unknown as {
+        weftLoomCommentRanges?: {
+          file: string;
+          comments: CommentRecord[];
+          resolved: Record<string, { from: number; to: number } | null>;
+        };
+      }).weftLoomCommentRanges;
+      if (!snap || snap.file !== file) return;
+      comments = snap.comments;
+      resolved = snap.resolved;
     };
-    rebuild();
-    const fn = () => rebuild();
-    // observeDeep so nested Y.Map mutations (toggleResolved flips
-    // 'resolved' via cmap.set()) bubble back through the array and
-    // trigger a rebuild. A plain a.observe() only fires on top-level
-    // insert/delete of the Y.Map entries, missing field-level edits.
-    a.observeDeep(fn);
-    ytext.observe(fn);
-    observer = () => { a.unobserveDeep(fn); ytext.unobserve(fn); };
-    return () => { if (observer) { observer(); observer = undefined; } };
+    // Prime synchronously from the last broadcast snapshot (App.svelte
+    // does an initial doRebuild() before the observer is wired, so the
+    // snapshot is usually already there by the time we mount).
+    pickSnapshot();
+    const onSnap = () => pickSnapshot();
+    window.addEventListener('weft-loom-comments-resolved', onSnap);
+    return () => {
+      window.removeEventListener('weft-loom-comments-resolved', onSnap);
+    };
   });
 
   // The editor sends selection changes to the global hook so the
