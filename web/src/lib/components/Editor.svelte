@@ -24,30 +24,19 @@
     foldKeymap,
   } from '@codemirror/language';
   import { tags as t } from '@lezer/highlight';
-  import { markdown } from '@codemirror/lang-markdown';
   import { autocompletion } from '@codemirror/autocomplete';
   import { marpMetadataCompletion } from '../marpAutocomplete';
   import { codeblockLanguageCompletion } from '../codeblockAutocomplete';
-  import { go } from '@codemirror/lang-go';
-  import { cpp } from '@codemirror/lang-cpp';
-  import { python } from '@codemirror/lang-python';
-  import { rust } from '@codemirror/lang-rust';
-  import { javascript } from '@codemirror/lang-javascript';
-  import { html } from '@codemirror/lang-html';
-  import { css } from '@codemirror/lang-css';
-  import { json } from '@codemirror/lang-json';
-  import { yaml } from '@codemirror/lang-yaml';
-  import { svelte } from '@replit/codemirror-lang-svelte';
-  import { stex } from '@codemirror/legacy-modes/mode/stex';
-  import { ruby } from '@codemirror/legacy-modes/mode/ruby';
-  import { shell } from '@codemirror/legacy-modes/mode/shell';
-  import { toml } from '@codemirror/legacy-modes/mode/toml';
-  import { perl } from '@codemirror/legacy-modes/mode/perl';
+  // Language packs (@codemirror/lang-* + @codemirror/legacy-modes/*)
+  // are lazy-loaded via dynamic import in loadLanguagePack() below
+  // so the cold-load bundle stays small (each pack is 50-150 KB).
+  // The editor mounts immediately with no pack — the Compartment
+  // gets reconfigured with the real pack as soon as the chunk
+  // arrives. See loadLanguagePack() for the cache + dispatch.
   // Custom HCL StreamLanguage — own block / heredoc / interpolation
   // tokenizer ; designed to be contributed back to
   // @codemirror/legacy-modes (no weft-loom deps). Zig still falls
   // back to rust for now until a real Zig pack lands.
-  import { hcl as hclStream } from '../codemirrorHCL';
   import { closeBrackets } from '@codemirror/autocomplete';
   import { latexRichText, richTextCompartment, applyLatexCommand, type LatexCommand } from '../latexRichText';
   import { settings, vscodeThemes } from '../settings.svelte';
@@ -263,17 +252,21 @@
   // Reconfigure the language pack + language-conditional extensions
   // when `language` flips. Without this, switching files of different
   // languages kept the original pack's parser/highlighter in place.
+  // The pack itself loads asynchronously via loadLanguagePack() so
+  // the cold-load bundle stays small ; language-conditional ext-
+  // ensions can reconfigure synchronously since they're already in
+  // the main bundle.
   $effect(() => {
     void language;
     if (!view) return;
     view.dispatch({
       effects: [
-        languageCompartment.reconfigure(languagePack(language)),
         inlineMathCompartment.reconfigure(inlineMathExt()),
         foldGutterCompartment.reconfigure(foldGutterExt()),
         sectionFoldingCompartment.reconfigure(sectionFoldingExt()),
       ],
     });
+    void loadLanguagePack(language);
   });
 
   // Reactively push setting changes into the editor. The effect
@@ -347,60 +340,96 @@
     { themeType: 'dark' },
   );
 
-  function languagePack(name: string) {
-    switch (name) {
-      case 'latex':
-        return StreamLanguage.define(stex);
-      case 'markdown':
-        return markdown();
-      case 'go':
-        return go();
-      case 'cpp':
-      case 'c':
-        return cpp();
-      case 'python':
-        return python();
-      case 'rust':
-        return rust();
-      case 'javascript':
-        return javascript({ typescript: false, jsx: true });
-      case 'typescript':
-        return javascript({ typescript: true, jsx: true });
-      case 'svelte':
-        return svelte();
-      case 'html':
-      case 'xml':
-      case 'svg':
-        return html();
-      case 'css':
-      case 'scss':
-        return css();
-      case 'json':
-        return json();
-      case 'yaml':
-      case 'yml':
-        return yaml();
-      case 'toml':
-        return StreamLanguage.define(toml);
-      case 'hcl':
-        return StreamLanguage.define(hclStream);
-      case 'ruby':
-      case 'rb':
-        return StreamLanguage.define(ruby);
-      case 'perl':
-      case 'pl':
-        return StreamLanguage.define(perl);
-      case 'shell':
-      case 'bash':
-      case 'sh':
-      case 'zsh':
-        return StreamLanguage.define(shell);
-      case 'zig':
-        // Fallback to rust — closest brace-syntax cousin.
-        return rust();
-      default:
-        return markdown();
+  // Initial placeholder for the language Compartment : the editor
+  // mounts INSTANTLY with no language pack, so the cold-load bundle
+  // doesn't have to ship 50-150 KB per language synchronously.
+  // loadLanguagePack(name) kicks off the dynamic import + dispatches
+  // the real pack into the Compartment when the chunk arrives. Cache
+  // hits (e.g. opening a second .tex) are synchronous.
+  function languagePack(_name: string): Extension {
+    return [];
+  }
+
+  // Module-scope cache : each language pack is constructed once on
+  // first use. The keyed Extension is reused for every subsequent
+  // file in that language so a tab swap doesn't re-parse the chunk.
+  // (Lives outside the component instance so it survives unmounts
+  // for the lifetime of the SPA.)
+  type PackLoader = () => Promise<Extension>;
+  const packLoaders: Record<string, PackLoader> = {
+    'latex':       async () => StreamLanguage.define((await import('@codemirror/legacy-modes/mode/stex')).stex),
+    'markdown':    async () => (await import('@codemirror/lang-markdown')).markdown(),
+    'go':          async () => (await import('@codemirror/lang-go')).go(),
+    'cpp':         async () => (await import('@codemirror/lang-cpp')).cpp(),
+    'c':           async () => (await import('@codemirror/lang-cpp')).cpp(),
+    'python':      async () => (await import('@codemirror/lang-python')).python(),
+    'rust':        async () => (await import('@codemirror/lang-rust')).rust(),
+    'javascript':  async () => (await import('@codemirror/lang-javascript')).javascript({ typescript: false, jsx: true }),
+    'typescript':  async () => (await import('@codemirror/lang-javascript')).javascript({ typescript: true, jsx: true }),
+    'svelte':      async () => (await import('@replit/codemirror-lang-svelte')).svelte(),
+    'html':        async () => (await import('@codemirror/lang-html')).html(),
+    'xml':         async () => (await import('@codemirror/lang-html')).html(),
+    'svg':         async () => (await import('@codemirror/lang-html')).html(),
+    'css':         async () => (await import('@codemirror/lang-css')).css(),
+    'scss':        async () => (await import('@codemirror/lang-css')).css(),
+    'json':        async () => (await import('@codemirror/lang-json')).json(),
+    'yaml':        async () => (await import('@codemirror/lang-yaml')).yaml(),
+    'yml':         async () => (await import('@codemirror/lang-yaml')).yaml(),
+    'toml':        async () => StreamLanguage.define((await import('@codemirror/legacy-modes/mode/toml')).toml),
+    'hcl':         async () => StreamLanguage.define((await import('../codemirrorHCL')).hcl),
+    'ruby':        async () => StreamLanguage.define((await import('@codemirror/legacy-modes/mode/ruby')).ruby),
+    'rb':          async () => StreamLanguage.define((await import('@codemirror/legacy-modes/mode/ruby')).ruby),
+    'perl':        async () => StreamLanguage.define((await import('@codemirror/legacy-modes/mode/perl')).perl),
+    'pl':          async () => StreamLanguage.define((await import('@codemirror/legacy-modes/mode/perl')).perl),
+    'shell':       async () => StreamLanguage.define((await import('@codemirror/legacy-modes/mode/shell')).shell),
+    'bash':        async () => StreamLanguage.define((await import('@codemirror/legacy-modes/mode/shell')).shell),
+    'sh':          async () => StreamLanguage.define((await import('@codemirror/legacy-modes/mode/shell')).shell),
+    'zsh':         async () => StreamLanguage.define((await import('@codemirror/legacy-modes/mode/shell')).shell),
+    // Fallback to rust — closest brace-syntax cousin until a real
+    // Zig pack lands.
+    'zig':         async () => (await import('@codemirror/lang-rust')).rust(),
+  };
+  // Caches resolved Extension (or in-flight Promise) per language id.
+  // Module-scope so it survives a component remount.
+  const packCache = new Map<string, Promise<Extension>>();
+
+  function resolveLanguagePack(name: string): Promise<Extension> {
+    // Unknown language → fall through to markdown : same default the
+    // old synchronous switch used. Reading via Object.prototype.has
+    // (rather than truthy-check) keeps tsc happy with strict types
+    // — packLoaders is a Record<string, PackLoader> so loader is
+    // never typed as possibly-undefined.
+    const has = Object.prototype.hasOwnProperty.call(packLoaders, name);
+    const key = has ? name : 'markdown';
+    let p = packCache.get(key);
+    if (!p) {
+      p = packLoaders[key]();
+      packCache.set(key, p);
     }
+    return p;
+  }
+
+  // loadLanguagePack(name) : kicks off the dynamic import + dispatches
+  // a Compartment reconfigure once the chunk + cache resolve. The
+  // generation token guards against the user flipping `language` again
+  // before the previous load settles — only the most recent request's
+  // extension wins. A no-op when the editor isn't mounted yet ; the
+  // onMount path calls this once the EditorView exists.
+  let languageGen = 0;
+  async function loadLanguagePack(name: string) {
+    const gen = ++languageGen;
+    const promise = resolveLanguagePack(name);
+    if (!promise) return;
+    let ext: Extension;
+    try {
+      ext = await promise;
+    } catch (err) {
+      logError('editor', 'lang-pack-load', err);
+      return;
+    }
+    if (gen !== languageGen) return;
+    if (!view) return;
+    view.dispatch({ effects: languageCompartment.reconfigure(ext) });
   }
 
   function wsURL(p: string): string {
@@ -747,6 +776,11 @@
 
     view = new EditorView({ state, parent: host });
     updateCursorStats();
+    // Kick off the lazy language-pack load. The Compartment was
+    // created with `[]` so the editor mounts instantly without a
+    // pack ; the chunk arrival reconfigures the Compartment with
+    // the real parser + highlighter.
+    void loadLanguagePack(language);
     // Attach the yToCm observer NOW so it has a valid view target
     // even for the very first remote update.
     bindingDetach = binding.attach(view);
