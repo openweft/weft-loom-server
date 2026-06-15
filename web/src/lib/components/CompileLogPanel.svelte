@@ -48,6 +48,21 @@
   let inFlight = $state(false);
   // Hoisted so onDestroy can close the stream even mid-run.
   let es: EventSource | null = null;
+  // V0.11 compile-on-save : toggle persisted in localStorage.
+  // Listener attached in onMount ; throttles at lastTriggeredAt so
+  // bursts of saves only fire one compile per cooldown window.
+  let autoCompile = $state<boolean>(false);
+  let lastTriggeredAt = 0;
+  const AUTO_COMPILE_COOLDOWN_MS = 4000;
+  const AUTO_COMPILE_LANGS = new Set(['latex', 'markdown']);
+  function loadAutoCompile() {
+    try {
+      autoCompile = localStorage.getItem('weft-loom-auto-compile') === '1';
+    } catch { /* localStorage may be blocked */ }
+  }
+  function persistAutoCompile() {
+    try { localStorage.setItem('weft-loom-auto-compile', autoCompile ? '1' : '0'); } catch {}
+  }
 
   // Language-agnostic : every file gets a Run button. The
   // server-side dispatcher decides what to do per language ; if
@@ -177,8 +192,27 @@
 
   // Persist panel height + open state across reloads.
   onMount(() => {
-    // Panel height is now owned by BottomPanel ; the in-component
-    // resize state was removed, so the localStorage read is dead.
+    loadAutoCompile();
+    // V0.11 : when the editor reports an autosave-completed, fire
+    // a recompile when (a) the toggle is on, (b) the language is
+    // one we can compile, (c) we're past the cooldown window.
+    // The Editor dispatches the event from its writeFile success
+    // path — we don't write to the file ourselves.
+    const onAutosave = (ev: Event) => {
+      if (!autoCompile) return;
+      if (inFlight) return; // never queue a second compile
+      const ce = ev as CustomEvent<{ project: string; file: string; language: string }>;
+      const detail = ce.detail;
+      if (!detail) return;
+      if (detail.project !== project) return;
+      if (!AUTO_COMPILE_LANGS.has(detail.language)) return;
+      const now = Date.now();
+      if (now - lastTriggeredAt < AUTO_COMPILE_COOLDOWN_MS) return;
+      lastTriggeredAt = now;
+      void run();
+    };
+    window.addEventListener('weft-loom-autosave-completed', onAutosave);
+    return () => window.removeEventListener('weft-loom-autosave-completed', onAutosave);
   });
 
   function push(line: LogLine) {
@@ -361,13 +395,27 @@
           </span>
         </button>
       </div>
-      <div class="ml-auto flex gap-1">
+      <div class="ml-auto flex gap-2 items-center">
         {#if compilable}
+          <label
+            class="cursor-pointer label gap-1 text-[10px] py-0"
+            title="Recompile automatically after every autosave (LaTeX / Markdown only). 4 s cooldown so a rapid edit burst still produces only one compile."
+          >
+            <input
+              type="checkbox"
+              class="toggle toggle-xs"
+              bind:checked={autoCompile}
+              onchange={persistAutoCompile}
+              data-testid="auto-compile-toggle"
+            />
+            <span class="label-text text-[10px] opacity-70">auto</span>
+          </label>
           <button
             class="btn btn-primary btn-xs"
             disabled={inFlight}
             onclick={run}
             title="Run compile ({language})"
+            data-testid="compile-run"
           >
             {#if inFlight}
               <span class="loading loading-spinner loading-xs"></span>

@@ -406,6 +406,11 @@ node tests/shortcut-help.mjs
 SHORTCUT_HELP=$?
 
 echo
+echo "----- Compile-on-save suite -----"
+node tests/compile-on-save.mjs
+COMPILE_ON_SAVE=$?
+
+echo
 echo "----- DOI → BibTeX import suite -----"
 # Resolver hits doi.org by default ; the test relies on the stub
 # path (WEFT_LOOM_DOI_STUB=1) which the dev server must be started
@@ -421,7 +426,7 @@ fi
 
 echo
 echo "==============================================="
-if [ $UI -eq 0 ] && [ $LANG -eq 0 ] && [ $PREVIEW -eq 0 ] && [ $UIENTRY -eq 0 ] && [ $THEMEP -eq 0 ] && [ $WYSIWYG -eq 0 ] && [ $WYSIWYG_ODT -eq 0 ] && [ $WYSIWYG_ODT_TB -eq 0 ] && [ $ODT_TPL -eq 0 ] && [ $LATEX_PAL -eq 0 ] && [ $MARP_PIC -eq 0 ] && [ $BIB_PAN -eq 0 ] && [ $INLINE_MATH -eq 0 ] && [ $OUTLINE -eq 0 ] && [ $PDF_VIEW -eq 0 ] && [ $COMMENTS -eq 0 ] && [ $ODT_FIELDS -eq 0 ] && [ $PAGE_VARS -eq 0 ] && [ $ODT_FRAMES -eq 0 ] && [ $ODT_HF -eq 0 ] && [ $RTF_FIELDS -eq 0 ] && [ $LSP -eq 0 ] && [ $LANG_LAZY -eq 0 ] && [ $ODS -eq 0 ] && [ $ODS_FX -eq 0 ] && [ $ODS_COL -eq 0 ] && [ $INTERACTIONS -eq 0 ] && [ $ODS_VIRT -eq 0 ] && [ $ODS_NAV -eq 0 ] && [ $ODS_LAY -eq 0 ] && [ $ODS_FMT -eq 0 ] && [ $HIST -eq 0 ] && [ $LATEX_RENDER -eq 0 ] && [ $AI_CHAT -eq 0 ] && [ $PRESENCE -eq 0 ] && [ $MOBILE -eq 0 ] && [ $PROJECT_EXPORT -eq 0 ] && [ $MULTI_CURSOR -eq 0 ] && [ $SNIPPETS -eq 0 ] && [ $WORDS -eq 0 ] && [ $SHORTCUT_HELP -eq 0 ] && [ $DOI -eq 0 ]; then
+if [ $UI -eq 0 ] && [ $LANG -eq 0 ] && [ $PREVIEW -eq 0 ] && [ $UIENTRY -eq 0 ] && [ $THEMEP -eq 0 ] && [ $WYSIWYG -eq 0 ] && [ $WYSIWYG_ODT -eq 0 ] && [ $WYSIWYG_ODT_TB -eq 0 ] && [ $ODT_TPL -eq 0 ] && [ $LATEX_PAL -eq 0 ] && [ $MARP_PIC -eq 0 ] && [ $BIB_PAN -eq 0 ] && [ $INLINE_MATH -eq 0 ] && [ $OUTLINE -eq 0 ] && [ $PDF_VIEW -eq 0 ] && [ $COMMENTS -eq 0 ] && [ $ODT_FIELDS -eq 0 ] && [ $PAGE_VARS -eq 0 ] && [ $ODT_FRAMES -eq 0 ] && [ $ODT_HF -eq 0 ] && [ $RTF_FIELDS -eq 0 ] && [ $LSP -eq 0 ] && [ $LANG_LAZY -eq 0 ] && [ $ODS -eq 0 ] && [ $ODS_FX -eq 0 ] && [ $ODS_COL -eq 0 ] && [ $INTERACTIONS -eq 0 ] && [ $ODS_VIRT -eq 0 ] && [ $ODS_NAV -eq 0 ] && [ $ODS_LAY -eq 0 ] && [ $ODS_FMT -eq 0 ] && [ $HIST -eq 0 ] && [ $LATEX_RENDER -eq 0 ] && [ $AI_CHAT -eq 0 ] && [ $PRESENCE -eq 0 ] && [ $MOBILE -eq 0 ] && [ $PROJECT_EXPORT -eq 0 ] && [ $MULTI_CURSOR -eq 0 ] && [ $SNIPPETS -eq 0 ] && [ $WORDS -eq 0 ] && [ $SHORTCUT_HELP -eq 0 ] && [ $DOI -eq 0 ] && [ $COMPILE_ON_SAVE -eq 0 ]; then
   echo "  \033[32mALL PASS\033[0m"
   exit 0
 fi
@@ -467,5 +472,6 @@ fi
 [ $WORDS -eq 0 ] && echo "  word-count-panel   : \033[32mPASS\033[0m" || echo "  word-count-panel   : \033[31mFAIL\033[0m"
 [ $SHORTCUT_HELP -eq 0 ] && echo "  shortcut-help      : \033[32mPASS\033[0m" || echo "  shortcut-help      : \033[31mFAIL\033[0m"
 [ $DOI -eq 0 ] && echo "  doi-import         : \033[32mPASS\033[0m" || echo "  doi-import         : \033[31mFAIL\033[0m"
+[ $COMPILE_ON_SAVE -eq 0 ] && echo "  compile-on-save    : \033[32mPASS\033[0m" || echo "  compile-on-save    : \033[31mFAIL\033[0m"
 echo "==============================================="
 exit 1
