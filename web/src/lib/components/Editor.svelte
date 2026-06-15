@@ -46,6 +46,7 @@
   import { compileDiagnostics } from '../compileDiagnostics.svelte';
   import { showMinimap } from '@replit/codemirror-minimap';
   import { citeCompletion } from '../citeAutocomplete';
+  import { refCompletion } from '../refCompletion';
   import { inlineMathRender } from '../inlineMathRender';
   import { visibilityCheckExtension } from '../editorVisibilityCheck';
   import { sectionFolding } from '../sectionFolding';
@@ -787,7 +788,7 @@
         // markdown front-matter, Python keywords, etc.). closeBrackets
         // auto-pairs `(`, `[`, `{`, `"`, `'`.
         autocompletion({
-          override: [marpMetadataCompletion, codeblockLanguageCompletion, citeCompletion, lspCompletionSource, snippetSource(language)],
+          override: [marpMetadataCompletion, codeblockLanguageCompletion, citeCompletion, refCompletion, lspCompletionSource, snippetSource(language)],
           activateOnTyping: true,
           closeOnBlur: false,
         }),

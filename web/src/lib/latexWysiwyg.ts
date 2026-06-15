@@ -85,11 +85,19 @@ export function latexBodyToHtml(body: string): string {
       continue;
     }
 
-    // Section headings : single-line constructs.
-    const heading = trimmed.match(/^\\(section|subsection|subsubsection)\*?\{(.*)\}$/);
+    // Section headings : single-line constructs. The regex captures
+    // the FIRST balanced brace pair (non-greedy [^{}]*) so a
+    // `\section{Intro}\label{sec:intro}` on the same line splits
+    // cleanly : heading title goes inline-parsed into <h>, and any
+    // trailing \label{} (or other inline commands) get rendered as
+    // sibling children of the heading via inlineLatexToHtml.
+    const heading = trimmed.match(/^\\(section|subsection|subsubsection)\*?\{([^{}]*)\}(.*)$/);
     if (heading) {
       const level = heading[1] === 'section' ? 1 : heading[1] === 'subsection' ? 2 : 3;
-      out.push(`<h${level}>${escapeHtml(heading[2])}</h${level}>`);
+      const title = inlineLatexToHtml(heading[2]);
+      const trailing = heading[3].trim();
+      const trail = trailing ? inlineLatexToHtml(trailing) : '';
+      out.push(`<h${level}>${title}${trail}</h${level}>`);
       i++;
       continue;
     }
@@ -134,7 +142,19 @@ export function latexBodyToHtml(body: string): string {
       }
       i++; // consume \end{…}
       const tex = buf.join('\n').trim();
-      out.push(`<div class="math math-env" data-tex="${escapeAttr(tex)}" data-env="${escapeAttr(envName)}">\\begin{${escapeHtml(envName)}}${escapeHtml(tex)}\\end{${escapeHtml(envName)}}</div>`);
+      // Extract any \label{x} from the math body : keep it in
+      // data-tex (so the source round-trip is byte-faithful) but
+      // ALSO emit a NESTED <span class="latex-label"> inside the
+      // math-env div so refResolver's ancestor-walk detects kind='eq'
+      // and assigns the per-kind counter correctly. KaTeX rendering
+      // overwrites .innerHTML on first render — we put the label
+      // span back via the editor's renderMathNodes pipeline (the
+      // label survives serialization through data-tex).
+      const labelMatch = tex.match(/\\label\{([^}]+)\}/);
+      const labelHtml = labelMatch
+        ? `<span class="latex-label" data-label="${escapeAttr(labelMatch[1])}" contenteditable="false" title="label: ${escapeAttr(labelMatch[1])}" style="display:none">¶</span>`
+        : '';
+      out.push(`<div class="math math-env" data-tex="${escapeAttr(tex)}" data-env="${escapeAttr(envName)}">\\begin{${escapeHtml(envName)}}${escapeHtml(tex)}\\end{${escapeHtml(envName)}}${labelHtml}</div>`);
       continue;
     }
 

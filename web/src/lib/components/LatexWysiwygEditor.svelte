@@ -17,7 +17,10 @@
   import { readFile, writeFile } from '../api';
   import { logEvent, logError } from '../logbus';
   import { bib } from '../bibStore.svelte';
+  import { buildLabelMap, resolveRefs } from '../refResolver';
+  import { wireImageDrop, type UploadImageResult } from '../uploadImage';
   import LatexTableToolbar from './LatexTableToolbar.svelte';
+  import WysiwygFindReplace from './WysiwygFindReplace.svelte';
 
   interface Props {
     project: string;
@@ -33,6 +36,10 @@
   let savedAt = $state<number | null>(null);
   let parsed: ParsedLatex = { preamble: '', bodyHtml: '', postamble: '' };
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
+
+  // ─── find & replace popover ────────────────────────────────────
+  let findReplaceOpen = $state<boolean>(false);
+  let dropDestroy: (() => void) | undefined;
 
   // ─── table toolbar ─────────────────────────────────────────────
   // Anchored at a cell when the user clicks one ; gives them
@@ -246,6 +253,11 @@
       const source = await readFile(project, file);
       parsed = parseLatex(source);
       editorEl.innerHTML = parsed.bodyHtml;
+      // Build label map BEFORE renderMathNodes : the KaTeX render
+      // overwrites .math-env innerHTML which would wipe the nested
+      // latex-label children parser emits for ref resolution.
+      const labels = buildLabelMap(editorEl);
+      resolveRefs(editorEl, labels);
       renderMathNodes(editorEl);
       renderCiteNodes(editorEl);
       renderFigureNodes(editorEl);
@@ -438,6 +450,15 @@
       if (saveTimer) { clearTimeout(saveTimer); saveTimer = undefined; }
       void save();
     }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') {
+      // Only intercept Cmd/Ctrl+F when the WYSIWYG surface has
+      // focus — otherwise the browser's native find should fire on
+      // out-of-editor regions.
+      if (editorEl && editorEl.contains(document.activeElement)) {
+        e.preventDefault();
+        findReplaceOpen = true;
+      }
+    }
   }
 
   // ─── cursor stats ───────────────────────────────────────────────
@@ -474,19 +495,52 @@
     if (status === 'ready') emitCursorStats();
   }
 
+  // onDrop : inserts an <img class="latex-figure"> at the drop point
+  // after wireImageDrop uploads the file. The figure spans round-trip
+  // back to \includegraphics{path} via serializeLatex.
+  function onDrop(result: UploadImageResult, ev: DragEvent) {
+    const img = document.createElement('img');
+    img.className = 'latex-figure';
+    img.setAttribute('data-path', result.path);
+    img.setAttribute('data-opts', '');
+    img.setAttribute('alt', result.path);
+    img.src = '/api/projects/' + encodeURIComponent(project)
+      + '/files/' + result.path.split('/').map(encodeURIComponent).join('/');
+    img.contentEditable = 'false';
+    // Insert at the caret if the user clicked, else append at end.
+    let inserted = false;
+    if (document.caretPositionFromPoint) {
+      const pos = document.caretPositionFromPoint(ev.clientX, ev.clientY);
+      if (pos) {
+        const range = document.createRange();
+        range.setStart(pos.offsetNode, pos.offset);
+        range.collapse(true);
+        range.insertNode(img);
+        inserted = true;
+      }
+    }
+    if (!inserted) editorEl.appendChild(img);
+    onInput();
+  }
+
   onMount(() => {
     void load();
     document.addEventListener('selectionchange', onSelectionChange);
+    // Wire drag-drop image upload after the editor is mounted.
+    if (editorEl) {
+      dropDestroy = wireImageDrop(editorEl, project, onDrop);
+    }
   });
   onDestroy(() => {
     if (saveTimer) clearTimeout(saveTimer);
     document.removeEventListener('selectionchange', onSelectionChange);
+    dropDestroy?.();
   });
 </script>
 
 <svelte:window onkeydown={onKey} />
 
-<div class="latex-wysiwyg h-full w-full flex flex-col bg-base-100">
+<div class="latex-wysiwyg h-full w-full flex flex-col bg-base-100 relative">
   <!-- Format toolbar : same affordances as the source-view LaTeX
        toolbar (B/I/U + headings + lists) but the commands route
        through execCommand into the contenteditable. -->
@@ -521,6 +575,13 @@
       title="LaTeX symbol palette (Greek, operators, brackets, envs)"
       aria-label="Toggle LaTeX symbol palette"
     >Σ Symbols</button>
+    <span class="opacity-30">·</span>
+    <button
+      class="btn btn-xs"
+      onclick={() => (findReplaceOpen = !findReplaceOpen)}
+      title="Find & replace (Cmd/Ctrl+F)"
+      aria-label="Find and replace"
+    >🔍 Find</button>
     <span class="ml-auto opacity-70 text-[10px] font-mono mr-2">
       {#if status === 'loading'}loading…
       {:else if status === 'saving'}saving…
@@ -561,6 +622,14 @@
       cell={tableToolbarTarget.cell}
       onChange={onInput}
       onClose={() => (tableToolbarTarget = null)}
+    />
+  {/if}
+
+  {#if findReplaceOpen && editorEl}
+    <WysiwygFindReplace
+      host={editorEl}
+      onChange={onInput}
+      onClose={() => (findReplaceOpen = false)}
     />
   {/if}
 
