@@ -32,6 +32,92 @@
   let parsed: ParsedLatex = { preamble: '', bodyHtml: '', postamble: '' };
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
 
+  // ─── cite picker popover state ─────────────────────────────────
+  // Quick-insert affordance : type a search term, see matching bib
+  // entries with author-year + title, click to insert \cite{key}
+  // at the caret without opening the heavier BibliographyPanel.
+  let citePickerState = $state<{ filter: string; top: number; left: number } | null>(null);
+  let citePickerMatches = $derived.by(() => {
+    if (!citePickerState) return [];
+    const q = citePickerState.filter.toLowerCase().trim();
+    const all = bib.entries;
+    if (!q) return all.slice(0, 30);
+    return all
+      .filter((e) => {
+        const k = (e.key ?? '').toLowerCase();
+        const author = (e.fields?.author ?? '').toLowerCase();
+        const title = (e.fields?.title ?? '').toLowerCase();
+        const year = (e.fields?.year ?? '').toLowerCase();
+        return k.includes(q) || author.includes(q) || title.includes(q) || year.includes(q);
+      })
+      .slice(0, 30);
+  });
+  let citePickerIndex = $state<number>(0);
+
+  function openCitePicker() {
+    editorEl.focus();
+    const sel = window.getSelection();
+    let top = 200;
+    let left = 200;
+    if (sel && sel.rangeCount > 0) {
+      const r = sel.getRangeAt(0).getBoundingClientRect();
+      top = r.bottom + 8;
+      left = r.left;
+    }
+    citePickerState = { filter: '', top, left };
+    citePickerIndex = 0;
+  }
+  function closeCitePicker() {
+    citePickerState = null;
+  }
+  function insertCite(key: string) {
+    if (!key) return closeCitePicker();
+    const span = document.createElement('span');
+    span.className = 'latex-cite';
+    span.setAttribute('data-key', key);
+    span.contentEditable = 'false';
+    const entry = bib.entries.find((e) => e.key === key);
+    span.textContent = '[' + (entry ? formatBibLabel(entry) : key) + ']';
+    span.title = entry ? `${entry.fields?.author ?? ''} (${entry.fields?.year ?? '?'}) — ${entry.fields?.title ?? key}` : key;
+    span.addEventListener('click', () => {
+      window.dispatchEvent(new CustomEvent('weft-loom:toggle-bib'));
+    });
+    editorEl.focus();
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount > 0) {
+      const range = sel.getRangeAt(0);
+      range.deleteContents();
+      range.insertNode(span);
+      range.setStartAfter(span);
+      range.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } else {
+      editorEl.appendChild(span);
+    }
+    closeCitePicker();
+    onInput();
+  }
+  function citePickerKey(e: KeyboardEvent) {
+    if (!citePickerState) return;
+    if (e.key === 'Escape') { e.preventDefault(); closeCitePicker(); return; }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      citePickerIndex = Math.min(citePickerIndex + 1, citePickerMatches.length - 1);
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      citePickerIndex = Math.max(citePickerIndex - 1, 0);
+      return;
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const picked = citePickerMatches[citePickerIndex];
+      if (picked) insertCite(picked.key);
+    }
+  }
+
   // ─── inline math popover state ─────────────────────────────────
   // popoverState carries the editing context : null when closed,
   // otherwise the math node being edited + its current tex source
@@ -367,6 +453,8 @@
       <button class="join-item btn btn-xs" onclick={() => insertMath(false)} title="Insert inline math ($…$)" aria-label="Insert inline math">∑</button>
       <button class="join-item btn btn-xs" onclick={() => insertMath(true)} title="Insert display math (\\[…\\])" aria-label="Insert display math">∫</button>
     </div>
+    <span class="opacity-30">·</span>
+    <button class="btn btn-xs" onclick={openCitePicker} title="Insert citation (fuzzy search bib entries)" aria-label="Insert citation">📚 Cite</button>
     <span class="ml-auto opacity-70 text-[10px] font-mono mr-2">
       {#if status === 'loading'}loading…
       {:else if status === 'saving'}saving…
@@ -437,6 +525,58 @@
       </div>
     </div>
   {/if}
+
+  {#if citePickerState}
+    <!-- Cite picker : fuzzy-searches bib.entries, click or Enter
+         to insert \cite{key} at the caret. Beats Overleaf which
+         requires switching to the bibliography pane. -->
+    <div
+      class="cite-picker card bg-base-200 border border-base-300 shadow-xl"
+      style="top: {citePickerState.top}px; left: {citePickerState.left}px;"
+      role="dialog"
+      aria-label="Insert citation"
+      data-testid="cite-picker"
+    >
+      <div class="card-body p-2 gap-2">
+        <input
+          class="input input-bordered input-sm w-72 text-sm"
+          placeholder="Search author / title / year / key…"
+          bind:value={citePickerState.filter}
+          onkeydown={citePickerKey}
+          autofocus
+          data-testid="cite-picker-filter"
+        />
+        <div class="cite-picker-list max-h-64 overflow-y-auto">
+          {#if citePickerMatches.length === 0}
+            <div class="p-2 text-xs opacity-60 italic">
+              {bib.entries.length === 0 ? 'No .bib file loaded in this project' : 'No match'}
+            </div>
+          {:else}
+            {#each citePickerMatches as entry, idx}
+              <button
+                type="button"
+                class="cite-picker-row w-full text-left p-2 text-xs border-b border-base-300 last:border-b-0 hover:bg-base-300"
+                class:bg-primary={idx === citePickerIndex}
+                class:text-primary-content={idx === citePickerIndex}
+                onclick={() => insertCite(entry.key)}
+                onmouseenter={() => (citePickerIndex = idx)}
+              >
+                <div class="font-mono font-semibold">{entry.key}</div>
+                <div class="opacity-80 truncate">
+                  {entry.fields?.author ?? '?'} ({entry.fields?.year ?? '?'})
+                </div>
+                <div class="opacity-60 truncate">{entry.fields?.title ?? ''}</div>
+              </button>
+            {/each}
+          {/if}
+        </div>
+        <div class="flex justify-between text-[10px] opacity-60">
+          <span>↑↓ navigate · Enter to insert · Esc to cancel</span>
+          <button class="btn btn-ghost btn-xs" onclick={closeCitePicker}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -477,6 +617,10 @@
     position: fixed;
     z-index: 50;
     max-width: 24rem;
+  }
+  .cite-picker {
+    position: fixed;
+    z-index: 50;
   }
   .latex-wysiwyg-surface :global(.latex-cite) {
     color: hsl(220, 70%, 50%);
