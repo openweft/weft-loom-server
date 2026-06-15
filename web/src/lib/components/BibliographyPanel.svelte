@@ -9,14 +9,61 @@
   // one-click insertion of the citation.
 
   import { bib } from '../bibStore.svelte';
+  import { logError } from '../logbus';
 
   interface Props {
     visible: boolean;
+    project: string;
   }
-  let { visible }: Props = $props();
+  let { visible, project }: Props = $props();
 
   let open = $state(false);
   let filter = $state('');
+  // DOI import sub-modal state. V0.11 : paste a DOI URL, click
+  // Fetch, the server resolves via doi.org content-negotiation +
+  // appends to refs.bib.
+  let doiOpen = $state(false);
+  let doiInput = $state('');
+  let doiBusy = $state(false);
+  let doiError = $state<string | undefined>();
+  let doiResult = $state<{ entry: string; target: string } | undefined>();
+
+  async function importDOI() {
+    if (!doiInput.trim() || doiBusy) return;
+    doiBusy = true;
+    doiError = undefined;
+    doiResult = undefined;
+    try {
+      const r = await fetch(
+        '/api/projects/' + encodeURIComponent(project) + '/bib/from-doi',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ doi: doiInput.trim() }),
+        },
+      );
+      if (!r.ok) {
+        const errBody = await r.json().catch(() => ({}));
+        throw new Error(errBody.error ?? ('HTTP ' + r.status));
+      }
+      doiResult = await r.json();
+      // Refresh the bib cache so the new entry surfaces in the list
+      // without waiting on the next poll tick.
+      void bib.refresh();
+    } catch (e) {
+      doiError = e instanceof Error ? e.message : String(e);
+      logError('bib', 'doi-import-failed', e);
+    } finally {
+      doiBusy = false;
+    }
+  }
+
+  function resetDOI() {
+    doiInput = '';
+    doiResult = undefined;
+    doiError = undefined;
+    doiBusy = false;
+  }
 
   // Force-refresh the bib cache whenever the user opens the panel
   // so newly-added .bib files appear without waiting on the 5s poll.
@@ -73,8 +120,56 @@
               Bibliography
               <span class="opacity-50 text-xs">({bib.entries.length} entries)</span>
             </div>
-            <button class="btn btn-ghost btn-xs" onclick={() => (open = false)} aria-label="Close">×</button>
+            <div class="flex items-center gap-1">
+              <button
+                type="button"
+                class="btn btn-primary btn-xs"
+                onclick={() => { doiOpen = true; resetDOI(); }}
+                title="Import a citation from a DOI URL"
+                aria-label="Import from DOI"
+                data-testid="bib-doi-open"
+              >+ DOI</button>
+              <button class="btn btn-ghost btn-xs" onclick={() => (open = false)} aria-label="Close">×</button>
+            </div>
           </div>
+          {#if doiOpen}
+            <div class="doi-import border border-base-300 rounded p-2 mb-2 bg-base-100" data-testid="bib-doi-panel">
+              <div class="text-[10px] opacity-60 mb-1">
+                Paste a DOI URL (or bare DOI) ; the server fetches the BibTeX
+                entry from doi.org + appends it to your refs.bib.
+              </div>
+              <input
+                type="text"
+                placeholder="10.1145/3676146 or https://doi.org/10.1145/3676146"
+                class="input input-bordered input-xs w-full"
+                bind:value={doiInput}
+                disabled={doiBusy}
+                data-testid="bib-doi-input"
+                onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void importDOI(); } }}
+              />
+              <div class="flex gap-1 mt-1">
+                <button
+                  class="btn btn-primary btn-xs"
+                  onclick={() => void importDOI()}
+                  disabled={doiBusy || !doiInput.trim()}
+                  data-testid="bib-doi-fetch"
+                >{doiBusy ? 'Fetching…' : 'Fetch + add'}</button>
+                <button
+                  class="btn btn-ghost btn-xs"
+                  onclick={() => { doiOpen = false; resetDOI(); }}
+                >Cancel</button>
+              </div>
+              {#if doiError}
+                <div class="text-error text-xs mt-1" data-testid="bib-doi-error">{doiError}</div>
+              {/if}
+              {#if doiResult}
+                <div class="text-success text-xs mt-1" data-testid="bib-doi-success">
+                  Added to <code>{doiResult.target}</code>
+                </div>
+                <pre class="text-[10px] mt-1 max-h-32 overflow-auto bg-base-200 p-1 rounded">{doiResult.entry}</pre>
+              {/if}
+            </div>
+          {/if}
           <input
             type="text"
             placeholder="filter by key / title / author / year…"

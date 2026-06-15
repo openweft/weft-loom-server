@@ -1317,7 +1317,7 @@
                   />
                 {/key}
                 <LatexSymbolPalette visible={language === 'latex'} />
-                <BibliographyPanel visible={language === 'latex'} />
+                <BibliographyPanel visible={language === 'latex'} {project} />
                 <WordCountPanel
                   {project}
                   file={currentFile}

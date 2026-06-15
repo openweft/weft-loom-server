@@ -274,6 +274,11 @@ func (s *Server) routes() {
 	// by the Navbar "⤓ Download" button for one-click backups +
 	// offline review.
 	s.mux.HandleFunc("GET /api/projects/{name}/export.zip", s.requireAuth(s.handleProjectExport))
+	// V0.11 : DOI → BibTeX import. Pastes a DOI / doi.org URL,
+	// fetches the formatted BibTeX entry from doi.org's content
+	// negotiation API, appends to refs.bib (or the first .bib in the
+	// project). The BibliographyPanel surfaces the "+ DOI" affordance.
+	s.mux.HandleFunc("POST /api/projects/{name}/bib/from-doi", s.requireAuth(s.handleDOIToBib))
 	// V0.3 LLM chat surface — stub responses for now ; full wiring
 	// to Ollama / Anthropic / OpenAI lands when the backend config
 	// surface is in place.
