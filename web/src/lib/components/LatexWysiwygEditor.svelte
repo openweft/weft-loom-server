@@ -31,6 +31,105 @@
   let parsed: ParsedLatex = { preamble: '', bodyHtml: '', postamble: '' };
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
 
+  // ─── inline math popover state ─────────────────────────────────
+  // popoverState carries the editing context : null when closed,
+  // otherwise the math node being edited + its current tex source
+  // + the display-mode flag + the anchor rect for positioning.
+  let popoverState = $state<{
+    node: HTMLElement | null;
+    tex: string;
+    displayMode: boolean;
+    top: number;
+    left: number;
+  } | null>(null);
+  let popoverPreviewHtml = $derived.by(() => {
+    if (!popoverState) return '';
+    try {
+      return katex.renderToString(popoverState.tex, {
+        throwOnError: false,
+        displayMode: popoverState.displayMode,
+        output: 'html',
+      });
+    } catch {
+      return '<span class="text-error">parse error</span>';
+    }
+  });
+  function openMathPopover(node: HTMLElement | null, displayMode: boolean, tex: string) {
+    let top = 200;
+    let left = 200;
+    if (node) {
+      const rect = node.getBoundingClientRect();
+      top = rect.bottom + 8;
+      left = rect.left;
+    } else {
+      // Brand-new insert : anchor near the editor's caret line.
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount > 0) {
+        const r = sel.getRangeAt(0).getBoundingClientRect();
+        top = r.bottom + 8;
+        left = r.left;
+      }
+    }
+    popoverState = { node, tex, displayMode, top, left };
+  }
+  function closeMathPopover() {
+    popoverState = null;
+  }
+  function applyMathPopover() {
+    if (!popoverState) return;
+    const { node, tex, displayMode } = popoverState;
+    if (node) {
+      // Edit existing node : update data-tex + re-render.
+      node.setAttribute('data-tex', tex);
+      try {
+        node.innerHTML = katex.renderToString(tex, {
+          throwOnError: false,
+          displayMode,
+          output: 'html',
+        });
+        node.classList.remove('math-error');
+      } catch {
+        node.textContent = '⚠ ' + tex;
+        node.classList.add('math-error');
+      }
+    } else {
+      // New node : create + insert at caret.
+      const span = document.createElement(displayMode ? 'div' : 'span');
+      span.className = 'math ' + (displayMode ? 'math-display' : 'math-inline');
+      span.setAttribute('data-tex', tex);
+      span.contentEditable = 'false';
+      span.dataset.katexRendered = '1';
+      try {
+        span.innerHTML = katex.renderToString(tex, {
+          throwOnError: false,
+          displayMode,
+          output: 'html',
+        });
+      } catch {
+        span.textContent = '⚠ ' + tex;
+        span.classList.add('math-error');
+      }
+      span.addEventListener('click', () => {
+        openMathPopover(span, displayMode, span.getAttribute('data-tex') ?? '');
+      });
+      editorEl.focus();
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount > 0) {
+        const range = sel.getRangeAt(0);
+        range.deleteContents();
+        range.insertNode(span);
+        range.setStartAfter(span);
+        range.collapse(true);
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } else {
+        editorEl.appendChild(span);
+      }
+    }
+    closeMathPopover();
+    onInput();
+  }
+
   async function load() {
     try {
       status = 'loading';
@@ -76,57 +175,19 @@
       }
       el.contentEditable = 'false';
       el.dataset.katexRendered = '1';
-      // Click-to-edit : prompt for new LaTeX. Crude but unblocks
-      // V0.2 ; V0.3 = inline popover with KaTeX preview.
+      // Click-to-edit : open the inline popover with KaTeX live
+      // preview + textarea, anchored at the node's bottom-left.
       el.addEventListener('click', () => {
-        const next = window.prompt('Edit LaTeX math (' + (displayMode ? 'display' : 'inline') + ')', tex);
-        if (next === null || next === tex) return;
-        el.setAttribute('data-tex', next);
-        try {
-          el.innerHTML = katex.renderToString(next, {
-            throwOnError: false,
-            displayMode,
-            output: 'html',
-          });
-          el.classList.remove('math-error');
-        } catch {
-          el.textContent = '⚠ ' + next;
-          el.classList.add('math-error');
-        }
-        onInput();
+        openMathPopover(el, displayMode, el.getAttribute('data-tex') ?? '');
       });
     });
   }
 
-  // Insert a fresh math span at the caret. Triggered from the
-  // toolbar's ∑ / ∫ buttons.
+  // Insert a fresh math span via the popover (live KaTeX preview +
+  // textarea + Apply/Cancel). Triggered from the toolbar's ∑ / ∫
+  // buttons. The actual insert happens in applyMathPopover().
   function insertMath(displayMode: boolean) {
-    const tex = window.prompt(
-      'Enter LaTeX math source' + (displayMode ? ' (display mode)' : ''),
-      displayMode ? 'x^2 + y^2 = z^2' : 'a + b',
-    );
-    if (!tex) return;
-    const span = document.createElement(displayMode ? 'div' : 'span');
-    span.className = 'math ' + (displayMode ? 'math-display' : 'math-inline');
-    span.setAttribute('data-tex', tex);
-    span.textContent = tex; // fallback text — renderMathNodes overwrites
-    editorEl.focus();
-    const sel = window.getSelection();
-    if (sel && sel.rangeCount > 0) {
-      const range = sel.getRangeAt(0);
-      range.deleteContents();
-      range.insertNode(span);
-      // Move caret AFTER the inserted node so subsequent typing
-      // doesn't go inside the math span.
-      range.setStartAfter(span);
-      range.collapse(true);
-      sel.removeAllRanges();
-      sel.addRange(range);
-    } else {
-      editorEl.appendChild(span);
-    }
-    renderMathNodes(editorEl);
-    onInput();
+    openMathPopover(null, displayMode, displayMode ? 'x^2 + y^2 = z^2' : 'a + b');
   }
 
   async function save() {
@@ -243,6 +304,44 @@
     oninput={onInput}
     data-testid="latex-wysiwyg-surface"
   ></div>
+
+  {#if popoverState}
+    <!-- Inline math popover : floats over the editor at the clicked
+         node's bottom-left, lets the user edit the LaTeX source
+         with a KaTeX preview that re-renders on every keystroke.
+         Enter = apply, Esc = cancel. -->
+    <div
+      class="math-popover card bg-base-200 border border-base-300 shadow-xl"
+      style="top: {popoverState.top}px; left: {popoverState.left}px;"
+      role="dialog"
+      aria-label="Edit LaTeX math"
+      data-testid="math-popover"
+    >
+      <div class="card-body p-3 gap-2">
+        <div class="flex items-center gap-2 text-xs">
+          <span class="font-semibold">{popoverState.displayMode ? 'Display math' : 'Inline math'}</span>
+          <span class="ml-auto opacity-60">Enter = apply · Esc = cancel</span>
+        </div>
+        <textarea
+          class="textarea textarea-bordered textarea-sm font-mono text-xs w-80"
+          rows="3"
+          bind:value={popoverState.tex}
+          onkeydown={(e) => {
+            if (e.key === 'Escape') { e.preventDefault(); closeMathPopover(); }
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); applyMathPopover(); }
+          }}
+          aria-label="LaTeX math source"
+        ></textarea>
+        <div class="math-popover-preview text-center text-sm py-2 border border-base-300 rounded bg-base-100">
+          {@html popoverPreviewHtml}
+        </div>
+        <div class="flex justify-end gap-2">
+          <button class="btn btn-ghost btn-xs" onclick={closeMathPopover}>Cancel</button>
+          <button class="btn btn-primary btn-xs" onclick={applyMathPopover}>Apply</button>
+        </div>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -278,5 +377,10 @@
   .latex-wysiwyg-surface :global(.math-error) {
     background: rgba(255, 80, 80, 0.18) !important;
     color: #c00;
+  }
+  .math-popover {
+    position: fixed;
+    z-index: 50;
+    max-width: 24rem;
   }
 </style>
