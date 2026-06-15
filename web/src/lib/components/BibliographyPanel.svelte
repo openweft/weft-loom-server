@@ -96,22 +96,22 @@
       e.preventDefault();
     }
   }
+
+  // External toggle : the Editor toolbar dispatches
+  // `weft-loom:toggle-bib` to flip the popover without needing a
+  // FAB. Internal FAB is now hidden ; this listener is the only
+  // open-trigger.
+  $effect(() => {
+    const handler = () => { open = !open; };
+    window.addEventListener('weft-loom:toggle-bib', handler);
+    return () => window.removeEventListener('weft-loom:toggle-bib', handler);
+  });
 </script>
 
 <svelte:window onkeydown={onKey} />
 
 {#if visible}
   <div class="bib-panel">
-    <button
-      type="button"
-      class="bib-fab btn btn-circle btn-secondary"
-      title="Bibliography ({bib.entries.length})"
-      onclick={() => (open = !open)}
-      aria-label="Open bibliography browser"
-      data-testid="bib-toggle"
-    >
-      <span class="text-xl">📚</span>
-    </button>
     {#if open}
       <div class="bib-popover card bg-base-200 shadow-xl border border-base-300" data-testid="bib-panel">
         <div class="card-body p-3">
@@ -220,17 +220,14 @@
 <style>
   .bib-panel {
     position: absolute;
-    right: 1.5rem;
-    bottom: 5.5rem;
+    right: 1rem;
+    top: 3rem;
     z-index: 30;
-  }
-  .bib-fab {
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
   }
   .bib-popover {
     position: absolute;
     right: 0;
-    bottom: 4rem;
+    top: 0;
     width: 26rem;
     max-height: 32rem;
     overflow: hidden;

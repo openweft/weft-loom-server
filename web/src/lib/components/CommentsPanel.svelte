@@ -230,25 +230,17 @@
     }
     return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
   }
+
+  // External toggle via toolbar icon — replaces the removed FAB.
+  $effect(() => {
+    const handler = () => { open = !open; };
+    window.addEventListener('weft-loom:toggle-comments', handler);
+    return () => window.removeEventListener('weft-loom:toggle-comments', handler);
+  });
 </script>
 
 {#if visible}
   <div class="comments-panel">
-    <button
-      type="button"
-      class="comments-fab btn btn-circle btn-accent"
-      title={'Comments (' + comments.length + ')'}
-      onclick={() => (open = !open)}
-      aria-label="Open comments"
-      data-testid="comments-toggle"
-    >
-      <span class="text-xl">💭</span>
-      {#if comments.filter(c => !c.resolved).length > 0}
-        <span class="absolute -top-1 -right-1 badge badge-xs badge-warning">
-          {comments.filter(c => !c.resolved).length}
-        </span>
-      {/if}
-    </button>
     {#if open}
       <div class="comments-popover card bg-base-200 shadow-xl border border-base-300" data-testid="comments-panel">
         <div class="card-body p-3">
@@ -385,18 +377,14 @@
 <style>
   .comments-panel {
     position: absolute;
-    right: 1.5rem;
-    bottom: 9.5rem; /* sits above bib panel + symbol palette */
+    right: 1rem;
+    top: 3rem;
     z-index: 30;
-  }
-  .comments-fab {
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
-    position: relative;
   }
   .comments-popover {
     position: absolute;
     right: 0;
-    bottom: 4rem;
+    top: 0;
     width: 28rem;
     max-height: 36rem;
     overflow: hidden;

@@ -150,23 +150,17 @@
     todayKey = ymdKey();
     persistAnchor();
   }
+
+  // External toggle via toolbar icon — replaces the removed FAB.
+  $effect(() => {
+    const handler = () => { open = !open; };
+    window.addEventListener('weft-loom:toggle-words', handler);
+    return () => window.removeEventListener('weft-loom:toggle-words', handler);
+  });
 </script>
 
 {#if visible}
   <div class="words-panel">
-    <button
-      type="button"
-      class="words-fab btn btn-circle btn-info"
-      title="Word count + writing goal"
-      onclick={() => (open = !open)}
-      aria-label="Open word count panel"
-      data-testid="words-toggle"
-    >
-      <span class="text-xl">📊</span>
-      {#if achieved}
-        <span class="absolute -top-1 -right-1 badge badge-xs badge-success" data-testid="words-achieved-badge">✓</span>
-      {/if}
-    </button>
     {#if open}
       <div class="words-popover card bg-base-200 shadow-xl border border-base-300" data-testid="words-panel">
         <div class="card-body p-3">
@@ -238,18 +232,14 @@
 <style>
   .words-panel {
     position: absolute;
-    right: 1.5rem;
-    bottom: 13.5rem; /* sits above comments / bib / palette stack */
+    right: 1rem;
+    top: 3rem;
     z-index: 30;
-  }
-  .words-fab {
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
-    position: relative;
   }
   .words-popover {
     position: absolute;
     right: 0;
-    bottom: 4rem;
+    top: 0;
     width: 22rem;
     overflow: hidden;
     display: flex;

@@ -46,22 +46,19 @@
       e.preventDefault();
     }
   }
+
+  // External toggle via toolbar icon — replaces the removed FAB.
+  $effect(() => {
+    const handler = () => { open = !open; };
+    window.addEventListener('weft-loom:toggle-palette', handler);
+    return () => window.removeEventListener('weft-loom:toggle-palette', handler);
+  });
 </script>
 
 <svelte:window onkeydown={onKey} />
 
 {#if visible}
   <div class="latex-symbol-palette">
-    <button
-      type="button"
-      class="palette-fab btn btn-circle btn-primary"
-      title="LaTeX symbols (Σ)"
-      onclick={() => (open = !open)}
-      aria-label="Open LaTeX symbol palette"
-      data-testid="latex-palette-toggle"
-    >
-      <span class="text-xl">∑</span>
-    </button>
     {#if open}
       <div class="palette-panel card bg-base-200 shadow-xl border border-base-300" data-testid="latex-palette-panel">
         <div class="card-body p-3">
@@ -118,17 +115,14 @@
 <style>
   .latex-symbol-palette {
     position: absolute;
-    right: 1.5rem;
-    bottom: 1.5rem;
+    right: 1rem;
+    top: 3rem;
     z-index: 30;
-  }
-  .palette-fab {
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
   }
   .palette-panel {
     position: absolute;
     right: 0;
-    bottom: 4.5rem;
+    top: 0;
     width: 22rem;
     max-height: 26rem;
     overflow-y: auto;

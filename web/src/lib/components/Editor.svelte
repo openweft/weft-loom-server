@@ -1378,6 +1378,28 @@
       <span class="opacity-30">·</span>
       <button class="btn btn-xs" onclick={() => fmt('href')} title="Insert hyperlink" aria-label="Insert link">🔗</button>
       <span class="ml-auto"></span>
+      <!-- Tool drawers : icon buttons that toggle the side-panels.
+           Each dispatches a window event the matching panel listens
+           for ; the panels themselves still own their popover state +
+           DOM so this toolbar stays a thin trigger surface. -->
+      <div class="join mr-2">
+        <button class="join-item btn btn-xs btn-ghost"
+          onclick={() => window.dispatchEvent(new CustomEvent('weft-loom:toggle-palette'))}
+          title="LaTeX symbol palette"
+          aria-label="Toggle LaTeX symbol palette">∑</button>
+        <button class="join-item btn btn-xs btn-ghost"
+          onclick={() => window.dispatchEvent(new CustomEvent('weft-loom:toggle-bib'))}
+          title="Bibliography"
+          aria-label="Toggle bibliography">📚</button>
+        <button class="join-item btn btn-xs btn-ghost"
+          onclick={() => window.dispatchEvent(new CustomEvent('weft-loom:toggle-comments'))}
+          title="Comments"
+          aria-label="Toggle comments">💬</button>
+        <button class="join-item btn btn-xs btn-ghost"
+          onclick={() => window.dispatchEvent(new CustomEvent('weft-loom:toggle-words'))}
+          title="Word count + writing goals"
+          aria-label="Toggle word count">🔢</button>
+      </div>
       <div class="join">
         <button
           class="join-item btn btn-xs"
