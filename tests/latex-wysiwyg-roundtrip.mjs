@@ -192,6 +192,79 @@ test('roundtrip : includegraphics with opts survives', () => {
     `roundtrip missing includegraphics : ${round}`);
 });
 
+test('latexBodyToHtml : tabular → table', () => {
+  const html = latexBodyToHtml(`\\begin{tabular}{|l|c|r|}
+\\hline
+a & b & c \\\\
+d & e & f \\\\
+\\hline
+\\end{tabular}`);
+  assert.ok(html.includes('<table'));
+  assert.ok(html.includes('class="latex-tabular"'));
+  assert.ok(html.includes('data-spec="|l|c|r|"'));
+  assert.ok(html.includes('<td>a</td>'));
+  assert.ok(html.includes('<td>f</td>'));
+});
+
+test('latexBodyToHtml : equation env → math-env', () => {
+  const html = latexBodyToHtml(`\\begin{equation}
+E = mc^2
+\\end{equation}`);
+  assert.ok(html.includes('class="math math-env"'));
+  assert.ok(html.includes('data-env="equation"'));
+  assert.ok(html.includes('data-tex="E = mc^2"'));
+});
+
+test('latexBodyToHtml : align env preserves env name', () => {
+  const html = latexBodyToHtml(`\\begin{align}
+x &= 1 \\\\
+y &= 2
+\\end{align}`);
+  assert.ok(html.includes('data-env="align"'));
+});
+
+test('roundtrip : tabular preserves column spec + cells', () => {
+  const src = `\\begin{document}
+\\begin{tabular}{|l|c|r|}
+\\hline
+Name & Age & Score \\\\
+Alice & 30 & 95 \\\\
+\\hline
+\\end{tabular}
+\\end{document}`;
+  const parsed = parseLatex(src);
+  const round = serializeLatex(parsed, parsed.bodyHtml);
+  assert.ok(round.includes('\\begin{tabular}{|l|c|r|}'), `missing tabular open : ${round}`);
+  assert.ok(round.includes('Name & Age & Score'), `missing first row : ${round}`);
+  assert.ok(round.includes('Alice & 30 & 95'), `missing second row : ${round}`);
+  assert.ok(round.includes('\\end{tabular}'));
+});
+
+test('roundtrip : equation env survives', () => {
+  const src = `\\begin{document}
+\\begin{equation}
+E = mc^2
+\\end{equation}
+\\end{document}`;
+  const parsed = parseLatex(src);
+  const round = serializeLatex(parsed, parsed.bodyHtml);
+  assert.ok(round.includes('\\begin{equation}'));
+  assert.ok(round.includes('E = mc^2'));
+  assert.ok(round.includes('\\end{equation}'));
+});
+
+test('splitTabularCells : escaped & stays grouped', () => {
+  // `a \& b & c` : the `\&` should NOT split the cell — both
+  // `a \& b` and `c` should land as the only two cells.
+  const html = latexBodyToHtml(`\\begin{tabular}{ll}
+a \\& b & c \\\\
+\\end{tabular}`);
+  // Count <td> elements in the first <tr>.
+  const trMatch = html.match(/<tr>(.*?)<\/tr>/s);
+  const tdCount = (trMatch?.[1].match(/<td>/g) || []).length;
+  assert.equal(tdCount, 2, `expected 2 cells (escaped & ignored), got ${tdCount} : ${html}`);
+});
+
 test('roundtrip : unknown commands survive untouched via latex-raw', () => {
   const src = `\\begin{document}
 A \\cite{ref} citation and a \\label{foo} label.

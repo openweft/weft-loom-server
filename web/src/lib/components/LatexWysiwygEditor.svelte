@@ -228,13 +228,35 @@
   // accidentally delete a half-character + leave broken markup.
   // Backspace on the node still works (whole-node delete), and the
   // Insert-math toolbar button creates new ones.
+  // KaTeX env name remapping : KaTeX supports `aligned` / `gathered`
+  // (the inline-math wrappers) but NOT the display-math standalone
+  // forms `align` / `gather`. When rendering a math-env we wrap the
+  // tex in the KaTeX-compatible env so AMS markers (&, \\) survive.
+  const KATEX_ENV_MAP: Record<string, string> = {
+    equation: '',          // bare math — no wrapper needed
+    'equation*': '',
+    align: 'aligned',
+    'align*': 'aligned',
+    gather: 'gathered',
+    'gather*': 'gathered',
+    multline: 'gathered',
+    'multline*': 'gathered',
+  };
+
   function renderMathNodes(root: HTMLElement) {
-    const nodes = root.querySelectorAll('.math-inline, .math-display');
+    const nodes = root.querySelectorAll('.math-inline, .math-display, .math-env');
     nodes.forEach((node) => {
       const el = node as HTMLElement;
       if (el.dataset.katexRendered === '1') return;
-      const tex = el.getAttribute('data-tex') ?? '';
-      const displayMode = el.classList.contains('math-display');
+      let tex = el.getAttribute('data-tex') ?? '';
+      if (el.classList.contains('math-env')) {
+        const env = el.getAttribute('data-env') ?? 'equation';
+        const wrapper = KATEX_ENV_MAP[env];
+        if (wrapper) {
+          tex = `\\begin{${wrapper}}\n${tex}\n\\end{${wrapper}}`;
+        }
+      }
+      const displayMode = el.classList.contains('math-display') || el.classList.contains('math-env');
       try {
         el.innerHTML = katex.renderToString(tex, {
           throwOnError: false,
@@ -496,5 +518,26 @@
     margin: 0.8em auto;
     border: 1px solid hsl(0, 0%, 70%);
     border-radius: 4px;
+  }
+  .latex-wysiwyg-surface :global(table.latex-tabular) {
+    border-collapse: collapse;
+    margin: 1em 0;
+  }
+  .latex-wysiwyg-surface :global(table.latex-tabular td) {
+    border: 1px solid hsl(0, 0%, 70%);
+    padding: 4px 8px;
+    min-width: 2em;
+  }
+  .latex-wysiwyg-surface :global(.math-env) {
+    display: block;
+    margin: 0.8em 0;
+    padding: 0.5em;
+    background: rgba(80, 140, 255, 0.06);
+    border-left: 3px solid rgba(80, 140, 255, 0.6);
+    text-align: center;
+    cursor: pointer;
+  }
+  .latex-wysiwyg-surface :global(.math-env:hover) {
+    background: rgba(80, 140, 255, 0.14);
   }
 </style>

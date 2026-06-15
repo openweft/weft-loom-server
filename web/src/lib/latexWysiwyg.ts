@@ -120,6 +120,49 @@ export function latexBodyToHtml(body: string): string {
       continue;
     }
 
+    // equation / align / equation* / align* — render as display
+     // math via KaTeX (the editor swaps the rendered HTML in,
+     // data-env carries the original env name for serialisation).
+    const mathEnv = trimmed.match(/^\\begin\{(equation|align|gather|multline)\*?\}/);
+    if (mathEnv) {
+      const envName = trimmed.match(/^\\begin\{([^}]+)\}/)?.[1] ?? mathEnv[1];
+      const buf: string[] = [trimmed.slice(('\\begin{' + envName + '}').length)];
+      i++;
+      while (i < lines.length && !lines[i].match(/^\s*\\end\{[^}]+\}/)) {
+        buf.push(lines[i]);
+        i++;
+      }
+      i++; // consume \end{…}
+      const tex = buf.join('\n').trim();
+      out.push(`<div class="math math-env" data-tex="${escapeAttr(tex)}" data-env="${escapeAttr(envName)}">\\begin{${escapeHtml(envName)}}${escapeHtml(tex)}\\end{${escapeHtml(envName)}}</div>`);
+      continue;
+    }
+
+    // tabular : <table> with one tr per `\\`-separated row, one td
+    // per `&`-separated cell. The column spec carries through via
+    // data-spec ; \hline lines turn into a `border-top` on the
+    // following row.
+    const tabularOpen = trimmed.match(/^\\begin\{tabular\}\{([^}]*)\}/);
+    if (tabularOpen) {
+      const spec = tabularOpen[1];
+      const buf: string[] = [];
+      i++;
+      while (i < lines.length && !lines[i].match(/^\s*\\end\{tabular\}/)) {
+        buf.push(lines[i]);
+        i++;
+      }
+      i++; // consume \end{tabular}
+      // Strip \hline + split on `\\` to get rows.
+      const body = buf.join('\n');
+      const rows = body.split(/\\\\/).map((row) => row.replace(/\\hline/g, '').trim());
+      const trs = rows.filter((r) => r.length > 0).map((row) => {
+        const cells = splitTabularCells(row);
+        return '<tr>' + cells.map((c) => `<td>${inlineLatexToHtml(c.trim())}</td>`).join('') + '</tr>';
+      }).join('');
+      out.push(`<table class="latex-tabular" data-spec="${escapeAttr(spec)}">${trs}</table>`);
+      continue;
+    }
+
     // Display-math delimited environments — match the LITERAL `\[`
     // opening (no real LaTeX command after the backslash, just the
     // bracket pair).
@@ -201,6 +244,36 @@ export function inlineLatexToHtml(s: string): string {
     i++;
   }
   return out.join('');
+}
+
+// splitTabularCells splits a tabular row on unescaped `&`. Skips
+// `\&` (an `&` in user text) as well as `\\` cell-ends embedded in
+// math `$…$` blocks (rare but possible — we don't want to lose a
+// cell because the user typed `a & b` inside `$$`).
+function splitTabularCells(row: string): string[] {
+  const cells: string[] = [];
+  let depth = 0;
+  let inMath = false;
+  let buf = '';
+  for (let i = 0; i < row.length; i++) {
+    const ch = row[i];
+    if (ch === '\\' && i + 1 < row.length) {
+      buf += ch + row[i + 1];
+      i++;
+      continue;
+    }
+    if (ch === '$') inMath = !inMath;
+    if (ch === '{') depth++;
+    else if (ch === '}') depth--;
+    if (ch === '&' && depth === 0 && !inMath) {
+      cells.push(buf);
+      buf = '';
+      continue;
+    }
+    buf += ch;
+  }
+  cells.push(buf);
+  return cells;
 }
 
 // findInlineMathEnd locates the matching `$` for an inline-math
@@ -394,10 +467,24 @@ function nodeToLatex(node: Node): string {
         .join('\n');
       return `\\begin{enumerate}\n${items}\n\\end{enumerate}\n`;
     }
+    case 'table': {
+      const spec = el.getAttribute('data-spec') ?? 'l';
+      const rows = Array.from(el.querySelectorAll(':scope > tr, :scope > tbody > tr'));
+      const body = rows.map((tr) => {
+        const cells = Array.from(tr.querySelectorAll(':scope > td')).map((td) => nodeChildrenToLatex(td));
+        return cells.join(' & ');
+      }).join(' \\\\\n');
+      return `\\begin{tabular}{${spec}}\n${body}\n\\end{tabular}\n`;
+    }
     case 'p': return inner + '\n\n';
     case 'div':
     case 'span': {
       const cls = el.className;
+      if (cls.includes('math-env')) {
+        const env = el.getAttribute('data-env') ?? 'equation';
+        const tex = el.getAttribute('data-tex') ?? inner;
+        return `\\begin{${env}}\n${tex}\n\\end{${env}}\n`;
+      }
       if (cls.includes('math-display')) {
         return `\\[${el.getAttribute('data-tex') ?? inner}\\]\n`;
       }
@@ -478,6 +565,28 @@ function htmlBodyToLatexRegex(html: string): string {
     })
     .replace(/<span\s+class="math math-inline"\s+data-tex="([^"]*)"[^>]*>.*?<\/span>/gs, (_, tex) => `$${unescapeAttr(tex)}$`)
     .replace(/<div\s+class="math math-display"\s+data-tex="([^"]*)"[^>]*>.*?<\/div>/gs, (_, tex) => `\\[${unescapeAttr(tex)}\\]\n`)
+    .replace(/<div\s+class="math math-env"\s+([^>]*)>.*?<\/div>/gs, (_, attrs) => {
+      const envM = attrs.match(/data-env="([^"]*)"/);
+      const texM = attrs.match(/data-tex="([^"]*)"/);
+      const env = envM ? unescapeAttr(envM[1]) : 'equation';
+      const tex = texM ? unescapeAttr(texM[1]) : '';
+      return `\\begin{${env}}\n${tex}\n\\end{${env}}\n`;
+    })
+    .replace(/<table\s+class="latex-tabular"\s+data-spec="([^"]*)"[^>]*>([\s\S]*?)<\/table>/gs, (_, spec, body) => {
+      const rows = body.split(/<\/tr>/i)
+        .map((r: string) => r.replace(/^.*?<tr[^>]*>/is, ''))
+        .filter((r: string) => r.includes('<td'))
+        .map((r: string) => {
+          const cells = r.split(/<\/td>/i)
+            .map((c: string) => c.replace(/^.*?<td[^>]*>/is, ''))
+            .filter((c: string) => c.length > 0 || c === '');
+          // The split above produces a trailing empty after the last </td>.
+          if (cells.length > 0 && cells[cells.length - 1].trim() === '') cells.pop();
+          return cells.map((c: string) => c.replace(/<[^>]+>/g, '').trim()).join(' & ');
+        })
+        .join(' \\\\\n');
+      return `\\begin{tabular}{${unescapeAttr(spec)}}\n${rows}\n\\end{tabular}\n`;
+    })
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
