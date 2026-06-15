@@ -5,7 +5,7 @@
   // it open while editing so log lines stream in live without taking
   // their hands off the editor.
   import { onMount, onDestroy } from 'svelte';
-  import { startCompile } from '../api';
+  import { startCompile, cancelCompile } from '../api';
   import { compileCommands, compilerChoices } from '../settings.svelte';
   import { logError } from '../logbus';
   import CompilerSelector from './CompilerSelector.svelte';
@@ -47,6 +47,10 @@
 
   let lines = $state<LogLine[]>([]);
   let inFlight = $state(false);
+  // Job ID of the currently-running compile. Held so the "Cancel"
+  // button can route to /compile/<id>/cancel. Cleared on success
+  // path + the cancel path so a fresh Run starts with a clean slate.
+  let currentJobID = $state<string | null>(null);
   // Hoisted so onDestroy can close the stream even mid-run.
   let es: EventSource | null = null;
   // V0.11 compile-on-save : toggle persisted in localStorage.
@@ -261,6 +265,7 @@
         engine: language === 'latex' ? choice.engine : undefined,
         bib: language === 'latex' ? choice.bib : undefined,
       });
+      currentJobID = id;
       if (customCmd) push({ kind: 'log', text: 'custom command : ' + customCmd, ts: Date.now() });
       if (language === 'latex') {
         push({ kind: 'log', text: `engine : ${choice.engine}  bib : ${choice.bib}`, ts: Date.now() });
@@ -316,6 +321,7 @@
         es?.close();
         es = null;
         inFlight = false;
+        currentJobID = null;
       });
       es.addEventListener('error', () => {
         if (!gotResult) {
@@ -325,10 +331,30 @@
         es?.close();
         es = null;
         inFlight = false;
+        currentJobID = null;
       });
     } catch (e) {
       push({ kind: 'error', text: String(e), ts: Date.now() });
       inFlight = false;
+      currentJobID = null;
+    }
+  }
+
+  // cancel : red "Cancel" button posts to /compile/<id>/cancel. The
+  // server tears down the in-flight subprocess / NATS exec session ;
+  // the SSE stream then emits a "compile cancelled by user" log line
+  // + the closing result event. We don't clear inFlight here — the
+  // result handler does, so the UI stays in "cancelling…" state
+  // until the server confirms.
+  async function cancelRun() {
+    const id = currentJobID;
+    if (!id) return;
+    push({ kind: 'log', text: 'cancelling…', ts: Date.now() });
+    try {
+      await cancelCompile(project, id);
+    } catch (e) {
+      push({ kind: 'error', text: 'cancel failed : ' + String(e), ts: Date.now() });
+      logError('compile', 'cancel_failed', e instanceof Error ? e : new Error(String(e)), { project, jobID: id });
     }
   }
 
@@ -428,20 +454,32 @@
             />
             <span class="label-text text-[10px] opacity-70">auto</span>
           </label>
-          <button
-            class="btn btn-primary btn-xs"
-            disabled={inFlight}
-            onclick={run}
-            title="Run compile ({language})"
-            data-testid="compile-run"
-          >
-            {#if inFlight}
+          {#if inFlight && currentJobID}
+            <button
+              class="btn btn-error btn-xs"
+              onclick={cancelRun}
+              title="Cancel the running compile (kills the subprocess server-side)"
+              data-testid="compile-cancel"
+            >
               <span class="loading loading-spinner loading-xs"></span>
-            {:else}
-              ▶
-            {/if}
-            Run
-          </button>
+              ✕ Cancel
+            </button>
+          {:else}
+            <button
+              class="btn btn-primary btn-xs"
+              disabled={inFlight}
+              onclick={run}
+              title="Run compile ({language})"
+              data-testid="compile-run"
+            >
+              {#if inFlight}
+                <span class="loading loading-spinner loading-xs"></span>
+              {:else}
+                ▶
+              {/if}
+              Run
+            </button>
+          {/if}
         {:else}
           <span
             class="text-[10px] opacity-50 italic px-2 py-0.5"

@@ -22,6 +22,7 @@
 
   import { onMount, onDestroy } from 'svelte';
   import type { ChangeLog, ChangeRecord } from '../wysiwygAuthorship';
+  import { diffStrings, renderDiffHtml, type DiffSegment } from '../diffRender';
 
   interface Props {
     log: ChangeLog;
@@ -67,13 +68,38 @@
     return `${days} d ago`;
   }
 
-  // truncate : clip a source snapshot to ~80 chars for the redline
-  // preview. The full source goes into the title attribute so the
-  // user can hover to see the rest in V0.1 ; V0.2 will swap in a
-  // proper character-level diff renderer.
-  function truncate(s: string, n: number = 80): string {
-    if (s.length <= n) return s;
-    return s.slice(0, n) + '…';
+  // diffPreviewHtml : runs a character-level diff between
+  // rec.before and rec.after, then caps the total rendered text at
+  // ~200 chars so a huge edit doesn't blow up the panel height.
+  // Truncation walks the segment list left→right and stops when the
+  // accumulated character count exceeds the cap, appending "…" on
+  // overflow. Empty + identical snapshots gracefully degrade to a
+  // single 'unchanged' segment.
+  const DIFF_PREVIEW_CAP = 200;
+
+  function capSegments(segs: DiffSegment[], cap: number): { segs: DiffSegment[]; truncated: boolean } {
+    let used = 0;
+    const out: DiffSegment[] = [];
+    for (const seg of segs) {
+      if (used >= cap) return { segs: out, truncated: true };
+      const remaining = cap - used;
+      if (seg.text.length <= remaining) {
+        out.push(seg);
+        used += seg.text.length;
+      } else {
+        out.push({ kind: seg.kind, text: seg.text.slice(0, remaining) });
+        return { segs: out, truncated: true };
+      }
+    }
+    return { segs: out, truncated: false };
+  }
+
+  function diffPreviewHtml(before: string, after: string): string {
+    const all = diffStrings(before, after);
+    const { segs, truncated } = capSegments(all, DIFF_PREVIEW_CAP);
+    let html = renderDiffHtml(segs);
+    if (truncated) html += '<span class="diff-unchanged">…</span>';
+    return html;
   }
 
   function onAccept(rec: ChangeRecord) {
@@ -139,16 +165,11 @@
               <span class="opacity-60 ml-auto">{relativeTime(rec.at)}</span>
             </div>
 
-            <div class="diff-preview mt-2 text-xs font-mono flex flex-col gap-1">
-              <div
-                class="diff-before line-through text-error bg-error/10 rounded px-1 py-0.5"
-                title={rec.before}
-              >− {truncate(rec.before)}</div>
-              <div
-                class="diff-after text-success bg-success/10 rounded px-1 py-0.5"
-                title={rec.after}
-              >+ {truncate(rec.after)}</div>
-            </div>
+            <div
+              class="diff-preview mt-2 text-xs font-mono rounded px-1 py-0.5 bg-base-200"
+              title={`Before:\n${rec.before}\n\nAfter:\n${rec.after}`}
+              data-testid="track-changes-diff"
+            >{@html diffPreviewHtml(rec.before, rec.after)}</div>
 
             <div class="flex justify-end gap-1 mt-2">
               <button
@@ -180,17 +201,23 @@
     width: 22rem;
     max-width: calc(100vw - 2rem);
   }
-  .diff-before {
-    /* line-clamp keeps the strikethrough preview to one line so
-       long inserts don't blow up the panel height ; the title
-       attribute exposes the full text on hover. */
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  .diff-preview {
+    /* Word-wrap multi-line diffs ; the cap inside diffPreviewHtml
+       limits raw character count so the panel can't be flooded by
+       a huge paste. Hover title exposes the full before/after. */
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 8rem;
+    overflow-y: auto;
   }
-  .diff-after {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  .diff-preview :global(.diff-added) {
+    background: rgba(80, 200, 100, 0.2);
+  }
+  .diff-preview :global(.diff-removed) {
+    background: rgba(255, 80, 80, 0.2);
+    text-decoration: line-through;
+  }
+  .diff-preview :global(.diff-unchanged) {
+    opacity: 0.7;
   }
 </style>

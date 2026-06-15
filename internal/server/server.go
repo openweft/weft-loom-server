@@ -326,6 +326,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/projects/{name}/compile/{id}", s.requireAuth(s.handleCompileStream))
 	s.mux.HandleFunc("GET /api/projects/{name}/compile/{id}/artifact", s.requireAuth(s.handleCompileArtifact))
 	s.mux.HandleFunc("GET /api/projects/{name}/compile/{id}/synctex", s.requireAuth(s.handleSyncTeX))
+	// Cancel an in-flight compile : the SPA's red "Cancel" button
+	// posts here so the user can pull the plug on a runaway pdflatex
+	// loop without waiting for the watchdog timeout.
+	s.mux.HandleFunc("POST /api/projects/{name}/compile/{id}/cancel", s.requireAuth(s.handleCancelCompile))
 	// T8 LSP : per-language WS proxy to a stdio language server.
 	// `/api/lsp/{lang}` routes to internal/lsp ; we keep the path
 	// outside /api/projects/ since the LSP itself opens the project

@@ -118,3 +118,16 @@ export async function startCompile(
   if (error) throw new Error(`start-compile: ${JSON.stringify(error)}`);
   return data.id;
 }
+
+// cancelCompile pulls the plug on a still-running compile job. Hits
+// the raw POST endpoint (outside the typed huma surface — the
+// handler returns 204 no-content, which doesn't fit the typed-client
+// envelope as cleanly). 404 means the job already finished — we
+// swallow it so the UI's "Cancel" button feels idempotent.
+export async function cancelCompile(project: string, jobID: string): Promise<void> {
+  const url = `/api/projects/${encodeURIComponent(project)}/compile/${encodeURIComponent(jobID)}/cancel`;
+  const resp = await fetch(url, { method: 'POST' });
+  if (!resp.ok && resp.status !== 404) {
+    throw new Error(`cancel-compile ${resp.status}: ${await resp.text()}`);
+  }
+}

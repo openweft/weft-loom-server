@@ -95,7 +95,7 @@ func useMicroVM() bool {
 // The -v flag was added to `weft microvm run` in weft-microvm 0.2 ;
 // weft-init 0.2 parses the matching `weft.mount=virtiofs:tag:guest[:ro]`
 // cmdline directives. Both ship as part of the v0.5 openweft toolchain.
-func (s *Service) compileInMicroVM(workDir, scratchDir string, spec JobSpec, marp bool, command []string, emit func(Event)) (string, error) {
+func (s *Service) compileInMicroVM(ctx context.Context, workDir, scratchDir string, spec JobSpec, marp bool, command []string, emit func(Event)) (string, error) {
 	bin, err := exec.LookPath("weft")
 	if err != nil {
 		return "", fmt.Errorf("weft CLI not on PATH ; WEFT_LOOM_BACKEND=microvm requires the openweft toolchain installed locally")
@@ -172,7 +172,7 @@ func (s *Service) compileInMicroVM(workDir, scratchDir string, spec JobSpec, mar
 	args = append(args, rewritten...)
 
 	emit(Event{Kind: "log", Line: "weft " + strings.Join(args, " ")})
-	if err := runStreaming(bin, args, ".", emit); err != nil {
+	if err := runStreaming(ctx, bin, args, ".", emit); err != nil {
 		return "", fmt.Errorf("microvm dispatch failed : %w", err)
 	}
 

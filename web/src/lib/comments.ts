@@ -41,6 +41,12 @@ export interface CommentRecord {
   // roots) leave it undefined. Replies don't carry their own from/to
   // anchors — the renderer falls back to the root's range.
   parentId?: string;
+  // V0.8 @-mentions : clientIDs (as strings, since Awareness clientID
+  // is a number but Y.Map serialises bigint-ish keys to JSON strings
+  // anyway) of peers that were @-mentioned in this comment's body.
+  // Persisted so a future notification dispatcher can fan-out alerts
+  // without re-scanning every body. Empty / missing on legacy records.
+  mentions?: string[];
 }
 
 // Comments live as a Y.Array of Y.Map<field,value>. Each comment is a
@@ -65,6 +71,7 @@ export function newCommentMap(rec: CommentRecord): Y.Map<unknown> {
   m.set('resolved', rec.resolved);
   m.set('ts', rec.ts);
   if (rec.parentId) m.set('parentId', rec.parentId);
+  if (rec.mentions && rec.mentions.length > 0) m.set('mentions', rec.mentions);
   return m;
 }
 

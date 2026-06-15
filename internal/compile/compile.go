@@ -122,6 +122,14 @@ type WorkspaceUnsub interface {
 type runningJob struct {
 	events chan Event
 	done   chan struct{}
+	// cancel terminates the per-job context. The compile pipeline
+	// threads ctx through runStreaming (exec.CommandContext kills the
+	// child) + compileInWorkspace (NATS exec `x` signal). Called by
+	// Cancel() when the UI's red "Cancel" button hits the
+	// /compile/<id>/cancel endpoint, and again by the run goroutine's
+	// defer so the context is always released.
+	cancel  context.CancelFunc
+	started time.Time
 }
 
 func New(store project.Store) *Service {
@@ -141,16 +149,54 @@ func (s *Service) Start(_ context.Context, ident auth.Identity, spec JobSpec) (s
 	}
 	spec.Identity = ident.Subject
 	id := newJobID()
+	// Per-job context : the cancel hook is stashed on runningJob so
+	// the /compile/<id>/cancel handler can pull the plug on an
+	// in-flight compile. context.Background() because the HTTP
+	// request scope ends as soon as Start() returns the job id —
+	// the run goroutine outlives the request.
+	jobCtx, cancel := context.WithCancel(context.Background())
 	j := &runningJob{
-		events: make(chan Event, 64),
-		done:   make(chan struct{}),
+		events:  make(chan Event, 64),
+		done:    make(chan struct{}),
+		cancel:  cancel,
+		started: time.Now(),
 	}
 	s.mu.Lock()
 	s.jobs[id] = j
 	s.mu.Unlock()
 
-	go s.run(ident, id, spec, j)
+	go s.run(jobCtx, ident, id, spec, j)
 	return id, nil
+}
+
+// Cancel kills an in-flight compile job. Returns true when the
+// jobID matched a still-running job ; false when the id is
+// unknown or the job already finished. The artifact retention
+// path keeps the registry entry alive for 30 min past completion
+// so the SSE consumer can still download the PDF — we distinguish
+// "still running" from "kept around for artifact retrieval" by
+// peeking at the done channel (closed by the run goroutine's
+// defer). The UI's red "Cancel" button hits the
+// /compile/<id>/cancel endpoint which forwards here ; the
+// per-language dispatchers receive ctx.Done() and surface a
+// "cancelled" log line + bail.
+func (s *Service) Cancel(id string) bool {
+	s.mu.Lock()
+	j, ok := s.jobs[id]
+	s.mu.Unlock()
+	if !ok || j == nil || j.cancel == nil {
+		return false
+	}
+	// Already finished : the run goroutine closed the done channel
+	// in its defer. Treat as 404 so the UI doesn't think it killed
+	// something that was already over.
+	select {
+	case <-j.done:
+		return false
+	default:
+	}
+	j.cancel()
+	return true
 }
 
 func (s *Service) Stream(_ context.Context, id string) (<-chan Event, error) {
@@ -191,10 +237,20 @@ func (s *Service) SyncTeXPath(id string) (string, bool) {
 	return "", false
 }
 
-// run is the per-job goroutine.
-func (s *Service) run(ident auth.Identity, id string, spec JobSpec, j *runningJob) {
+// run is the per-job goroutine. ctx is the job-scoped context : a
+// cancellation (via Service.Cancel → /compile/<id>/cancel) cuts
+// through to exec.CommandContext in runStreaming + the NATS exec
+// `x` signal in compileInWorkspace, so the in-flight subprocess /
+// guest exec session dies promptly.
+func (s *Service) run(ctx context.Context, ident auth.Identity, id string, spec JobSpec, j *runningJob) {
 	start := time.Now()
 	defer func() {
+		// Release context resources even on the success path : the
+		// Cancel hook is a no-op if the job already finished, but
+		// leaving it un-called would leak the ctx's goroutine.
+		if j.cancel != nil {
+			j.cancel()
+		}
 		close(j.events)
 		close(j.done)
 		go func() {
@@ -255,20 +311,30 @@ func (s *Service) run(ident auth.Identity, id string, spec JobSpec, j *runningJo
 	var err error
 	switch spec.Language {
 	case "latex":
-		artifactPath, err = s.compileLatex(workDir, scratchDir, spec, emit)
+		artifactPath, err = s.compileLatex(ctx, workDir, scratchDir, spec, emit)
 	case "markdown":
-		artifactPath, err = s.compileMarkdown(workDir, scratchDir, spec, emit)
+		artifactPath, err = s.compileMarkdown(ctx, workDir, scratchDir, spec, emit)
 	default:
 		// Generic execution path : streams stdout to the log, no PDF
 		// artefact. The per-language command is resolved by
 		// runCommandFor() — Go, Python, Rust, Node, C++ etc. Falls
 		// back to the workspace μVM's pkgx wrappers when the
 		// language has no OCI image published yet.
-		artifactPath, err = s.compileGeneric(workDir, scratchDir, spec, emit)
+		artifactPath, err = s.compileGeneric(ctx, workDir, scratchDir, spec, emit)
 	}
 
 	dur := time.Since(start).Milliseconds()
 	if err != nil {
+		// Distinguish "the user clicked Cancel" from a genuine
+		// pipeline failure : the UI prefers a cancelled-by-user
+		// banner over a "compile failed" one. ctx.Err() returns
+		// context.Canceled when Service.Cancel fired ; the message
+		// is what the SSE consumer (CompileLogPanel) renders.
+		if ctx.Err() != nil {
+			emit(Event{Kind: "log", Line: "compile cancelled by user"})
+			emit(Event{Kind: "result", Success: false, Message: "cancelled by user", DurationMs: dur})
+			return
+		}
 		emit(Event{Kind: "result", Success: false, Message: err.Error(), DurationMs: dur})
 		return
 	}
@@ -368,7 +434,7 @@ func bibTrigger(scratchDir, base, engine string) string {
 // Engine selection : spec.Engine picks pdflatex/lualatex/xelatex ;
 // spec.BibEngine picks bibtex/biber. Unknown / missing binaries
 // fall back to pdflatex+bibtex with a warning surfaced in the log.
-func (s *Service) compileLatex(workDir, scratchDir string, spec JobSpec, emit func(Event)) (string, error) {
+func (s *Service) compileLatex(ctx context.Context, workDir, scratchDir string, spec JobSpec, emit func(Event)) (string, error) {
 	engine := resolveLatexEngine(spec.Engine, emit)
 	bibEngine := resolveBibEngine(spec.BibEngine, emit)
 	entry := spec.Entry
@@ -422,7 +488,7 @@ func (s *Service) compileLatex(workDir, scratchDir string, spec JobSpec, emit fu
 		// Pass 1 — produces .aux / .bcf so the bib engine has input.
 		passStart := time.Now()
 		emit(Event{Kind: "log", Line: "--- workspace pass 1 ---"})
-		if _, err := s.compileInWorkspace(context.Background(), vm, workDir, "latex", cmd, emit); err != nil {
+		if _, err := s.compileInWorkspace(ctx, vm, workDir, "latex", cmd, emit); err != nil {
 			return "", err
 		}
 		emit(Event{Kind: "log", Line: fmt.Sprintf("⏱  pass.1.end           %6dms", time.Since(passStart).Milliseconds())})
@@ -430,14 +496,14 @@ func (s *Service) compileLatex(workDir, scratchDir string, spec JobSpec, emit fu
 		if bibBase := bibTrigger(scratchDir, base, bibEngine); bibBase != "" {
 			emit(Event{Kind: "log", Line: fmt.Sprintf("--- workspace %s ---", bibEngine)})
 			bibCmd := bibCommand(bibEngine, scratchDir, bibBase)
-			if _, err := s.compileInWorkspace(context.Background(), vm, workDir, "latex", bibCmd, emit); err != nil {
+			if _, err := s.compileInWorkspace(ctx, vm, workDir, "latex", bibCmd, emit); err != nil {
 				return "", err
 			}
 		}
 		// Pass 2.
 		passStart = time.Now()
 		emit(Event{Kind: "log", Line: "--- workspace pass 2 ---"})
-		out, err := s.compileInWorkspace(context.Background(), vm, workDir, "latex", cmd, emit)
+		out, err := s.compileInWorkspace(ctx, vm, workDir, "latex", cmd, emit)
 		emit(Event{Kind: "log", Line: fmt.Sprintf("⏱  pass.2.end           %6dms", time.Since(passStart).Milliseconds())})
 		if err != nil {
 			return "", err
@@ -447,18 +513,18 @@ func (s *Service) compileLatex(workDir, scratchDir string, spec JobSpec, emit fu
 	if useMicroVM() {
 		cmd := append([]string{engine}, args...)
 		emit(Event{Kind: "log", Line: "--- microvm pass 1 ---"})
-		if _, err := s.compileInMicroVM(workDir, scratchDir, spec, false, cmd, emit); err != nil {
+		if _, err := s.compileInMicroVM(ctx, workDir, scratchDir, spec, false, cmd, emit); err != nil {
 			return "", err
 		}
 		if bibBase := bibTrigger(scratchDir, base, bibEngine); bibBase != "" {
 			emit(Event{Kind: "log", Line: fmt.Sprintf("--- microvm %s ---", bibEngine)})
 			bibCmd := bibCommand(bibEngine, scratchDir, bibBase)
-			if _, err := s.compileInMicroVM(workDir, scratchDir, spec, false, bibCmd, emit); err != nil {
+			if _, err := s.compileInMicroVM(ctx, workDir, scratchDir, spec, false, bibCmd, emit); err != nil {
 				return "", err
 			}
 		}
 		emit(Event{Kind: "log", Line: "--- microvm pass 2 ---"})
-		out, err := s.compileInMicroVM(workDir, scratchDir, spec, false, cmd, emit)
+		out, err := s.compileInMicroVM(ctx, workDir, scratchDir, spec, false, cmd, emit)
 		if err != nil {
 			return "", err
 		}
@@ -481,7 +547,7 @@ func (s *Service) compileLatex(workDir, scratchDir string, spec JobSpec, emit fu
 	}
 	emit(Event{Kind: "log", Line: engine + " " + strings.Join(args, " ")})
 	emit(Event{Kind: "log", Line: "--- pass 1 ---"})
-	if perr := runStreaming(bin, args, workDir, emit); perr != nil {
+	if perr := runStreaming(ctx, bin, args, workDir, emit); perr != nil {
 		return "", fmt.Errorf("%s failed : %w", engine, perr)
 	}
 	if bibBase := bibTrigger(scratchDir, base, bibEngine); bibBase != "" {
@@ -496,7 +562,7 @@ func (s *Service) compileLatex(workDir, scratchDir string, spec JobSpec, emit fu
 		} else {
 			emit(Event{Kind: "log", Line: fmt.Sprintf("--- %s ---", bibEngine)})
 			bibArgs := bibArgsFor(bibEngine, bibBase)
-			if berr := runStreaming(bibBin, bibArgs, scratchDir, emit); berr != nil {
+			if berr := runStreaming(ctx, bibBin, bibArgs, scratchDir, emit); berr != nil {
 				// Non-fatal : bibtex / biber failures often leave the
 				// PDF compilable with missing-references warnings. Log
 				// + carry on so the user still gets a draft PDF.
@@ -505,7 +571,7 @@ func (s *Service) compileLatex(workDir, scratchDir string, spec JobSpec, emit fu
 		}
 	}
 	emit(Event{Kind: "log", Line: "--- pass 2 ---"})
-	if perr := runStreaming(bin, args, workDir, emit); perr != nil {
+	if perr := runStreaming(ctx, bin, args, workDir, emit); perr != nil {
 		return "", fmt.Errorf("%s failed : %w", engine, perr)
 	}
 	pdf := filepath.Join(scratchDir, base+".pdf")
@@ -543,7 +609,7 @@ func bibCommand(engine, scratchDir, base string) []string {
 // compileMarkdown : detects Marp front-matter ; runs marp-cli for
 // slide decks or pandoc for regular markdown. Both produce a PDF in
 // scratchDir.
-func (s *Service) compileMarkdown(workDir, scratchDir string, spec JobSpec, emit func(Event)) (string, error) {
+func (s *Service) compileMarkdown(ctx context.Context, workDir, scratchDir string, spec JobSpec, emit func(Event)) (string, error) {
 	entry := spec.Entry
 	if entry == "" {
 		entry = "main.md"
@@ -572,14 +638,14 @@ func (s *Service) compileMarkdown(workDir, scratchDir string, spec JobSpec, emit
 		args = append(args, spec.ExtraArgs...)
 		if vm := s.resolveVMForCompile(spec); vm != nil {
 			cmd := append([]string{"marp"}, args...)
-			if _, err := s.compileInWorkspace(context.Background(), vm, workDir, "markdown", cmd, emit); err != nil {
+			if _, err := s.compileInWorkspace(ctx, vm, workDir, "markdown", cmd, emit); err != nil {
 				return "", err
 			}
 			return outPath, nil
 		}
 		if useMicroVM() {
 			cmd := append([]string{"marp"}, args...)
-			if _, err := s.compileInMicroVM(workDir, scratchDir, spec, true, cmd, emit); err != nil {
+			if _, err := s.compileInMicroVM(ctx, workDir, scratchDir, spec, true, cmd, emit); err != nil {
 				return "", err
 			}
 		} else {
@@ -588,7 +654,7 @@ func (s *Service) compileMarkdown(workDir, scratchDir string, spec JobSpec, emit
 				return "", fmt.Errorf("marp-cli not installed (install via `npm i -g @marp-team/marp-cli`, or set WEFT_LOOM_BACKEND=microvm)")
 			}
 			emit(Event{Kind: "log", Line: "marp " + strings.Join(args, " ")})
-			if err := runStreaming(bin, args, workDir, emit); err != nil {
+			if err := runStreaming(ctx, bin, args, workDir, emit); err != nil {
 				return "", fmt.Errorf("marp failed : %w", err)
 			}
 		}
@@ -597,14 +663,14 @@ func (s *Service) compileMarkdown(workDir, scratchDir string, spec JobSpec, emit
 		args = append(args, spec.ExtraArgs...)
 		if vm := s.resolveVMForCompile(spec); vm != nil {
 			cmd := append([]string{"pandoc"}, args...)
-			if _, err := s.compileInWorkspace(context.Background(), vm, workDir, "markdown", cmd, emit); err != nil {
+			if _, err := s.compileInWorkspace(ctx, vm, workDir, "markdown", cmd, emit); err != nil {
 				return "", err
 			}
 			return outPath, nil
 		}
 		if useMicroVM() {
 			cmd := append([]string{"pandoc"}, args...)
-			if _, err := s.compileInMicroVM(workDir, scratchDir, spec, false, cmd, emit); err != nil {
+			if _, err := s.compileInMicroVM(ctx, workDir, scratchDir, spec, false, cmd, emit); err != nil {
 				return "", err
 			}
 		} else {
@@ -613,7 +679,7 @@ func (s *Service) compileMarkdown(workDir, scratchDir string, spec JobSpec, emit
 				return "", fmt.Errorf("pandoc not installed (install via `brew install pandoc`, or set WEFT_LOOM_BACKEND=microvm)")
 			}
 			emit(Event{Kind: "log", Line: "pandoc " + strings.Join(args, " ")})
-			if err := runStreaming(bin, args, workDir, emit); err != nil {
+			if err := runStreaming(ctx, bin, args, workDir, emit); err != nil {
 				return "", fmt.Errorf("pandoc failed : %w", err)
 			}
 		}
@@ -633,7 +699,7 @@ func (s *Service) compileMarkdown(workDir, scratchDir string, spec JobSpec, emit
 // When the language's OCI image isn't published yet, the workspace-
 // agent falls back to the host shell (which now ships pkgx
 // wrappers for `python3` `go` `node` `npm`).
-func (s *Service) compileGeneric(workDir, _scratchDir string, spec JobSpec, emit func(Event)) (string, error) {
+func (s *Service) compileGeneric(ctx context.Context, workDir, _scratchDir string, spec JobSpec, emit func(Event)) (string, error) {
 	cmd, ok := runCommandFor(spec)
 	if !ok {
 		return "", fmt.Errorf("language %q not wired for compile (no run command registered) — open a terminal (Ctrl+`) to invoke the toolchain manually", spec.Language)
@@ -648,7 +714,7 @@ func (s *Service) compileGeneric(workDir, _scratchDir string, spec JobSpec, emit
 
 	emit(Event{Kind: "log", Line: fmt.Sprintf("--- workspace run (%s) ---", spec.Language)})
 	emit(Event{Kind: "log", Line: "$ " + strings.Join(cmd, " ")})
-	if _, err := s.compileInWorkspace(context.Background(), vm, workDir, spec.Language, cmd, emit); err != nil {
+	if _, err := s.compileInWorkspace(ctx, vm, workDir, spec.Language, cmd, emit); err != nil {
 		return "", err
 	}
 	return "", nil
@@ -771,8 +837,11 @@ func detectMarp(src string) bool {
 
 // runStreaming executes cmd with args, streaming every stdout +
 // stderr line to emit() until exit. Returns the subprocess error.
-func runStreaming(bin string, args []string, dir string, emit func(Event)) error {
-	cmd := exec.Command(bin, args...)
+// ctx is the job-scoped context : exec.CommandContext sends SIGKILL
+// to the child when ctx is cancelled, which is the cancellation path
+// the /compile/<id>/cancel endpoint relies on.
+func runStreaming(ctx context.Context, bin string, args []string, dir string, emit func(Event)) error {
+	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = dir
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

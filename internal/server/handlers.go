@@ -234,6 +234,27 @@ func (s *Server) handleCompileStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleCancelCompile kills an in-flight compile job. The UI's red
+// "Cancel" button posts here ; the Compile service walks the job
+// registry, finds the matching cancel hook + invokes it. The job's
+// run goroutine sees ctx.Done() in exec.CommandContext (host
+// subprocess path) / the NATS exec `x` byte (workspace dispatch
+// path), bails, and the SSE stream emits a "compile cancelled by
+// user" log line followed by a result(success=false) event.
+//
+// Returns 204 on success ; 404 when the jobID is unknown or the
+// job already terminated (the run goroutine clears its slot in the
+// registry on completion, so a late cancel race produces a clean
+// 404 rather than a misleading 204).
+func (s *Server) handleCancelCompile(w http.ResponseWriter, r *http.Request) {
+	id := compileID(r)
+	if !s.opts.Compiler.Cancel(id) {
+		http.Error(w, "job not found or already finished", http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // handleSync upgrades the HTTP request to a WebSocket and bridges it
 // into the y-websocket Hub. roomID = "<project>:default" for V0.1 ;
 // future revs scope per-file or per-named-doc.
