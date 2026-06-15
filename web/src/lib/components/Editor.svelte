@@ -1383,17 +1383,17 @@
           title="Word count + writing goals"
           aria-label="Toggle word count">🔢</button>
       </div>
-      <!-- WYSIWYG = the rendered PreviewPane side-by-side with the
-           source. Replaces the old in-source "Rich Text" decoration
-           toggle, which the user pointed out makes no sense for
-           LaTeX : the rendered view belongs in a SEPARATE pane (à la
-           Overleaf), not as inline source decorations. -->
+      <!-- Preview = the rendered PreviewPane side-by-side with the
+           source. READ-ONLY ; the actual editable WYSIWYG view for
+           LaTeX is a follow-up (parseLatex/writeLatex round-trip into
+           the contenteditable WysiwygEditor surface). Until then this
+           button is labelled "Preview" so the UI doesn't lie. -->
       <button
         class="btn btn-xs"
         onclick={() => window.dispatchEvent(new CustomEvent('weft-loom:toggle-preview'))}
-        title="Toggle WYSIWYG preview pane (rendered LaTeX alongside source)"
-        aria-label="Toggle WYSIWYG preview"
-      >👁 WYSIWYG</button>
+        title="Toggle rendered preview pane (read-only render of compiled LaTeX)"
+        aria-label="Toggle preview"
+      >👁 Preview</button>
     </div>
   {/if}
   <div class="flex-1 overflow-hidden relative">
