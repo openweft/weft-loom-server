@@ -8,6 +8,7 @@
   // The palette is visible only when the active file is .tex / .latex.
 
   import { CATEGORIES, type SymbolEntry } from '../latex_symbols';
+  import { insertAtContenteditableCaret, resolveWysiwygTarget } from '../latexSymbolInsert';
 
   interface Props {
     visible: boolean;
@@ -19,6 +20,14 @@
   let filter = $state('');
 
   function insert(e: SymbolEntry) {
+    // Pick the target by what's focused : WYSIWYG surface wins when
+    // active, otherwise fall through to the CodeMirror bridge that
+    // Editor.svelte installs as window.weftLoomInsertAtCursor.
+    const wysiwyg = resolveWysiwygTarget();
+    if (wysiwyg) {
+      insertAtContenteditableCaret(wysiwyg, e.cmd);
+      return;
+    }
     const fn = (window as unknown as {
       weftLoomInsertAtCursor?: (s: string, cur?: number) => void;
     }).weftLoomInsertAtCursor;

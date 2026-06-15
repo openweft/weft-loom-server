@@ -17,12 +17,14 @@
   import { readFile, writeFile } from '../api';
   import { logEvent, logError } from '../logbus';
   import { bib } from '../bibStore.svelte';
+  import LatexTableToolbar from './LatexTableToolbar.svelte';
 
   interface Props {
     project: string;
     file: string;
+    onCursorStats?: (s: { line: number; col: number; selectionLen: number; words: number }) => void;
   }
-  let { project, file }: Props = $props();
+  let { project, file, onCursorStats }: Props = $props();
 
   let editorEl: HTMLDivElement;
   let status = $state<'loading' | 'ready' | 'saving' | 'error'>('loading');
@@ -31,6 +33,26 @@
   let savedAt = $state<number | null>(null);
   let parsed: ParsedLatex = { preamble: '', bodyHtml: '', postamble: '' };
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
+
+  // ─── table toolbar ─────────────────────────────────────────────
+  // Anchored at a cell when the user clicks one ; gives them
+  // insert/delete row+col buttons without going to source view.
+  let tableToolbarTarget = $state<{ table: HTMLTableElement; cell: HTMLTableCellElement } | null>(null);
+  function onSurfaceClick(e: MouseEvent) {
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+    const td = target.closest('td');
+    if (!td) {
+      tableToolbarTarget = null;
+      return;
+    }
+    const table = td.closest('table.latex-tabular') as HTMLTableElement | null;
+    if (!table) {
+      tableToolbarTarget = null;
+      return;
+    }
+    tableToolbarTarget = { table, cell: td as HTMLTableCellElement };
+  }
 
   // ─── cite picker popover state ─────────────────────────────────
   // Quick-insert affordance : type a search term, see matching bib
@@ -392,6 +414,7 @@
     dirty = true;
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => { void save(); }, 600);
+    emitCursorStats();
   }
 
   // Toolbar commands : execCommand is officially deprecated but
@@ -417,11 +440,47 @@
     }
   }
 
+  // ─── cursor stats ───────────────────────────────────────────────
+  // Emits the same shape Editor.svelte does so the StatusBar sees
+  // the same line/col/selection/words signal in WYSIWYG mode.
+  // Counts WORDS off the contenteditable's plain textContent and
+  // SELECTION length off the live selection range.
+  function emitCursorStats() {
+    if (!onCursorStats || !editorEl) return;
+    const text = editorEl.textContent ?? '';
+    const words = text.trim() === '' ? 0 : text.trim().split(/\s+/).length;
+    let line = 1, col = 1, selectionLen = 0;
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount > 0) {
+      const range = sel.getRangeAt(0);
+      if (editorEl.contains(range.startContainer)) {
+        // Approximate line/col : count newlines + chars-since-last-newline
+        // in the text before the caret. The contenteditable doesn't have
+        // a real line model, but the textContent slice is good enough
+        // for status-bar UX.
+        const pre = document.createRange();
+        pre.setStart(editorEl, 0);
+        pre.setEnd(range.startContainer, range.startOffset);
+        const beforeText = pre.toString();
+        const newlines = beforeText.split('\n');
+        line = newlines.length;
+        col = newlines[newlines.length - 1].length + 1;
+        selectionLen = range.toString().length;
+      }
+    }
+    onCursorStats({ line, col, selectionLen, words });
+  }
+  function onSelectionChange() {
+    if (status === 'ready') emitCursorStats();
+  }
+
   onMount(() => {
     void load();
+    document.addEventListener('selectionchange', onSelectionChange);
   });
   onDestroy(() => {
     if (saveTimer) clearTimeout(saveTimer);
+    document.removeEventListener('selectionchange', onSelectionChange);
   });
 </script>
 
@@ -455,6 +514,13 @@
     </div>
     <span class="opacity-30">·</span>
     <button class="btn btn-xs" onclick={openCitePicker} title="Insert citation (fuzzy search bib entries)" aria-label="Insert citation">📚 Cite</button>
+    <span class="opacity-30">·</span>
+    <button
+      class="btn btn-xs"
+      onclick={() => window.dispatchEvent(new CustomEvent('weft-loom:toggle-palette'))}
+      title="LaTeX symbol palette (Greek, operators, brackets, envs)"
+      aria-label="Toggle LaTeX symbol palette"
+    >Σ Symbols</button>
     <span class="ml-auto opacity-70 text-[10px] font-mono mr-2">
       {#if status === 'loading'}loading…
       {:else if status === 'saving'}saving…
@@ -485,8 +551,18 @@
     aria-multiline="true"
     spellcheck="true"
     oninput={onInput}
+    onclick={onSurfaceClick}
     data-testid="latex-wysiwyg-surface"
   ></div>
+
+  {#if tableToolbarTarget}
+    <LatexTableToolbar
+      table={tableToolbarTarget.table}
+      cell={tableToolbarTarget.cell}
+      onChange={onInput}
+      onClose={() => (tableToolbarTarget = null)}
+    />
+  {/if}
 
   {#if popoverState}
     <!-- Inline math popover : floats over the editor at the clicked

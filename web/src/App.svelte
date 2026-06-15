@@ -1359,7 +1359,11 @@
                      round-trips via parseLatex / serializeLatex. -->
                 {#key project + '|tex-wyswg|' + currentFile}
                   {#if LazyLatexWysiwygEditor}
-                    <LazyLatexWysiwygEditor {project} file={currentFile} />
+                    <LazyLatexWysiwygEditor
+                      {project}
+                      file={currentFile}
+                      onCursorStats={(s) => { cursorLine = s.line; cursorCol = s.col; selectionLen = s.selectionLen; wordCount = s.words; }}
+                    />
                   {:else}
                     <div class="flex-1 flex items-center justify-center text-base-content/50">Loading LaTeX WYSIWYG editor…</div>
                   {/if}
@@ -1412,6 +1416,11 @@
                     onCursorStats={(s) => { cursorLine = s.line; cursorCol = s.col; selectionLen = s.selectionLen; wordCount = s.words; }}
                   />
                 {/key}
+              {/if}
+              <!-- Panels mounted regardless of source/wysiwyg/split
+                   mode so the Σ Symbols / 📚 Cite / 💬 Comments /
+                   📊 Words affordances work everywhere for .tex. -->
+              {#if currentFile && (currentFile.toLowerCase().endsWith('.tex') || language === 'latex' || language === 'markdown')}
                 <LatexSymbolPalette visible={language === 'latex'} />
                 <BibliographyPanel visible={language === 'latex'} {project} />
                 <WordCountPanel

@@ -163,6 +163,73 @@ export function latexBodyToHtml(body: string): string {
       continue;
     }
 
+    // figure env : \begin{figure}[opts]...\end{figure}. Inside we
+    // recognize \centering (consumed), \includegraphics, \caption,
+    // \label. Anything else inside is ignored (V0.1 — multi-image
+    // figures or stray text could be a follow-up).
+    const figureOpen = trimmed.match(/^\\begin\{figure\}(\[[^\]]*\])?/);
+    if (figureOpen) {
+      const figOpts = figureOpen[1] ? figureOpen[1].slice(1, -1) : '';
+      let imgHtml = '';
+      let captionHtml = '';
+      let labelHtml = '';
+      i++;
+      while (i < lines.length && !lines[i].match(/^\s*\\end\{figure\}/)) {
+        const l = lines[i].trim();
+        if (l === '\\centering' || l === '') {
+          i++;
+          continue;
+        }
+        const imgMatch = l.match(/^\\includegraphics(\[[^\]]*\])?\{([^}]*)\}/);
+        if (imgMatch) {
+          const imgOpts = imgMatch[1] ? imgMatch[1].slice(1, -1) : '';
+          const path = imgMatch[2];
+          imgHtml = `<img class="latex-figure" src="" data-path="${escapeAttr(path)}" data-opts="${escapeAttr(imgOpts)}" alt="${escapeAttr(path)}" />`;
+          i++;
+          continue;
+        }
+        const capMatch = l.match(/^\\caption\{(.*)\}$/);
+        if (capMatch) {
+          captionHtml = `<figcaption>${inlineLatexToHtml(capMatch[1])}</figcaption>`;
+          i++;
+          continue;
+        }
+        const lblMatch = l.match(/^\\label\{([^}]*)\}$/);
+        if (lblMatch) {
+          const lbl = lblMatch[1];
+          labelHtml = `<span class="latex-label" data-label="${escapeAttr(lbl)}" contenteditable="false" title="label: ${escapeAttr(lbl)}">¶</span>`;
+          i++;
+          continue;
+        }
+        // Unknown line inside the figure : skip (V0.1).
+        i++;
+      }
+      i++; // consume \end{figure}
+      out.push(`<figure class="latex-figure-env" data-opts="${escapeAttr(figOpts)}">${imgHtml}${captionHtml}${labelHtml}</figure>`);
+      continue;
+    }
+
+    // Theorem-like envs : theorem/lemma/proof/definition/corollary/
+    // proposition/remark/example (+ * variants). Body is joined +
+    // parsed inline ; the header text is title-cased env name (no
+    // numbering — that's the rendering layer's job).
+    const thmOpen = trimmed.match(/^\\begin\{(theorem|lemma|proof|definition|corollary|proposition|remark|example)\*?\}/);
+    if (thmOpen) {
+      const envName = trimmed.match(/^\\begin\{([^}]+)\}/)?.[1] ?? thmOpen[1];
+      const baseName = thmOpen[1];
+      const headerText = baseName.charAt(0).toUpperCase() + baseName.slice(1);
+      const buf: string[] = [];
+      i++;
+      while (i < lines.length && !lines[i].match(/^\s*\\end\{[^}]+\}/)) {
+        buf.push(lines[i]);
+        i++;
+      }
+      i++; // consume \end{...}
+      const body = inlineLatexToHtml(buf.join('\n').trim());
+      out.push(`<div class="latex-theorem" data-env="${escapeAttr(envName)}"><div class="latex-theorem-header">${escapeHtml(headerText)}</div><div class="latex-theorem-body">${body}</div></div>`);
+      continue;
+    }
+
     // Display-math delimited environments — match the LITERAL `\[`
     // opening (no real LaTeX command after the backslash, just the
     // bracket pair).
@@ -477,9 +544,40 @@ function nodeToLatex(node: Node): string {
       return `\\begin{tabular}{${spec}}\n${body}\n\\end{tabular}\n`;
     }
     case 'p': return inner + '\n\n';
+    case 'figure': {
+      if (el.className.includes('latex-figure-env')) {
+        const figOpts = el.getAttribute('data-opts') ?? '';
+        const img = el.querySelector(':scope > img.latex-figure');
+        const cap = el.querySelector(':scope > figcaption');
+        const lbl = el.querySelector(':scope > .latex-label');
+        const parts: string[] = [];
+        parts.push(figOpts ? `\\begin{figure}[${figOpts}]` : `\\begin{figure}`);
+        parts.push('\\centering');
+        if (img) {
+          const path = img.getAttribute('data-path') ?? '';
+          const opts = img.getAttribute('data-opts') ?? '';
+          parts.push(opts ? `\\includegraphics[${opts}]{${path}}` : `\\includegraphics{${path}}`);
+        }
+        if (cap) {
+          parts.push(`\\caption{${nodeChildrenToLatex(cap)}}`);
+        }
+        if (lbl) {
+          parts.push(`\\label{${lbl.getAttribute('data-label') ?? ''}}`);
+        }
+        parts.push('\\end{figure}');
+        return parts.join('\n') + '\n';
+      }
+      return inner;
+    }
     case 'div':
     case 'span': {
       const cls = el.className;
+      if (cls.includes('latex-theorem')) {
+        const env = el.getAttribute('data-env') ?? 'theorem';
+        const body = el.querySelector(':scope > .latex-theorem-body');
+        const bodyTex = body ? nodeChildrenToLatex(body) : '';
+        return `\\begin{${env}}\n${bodyTex}\n\\end{${env}}\n`;
+      }
       if (cls.includes('math-env')) {
         const env = el.getAttribute('data-env') ?? 'equation';
         const tex = el.getAttribute('data-tex') ?? inner;
@@ -522,6 +620,48 @@ function nodeChildrenToLatex(el: Element): string {
 // path but good enough for unit-test round-trip checks.
 function htmlBodyToLatexRegex(html: string): string {
   return html
+    // Figure env first : capture the whole <figure> + extract child
+    // img / figcaption / label via sub-patterns. Done before the
+    // raw <img> + <span class="latex-label"> rules below so the
+    // inner children don't get serialised prematurely.
+    .replace(/<figure\s+class="latex-figure-env"(?:\s+data-opts="([^"]*)")?[^>]*>([\s\S]*?)<\/figure>/g, (_, optsAttr, inner) => {
+      const figOpts = optsAttr ? unescapeAttr(optsAttr) : '';
+      const parts: string[] = [];
+      parts.push(figOpts ? `\\begin{figure}[${figOpts}]` : `\\begin{figure}`);
+      parts.push('\\centering');
+      const imgM = inner.match(/<img\s+([^>]*?)\/?>/);
+      if (imgM) {
+        const attrs = imgM[1];
+        const pathM = attrs.match(/data-path="([^"]*)"/);
+        const optsM = attrs.match(/data-opts="([^"]*)"/);
+        const path = pathM ? unescapeAttr(pathM[1]) : '';
+        const opts = optsM ? unescapeAttr(optsM[1]) : '';
+        parts.push(opts ? `\\includegraphics[${opts}]{${path}}` : `\\includegraphics{${path}}`);
+      }
+      const capM = inner.match(/<figcaption>([\s\S]*?)<\/figcaption>/);
+      if (capM) {
+        // Strip inner tags ; caption text is plain in the regex
+        // fallback (DOMParser path handles nested commands).
+        const capText = capM[1].replace(/<[^>]+>/g, '').trim();
+        parts.push(`\\caption{${capText}}`);
+      }
+      const lblM = inner.match(/<span\s+class="latex-label"\s+data-label="([^"]*)"[^>]*>[\s\S]*?<\/span>/);
+      if (lblM) {
+        parts.push(`\\label{${unescapeAttr(lblM[1])}}`);
+      }
+      parts.push('\\end{figure}');
+      return parts.join('\n') + '\n';
+    })
+    // Theorem-like envs : capture the wrapper + emit \begin{env}...
+    // \end{env}. Body div contents are inlined ; the header div is
+    // discarded (it's display-only).
+    .replace(/<div\s+class="latex-theorem"\s+data-env="([^"]*)"[^>]*>([\s\S]*?)<\/div>\s*<\/div>/g, (_, envAttr, inner) => {
+      const env = unescapeAttr(envAttr);
+      const bodyM = inner.match(/<div\s+class="latex-theorem-body"[^>]*>([\s\S]*)$/);
+      const bodyHtml = bodyM ? bodyM[1] : '';
+      const bodyText = bodyHtml.replace(/<[^>]+>/g, '').trim();
+      return `\\begin{${env}}\n${bodyText}\n\\end{${env}}\n`;
+    })
     // Lists first : the inner <li> patterns must not collide with
     // the plain-text inline replacements below.
     .replace(/<ul>([\s\S]*?)<\/ul>/g, (_, inner) => {

@@ -265,6 +265,60 @@ a \\& b & c \\\\
   assert.equal(tdCount, 2, `expected 2 cells (escaped & ignored), got ${tdCount} : ${html}`);
 });
 
+test('latexBodyToHtml : figure env with caption + label', () => {
+  const html = latexBodyToHtml(`\\begin{figure}[h]
+\\centering
+\\includegraphics[width=5cm]{plot.png}
+\\caption{The plot}
+\\label{fig:plot}
+\\end{figure}`);
+  assert.ok(html.includes('<figure class="latex-figure-env"'));
+  assert.ok(html.includes('<img'));
+  assert.ok(html.includes('<figcaption>'));
+  assert.ok(html.includes('latex-label'));
+  assert.ok(html.includes('data-label="fig:plot"'));
+});
+
+test('latexBodyToHtml : theorem env', () => {
+  const html = latexBodyToHtml(`\\begin{theorem}
+Every prime greater than 2 is odd.
+\\end{theorem}`);
+  assert.ok(html.includes('class="latex-theorem"'));
+  assert.ok(html.includes('data-env="theorem"'));
+  assert.ok(html.includes('Theorem'));
+});
+
+test('roundtrip : figure env survives', () => {
+  const src = `\\begin{document}
+\\begin{figure}[h]
+\\centering
+\\includegraphics{x.png}
+\\caption{Caption}
+\\label{fig:x}
+\\end{figure}
+\\end{document}`;
+  const parsed = parseLatex(src);
+  const round = serializeLatex(parsed, parsed.bodyHtml);
+  assert.ok(round.includes('\\begin{figure}'));
+  assert.ok(round.includes('\\includegraphics{x.png}'));
+  assert.ok(round.includes('\\caption{Caption}'));
+  assert.ok(round.includes('\\label{fig:x}'));
+  assert.ok(round.includes('\\end{figure}'));
+});
+
+test('roundtrip : theorem env survives', () => {
+  const src = `\\begin{document}
+\\begin{lemma}
+This is a lemma.
+\\end{lemma}
+\\end{document}`;
+  const parsed = parseLatex(src);
+  const round = serializeLatex(parsed, parsed.bodyHtml);
+  assert.ok(round.includes('\\begin{lemma}'));
+  assert.ok(round.includes('This is a lemma.'));
+  assert.ok(round.includes('\\end{lemma}'));
+});
+
 test('roundtrip : unknown commands survive untouched via latex-raw', () => {
   const src = `\\begin{document}
 A \\cite{ref} citation and a \\label{foo} label.
