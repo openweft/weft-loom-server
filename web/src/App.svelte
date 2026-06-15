@@ -29,6 +29,7 @@
   import LatexSymbolPalette from './lib/components/LatexSymbolPalette.svelte';
   import BibliographyPanel from './lib/components/BibliographyPanel.svelte';
   import CommentsPanel from './lib/components/CommentsPanel.svelte';
+  import WordCountPanel from './lib/components/WordCountPanel.svelte';
   import { commentsArray, commentFromMap, resolveAnchors, type CommentRecord } from './lib/comments';
   import type { CommentRange } from './lib/commentDecorations';
   import TabBar from './lib/components/TabBar.svelte';
@@ -509,6 +510,19 @@
   let selectionLen = $state<number | undefined>(undefined);
   let wordCount = $state<number | undefined>(undefined);
   let artifactURL = $state<string | undefined>();
+  // Clear word/cursor stats when the active file changes so panels
+  // (StatusBar, WordCountPanel) don't briefly show stale counts from
+  // the previous file before the new editor publishes its first stat.
+  // The WordCountPanel's "today" anchor in particular relies on
+  // wordCount transitioning from undefined → real-count to decide
+  // when to seed.
+  $effect(() => {
+    void currentFile;
+    cursorLine = undefined;
+    cursorCol = undefined;
+    selectionLen = undefined;
+    wordCount = undefined;
+  });
   onMount(() => {
     const v = localStorage.getItem('weft-loom-bottom-open');
     if (v === '0') bottomOpen = false;
@@ -1292,6 +1306,13 @@
                 {/key}
                 <LatexSymbolPalette visible={language === 'latex'} />
                 <BibliographyPanel visible={language === 'latex'} />
+                <WordCountPanel
+                  {project}
+                  file={currentFile}
+                  wordCount={wordCount}
+                  selectionLen={selectionLen}
+                  visible={language === 'latex' || language === 'markdown' || language === 'plaintext'}
+                />
                 <CommentsPanel
                   {ydoc}
                   file={currentFile}
