@@ -27,6 +27,7 @@
   import { autocompletion } from '@codemirror/autocomplete';
   import { marpMetadataCompletion } from '../marpAutocomplete';
   import { codeblockLanguageCompletion } from '../codeblockAutocomplete';
+  import { snippetSource } from '../snippets';
   // Language packs (@codemirror/lang-* + @codemirror/legacy-modes/*)
   // are lazy-loaded via dynamic import in loadLanguagePack() below
   // so the cold-load bundle stays small (each pack is 50-150 KB).
@@ -797,7 +798,7 @@
         // markdown front-matter, Python keywords, etc.). closeBrackets
         // auto-pairs `(`, `[`, `{`, `"`, `'`.
         autocompletion({
-          override: [marpMetadataCompletion, codeblockLanguageCompletion, citeCompletion, lspCompletionSource],
+          override: [marpMetadataCompletion, codeblockLanguageCompletion, citeCompletion, lspCompletionSource, snippetSource(language)],
           activateOnTyping: true,
           closeOnBlur: false,
         }),
