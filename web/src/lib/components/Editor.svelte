@@ -47,6 +47,7 @@
   import { showMinimap } from '@replit/codemirror-minimap';
   import { citeCompletion } from '../citeAutocomplete';
   import { inlineMathRender } from '../inlineMathRender';
+  import { visibilityCheckExtension } from '../editorVisibilityCheck';
   import { sectionFolding } from '../sectionFolding';
   import { createLSPClient, fetchAvailableLanguages, type LSPClient } from '../lspClient';
   import { linter } from '@codemirror/lint';
@@ -766,6 +767,11 @@
           { key: 'Mod-d', run: selectNextOccurrence },
         ]),
         languageCompartment.of(languagePack(language)),
+        // Self-check : warns when the doc has content but the
+        // editor's .cm-content area is unreadable (fg ≈ bg, or
+        // zero-height paint). Cheap — gated on viewportChanged.
+        // See editorVisibilityCheck.ts for the contract.
+        visibilityCheckExtension(),
         // Custom Y.Text ↔ CodeMirror two-way binding. Replaces
         // y-codemirror.next's yCollab : its observer dropped updates
         // past the first sync handshake in our setup and ALSO
@@ -1101,6 +1107,13 @@
         if (!file) return;
         try {
           await writeFile(project, file, ytext.toString());
+          // V0.11 : dispatch an autosave-completed signal so the
+          // compile-on-save toggle can fire a recompile. Throttled +
+          // language-gated at the listener side, NOT here — the
+          // editor only knows that bytes hit disk.
+          window.dispatchEvent(new CustomEvent('weft-loom-autosave-completed', {
+            detail: { project, file, language },
+          }));
         } catch (e) {
           logError('editor', 'autosave', e);
           console.error('autosave failed', e);
