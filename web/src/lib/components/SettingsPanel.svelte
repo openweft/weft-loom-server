@@ -18,12 +18,13 @@
   // Language) instead of one long page. Each category is rendered
   // only when its tab is active to keep the DOM small + the search
   // story simple (V0.2 : add a top-of-panel filter input).
-  type Category = 'editor' | 'appearance' | 'compile' | 'language';
+  type Category = 'editor' | 'appearance' | 'compile' | 'language' | 'integrations';
   const CATEGORIES: Array<{ id: Category; label: string; icon: string }> = [
-    { id: 'editor',     label: 'Editor',     icon: '✎' },
-    { id: 'appearance', label: 'Appearance', icon: '🎨' },
-    { id: 'compile',    label: 'Compile',    icon: '⚡' },
-    { id: 'language',   label: 'Language',   icon: '🌐' },
+    { id: 'editor',       label: 'Editor',       icon: '✎' },
+    { id: 'appearance',   label: 'Appearance',   icon: '🎨' },
+    { id: 'compile',      label: 'Compile',      icon: '⚡' },
+    { id: 'language',     label: 'Language',     icon: '🌐' },
+    { id: 'integrations', label: 'Integrations', icon: '🔌' },
   ];
   // Persist the last-active category so reopening the panel lands
   // where the user left off.
@@ -504,6 +505,52 @@
           </button>
         {/each}
       </div>
+    </section>
+
+    {:else if category === 'integrations'}
+
+    <!-- Zotero : userID + personal API key. The BibliographyPanel's
+         "Sync from Zotero" button reads these to POST to the server
+         which proxies api.zotero.org. Stored in localStorage like
+         every other setting ; type=password on the key so it isn't
+         shoulder-surfed but isn't otherwise protected — same threat
+         model as the Git credential field. -->
+    <section class="mb-4">
+      <h4 class="font-semibold text-sm mb-2">Zotero</h4>
+      <p class="text-xs opacity-70 mb-2">
+        Sync your Zotero library into <code>refs.bib</code> with one click.
+        Create a personal API key at
+        <a class="link" href="https://www.zotero.org/settings/keys" target="_blank" rel="noopener">
+          zotero.org/settings/keys
+        </a>
+        ; your numeric userID is shown on the same page.
+      </p>
+      <div class="grid grid-cols-[6rem_1fr] gap-x-2 gap-y-2 items-center">
+        <label for="zotero-user-id" class="text-xs font-semibold opacity-80">User ID</label>
+        <input
+          id="zotero-user-id"
+          type="text"
+          class="input input-bordered input-xs font-mono"
+          placeholder="e.g. 12345"
+          value={settings.current.zoteroUserId}
+          oninput={(e) => settings.set('zoteroUserId', (e.target as HTMLInputElement).value)}
+          data-testid="settings-zotero-user-id"
+        />
+        <label for="zotero-api-key" class="text-xs font-semibold opacity-80">API key</label>
+        <input
+          id="zotero-api-key"
+          type="password"
+          class="input input-bordered input-xs font-mono"
+          placeholder="paste your personal API key"
+          value={settings.current.zoteroApiKey}
+          oninput={(e) => settings.set('zoteroApiKey', (e.target as HTMLInputElement).value)}
+          data-testid="settings-zotero-api-key"
+        />
+      </div>
+      <p class="text-[10px] opacity-50 italic mt-2">
+        Both fields are stored in this browser's localStorage and sent only
+        to this server, which relays them to api.zotero.org.
+      </p>
     </section>
 
     {/if}

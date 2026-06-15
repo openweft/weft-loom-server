@@ -37,6 +37,14 @@ export interface EditorSettings {
   // 'vim' / 'emacs' load the corresponding @replit/codemirror-* pack
   // and layer it on top via a Compartment.
   editorKeymap: EditorKeymap;
+  // Zotero library sync : the user pastes their numeric userID +
+  // a personal API key (https://www.zotero.org/settings/keys) into
+  // the SettingsPanel ; the BibliographyPanel exposes a "Sync from
+  // Zotero" button that POSTs to /api/projects/{name}/zotero/sync
+  // and appends the returned BibTeX to refs.bib. Both fields default
+  // to empty — the button stays disabled until the user fills them in.
+  zoteroUserId: string;
+  zoteroApiKey: string;
 }
 
 const DEFAULT: EditorSettings = {
@@ -54,6 +62,8 @@ const DEFAULT: EditorSettings = {
   minimap: true,
   theme: 'cupcake',
   editorKeymap: 'default',
+  zoteroUserId: '',
+  zoteroApiKey: '',
 };
 
 const STORAGE_KEY = 'weft-loom-editor-settings-v1';

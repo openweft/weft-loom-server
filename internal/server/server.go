@@ -283,6 +283,12 @@ func (s *Server) routes() {
 	// doesn't send CORS headers, so the SPA's ArxivSearchPanel hits
 	// this server-side proxy to query + parse upstream results.
 	s.mux.HandleFunc("GET /api/arxiv/search", s.requireAuth(s.handleArxivSearch))
+	// V0.13 : Zotero library sync. The SPA stores a user-supplied
+	// Zotero userID + API key in settings ; the handler relays a GET
+	// to api.zotero.org/users/<id>/items?format=bibtex and streams the
+	// BibTeX bytes back. The client appends to refs.bib via the file
+	// API. No OAuth dance — simpler than the DOI flow.
+	s.mux.HandleFunc("POST /api/projects/{name}/zotero/sync", s.requireAuth(s.handleZoteroSync))
 	// V0.11 : multi-file project scaffolds. The catalogue is
 	// project-agnostic so list is at /api/project-templates ;
 	// applying a scaffold writes into a target project + needs auth.

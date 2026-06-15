@@ -10,6 +10,7 @@
 
   import { bib } from '../bibStore.svelte';
   import { logError } from '../logbus';
+  import { settings } from '../settings.svelte';
 
   interface Props {
     visible: boolean;
@@ -27,6 +28,77 @@
   let doiBusy = $state(false);
   let doiError = $state<string | undefined>();
   let doiResult = $state<{ entry: string; target: string } | undefined>();
+
+  // Zotero sync state. The credentials live in the SettingsPanel ;
+  // this button is enabled when both are non-empty. On click we POST
+  // to /api/projects/<p>/zotero/sync, receive raw BibTeX, append it
+  // to refs.bib via the file API.
+  let zoteroBusy = $state(false);
+  let zoteroError = $state<string | undefined>();
+  let zoteroResult = $state<{ count: number; bytes: number } | undefined>();
+
+  // Rough entry counter : count "@<type>{" occurrences in BibTeX.
+  // Good enough for a status banner — the user just needs the order
+  // of magnitude, not a bibtex-parser-quality number.
+  function countBibEntries(text: string): number {
+    const m = text.match(/^@[a-zA-Z]+\s*\{/gm);
+    return m ? m.length : 0;
+  }
+
+  async function syncZotero() {
+    const userId = settings.current.zoteroUserId.trim();
+    const apiKey = settings.current.zoteroApiKey.trim();
+    if (!userId || !apiKey || zoteroBusy) return;
+    zoteroBusy = true;
+    zoteroError = undefined;
+    zoteroResult = undefined;
+    try {
+      // 1. Pull the BibTeX bytes from the server-side relay.
+      const r = await fetch(
+        '/api/projects/' + encodeURIComponent(project) + '/zotero/sync',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_id: userId, api_key: apiKey }),
+        },
+      );
+      if (!r.ok) {
+        const errBody = await r.json().catch(() => ({}));
+        throw new Error(errBody.error ?? ('HTTP ' + r.status));
+      }
+      const incoming = await r.text();
+      // 2. Read the existing refs.bib (404 = file doesn't exist yet,
+      //    we'll create it on write).
+      const fileUrl = '/api/projects/' + encodeURIComponent(project) + '/files/' + encodeURIComponent('refs.bib');
+      let existing = '';
+      try {
+        const er = await fetch(fileUrl);
+        if (er.ok) existing = await er.text();
+      } catch { /* ignore — treat as missing */ }
+      // 3. Concatenate + ensure a separating newline so we don't
+      //    fuse the last existing entry with the first incoming one.
+      let combined = existing;
+      if (combined.length > 0 && !combined.endsWith('\n')) combined += '\n';
+      combined += incoming;
+      // 4. Write the combined file back.
+      const wr = await fetch(fileUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: combined,
+      });
+      if (!wr.ok) {
+        const errBody = await wr.json().catch(() => ({}));
+        throw new Error(errBody.error ?? ('write failed: HTTP ' + wr.status));
+      }
+      zoteroResult = { count: countBibEntries(incoming), bytes: incoming.length };
+      void bib.refresh();
+    } catch (e) {
+      zoteroError = e instanceof Error ? e.message : String(e);
+      logError('bib', 'zotero-sync-failed', e);
+    } finally {
+      zoteroBusy = false;
+    }
+  }
 
   async function importDOI() {
     if (!doiInput.trim() || doiBusy) return;
@@ -129,6 +201,17 @@
                 aria-label="Import from DOI"
                 data-testid="bib-doi-open"
               >+ DOI</button>
+              <button
+                type="button"
+                class="btn btn-secondary btn-xs"
+                onclick={() => void syncZotero()}
+                disabled={zoteroBusy || !settings.current.zoteroUserId.trim() || !settings.current.zoteroApiKey.trim()}
+                title={!settings.current.zoteroUserId.trim() || !settings.current.zoteroApiKey.trim()
+                  ? 'Set your Zotero userID + API key in Settings → Integrations first'
+                  : 'Fetch all items from your Zotero library + append to refs.bib'}
+                aria-label="Sync from Zotero"
+                data-testid="bib-zotero-sync"
+              >{zoteroBusy ? 'Syncing…' : '↻ Zotero'}</button>
               <button class="btn btn-ghost btn-xs" onclick={() => (open = false)} aria-label="Close">×</button>
             </div>
           </div>
@@ -168,6 +251,17 @@
                 </div>
                 <pre class="text-[10px] mt-1 max-h-32 overflow-auto bg-base-200 p-1 rounded">{doiResult.entry}</pre>
               {/if}
+            </div>
+          {/if}
+          {#if zoteroError}
+            <div class="text-error text-xs mb-2" data-testid="bib-zotero-error">
+              Zotero sync : {zoteroError}
+            </div>
+          {/if}
+          {#if zoteroResult}
+            <div class="text-success text-xs mb-2" data-testid="bib-zotero-success">
+              Imported {zoteroResult.count} entr{zoteroResult.count === 1 ? 'y' : 'ies'}
+              from Zotero ({zoteroResult.bytes} bytes appended to <code>refs.bib</code>).
             </div>
           {/if}
           <input

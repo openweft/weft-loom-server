@@ -30,6 +30,7 @@
   import { wireSpellFilter } from '../wysiwygSpellFilter';
   import { attachChangeLog, type ChangeLog } from '../wysiwygAuthorship';
   import { snapshotFormatting, applyFormatting, type FormatSnapshot } from '../formatPainter';
+  import { loadMathLive, type MathFieldElement } from '../mathlive-wrapper';
 
   // Y.js bridge origin sentinel — local edits tagged with this so
   // the ytext.observe callback can short-circuit our own writes.
@@ -300,6 +301,16 @@
     top: number;
     left: number;
   } | null>(null);
+  // popoverMode : the editing surface inside the math popover.
+  // "source" → the original textarea + KaTeX preview.
+  // "visual" → MathLive's <math-field> web component + virtual
+  // keyboard. The KaTeX preview renders in both modes.
+  let popoverMode = $state<'source' | 'visual'>('source');
+  let mathFieldEl: MathFieldElement | undefined;
+  let mathLiveReady = $state<boolean>(false);
+  // mathFieldInputHandler : the listener wired to <math-field>'s
+  // 'input' event. Kept in a closure so onDestroy can detach it.
+  let mathFieldInputHandler: ((e: Event) => void) | undefined;
   let popoverPreviewHtml = $derived.by(() => {
     if (!popoverState) return '';
     try {
@@ -332,6 +343,65 @@
   }
   function closeMathPopover() {
     popoverState = null;
+    // Detach any active <math-field> listener so the next popover
+    // open starts clean. The element itself goes away with the DOM.
+    if (mathFieldEl && mathFieldInputHandler) {
+      mathFieldEl.removeEventListener('input', mathFieldInputHandler);
+    }
+    mathFieldEl = undefined;
+    mathFieldInputHandler = undefined;
+    popoverMode = 'source';
+  }
+
+  // wireMathField : Svelte action attached to the <math-field>
+  // element. Seeds the field with the current tex, then listens
+  // for 'input' events so popoverState.tex stays in sync as the
+  // user types via the virtual keyboard. The custom element may
+  // not be upgraded yet at action-call time, so the value seed
+  // is wrapped in a microtask + try/catch.
+  function wireMathField(node: HTMLElement) {
+    mathFieldEl = node as MathFieldElement;
+    const seed = () => {
+      if (!mathFieldEl || !popoverState) return;
+      try {
+        mathFieldEl.value = popoverState.tex;
+      } catch { /* not upgraded yet, retry next tick */ }
+    };
+    seed();
+    queueMicrotask(seed);
+    const handler = (_e: Event) => {
+      if (!popoverState || !mathFieldEl) return;
+      popoverState.tex = mathFieldEl.value ?? '';
+    };
+    mathFieldInputHandler = handler;
+    node.addEventListener('input', handler);
+    return {
+      destroy() {
+        node.removeEventListener('input', handler);
+        if (mathFieldEl === node) mathFieldEl = undefined;
+        if (mathFieldInputHandler === handler) mathFieldInputHandler = undefined;
+      },
+    };
+  }
+
+  // togglePopoverMode : flip between source-textarea and visual
+  // math-field. The lazy MathLive load happens on first switch to
+  // visual mode ; subsequent toggles reuse the already-loaded module.
+  async function togglePopoverMode() {
+    if (popoverMode === 'source') {
+      if (!mathLiveReady) {
+        try {
+          await loadMathLive();
+          mathLiveReady = true;
+        } catch (e) {
+          logError('latex-wysiwyg', 'mathlive_load_failed', e, {});
+          return;
+        }
+      }
+      popoverMode = 'visual';
+    } else {
+      popoverMode = 'source';
+    }
   }
   function applyMathPopover() {
     if (!popoverState) return;
@@ -943,18 +1013,53 @@
       <div class="card-body p-3 gap-2">
         <div class="flex items-center gap-2 text-xs">
           <span class="font-semibold">{popoverState.displayMode ? 'Display math' : 'Inline math'}</span>
+          <!-- Source ⟷ Visual toggle : Source = the textarea below,
+               Visual = MathLive's <math-field> web component with
+               virtual keyboard + live LaTeX output. -->
+          <div class="join ml-2" role="tablist" aria-label="Editor mode">
+            <button
+              type="button"
+              class="join-item btn btn-xs"
+              class:btn-active={popoverMode === 'source'}
+              aria-pressed={popoverMode === 'source'}
+              onclick={() => { popoverMode = 'source'; }}
+              title="LaTeX source textarea"
+            >Source</button>
+            <button
+              type="button"
+              class="join-item btn btn-xs"
+              class:btn-active={popoverMode === 'visual'}
+              aria-pressed={popoverMode === 'visual'}
+              onclick={togglePopoverMode}
+              title="Visual math editor (MathLive)"
+            >Visual</button>
+          </div>
           <span class="ml-auto opacity-60">Enter = apply · Esc = cancel</span>
         </div>
-        <textarea
-          class="textarea textarea-bordered textarea-sm font-mono text-xs w-80"
-          rows="3"
-          bind:value={popoverState.tex}
-          onkeydown={(e) => {
-            if (e.key === 'Escape') { e.preventDefault(); closeMathPopover(); }
-            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); applyMathPopover(); }
-          }}
-          aria-label="LaTeX math source"
-        ></textarea>
+        {#if popoverMode === 'source'}
+          <textarea
+            class="textarea textarea-bordered textarea-sm font-mono text-xs w-80"
+            rows="3"
+            bind:value={popoverState.tex}
+            onkeydown={(e) => {
+              if (e.key === 'Escape') { e.preventDefault(); closeMathPopover(); }
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); applyMathPopover(); }
+            }}
+            aria-label="LaTeX math source"
+          ></textarea>
+        {:else}
+          <!-- MathLive <math-field> : custom element registered via
+               loadMathLive(). The use:action seeds value + attaches
+               the input listener so popoverState.tex stays live.
+               It's a runtime-registered web component, hence the
+               svelte:element wrapper. -->
+          <svelte:element
+            this={'math-field'}
+            use:wireMathField
+            class="mathlive-field w-80"
+            aria-label="LaTeX math (visual)"
+          ></svelte:element>
+        {/if}
         <div class="math-popover-preview text-center text-sm py-2 border border-base-300 rounded bg-base-100">
           {@html popoverPreviewHtml}
         </div>
@@ -1057,6 +1162,19 @@
     position: fixed;
     z-index: 50;
     max-width: 24rem;
+  }
+  /* MathLive's <math-field> isn't a known element to Svelte/TS but
+     it's a real Custom Element registered by `import('mathlive')`.
+     The width/height match the textarea it replaces ; the math
+     font family hints the OS to pick a math-aware face when the
+     element is rendering plain glyphs (the upgraded element
+     handles its own typography internally). */
+  .math-popover :global(math-field.mathlive-field) {
+    display: block;
+    width: 100%;
+    min-height: 5rem;
+    font-family: math, serif;
+    font-size: 14px;
   }
   .cite-picker {
     position: fixed;
