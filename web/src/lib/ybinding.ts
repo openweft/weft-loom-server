@@ -46,6 +46,25 @@ export function yjsBinding(ytext: Y.Text, ydoc: Y.Doc): YjsBinding {
   });
 
   const attach = (view: EditorView) => {
+    // Sync initial state : if ytext is ALREADY populated (e.g. the
+    // WebsocketProvider finished its sync handshake + applied the
+    // relay's cached state before this attach() was called), dispatch
+    // the existing content into the view in one shot. Without this
+    // the observer below only fires on FUTURE mutations + the editor
+    // stays visually empty even though line-numbers + minimap render
+    // (those read from view.state.doc which we just populated).
+    //
+    // This was the user-reported "editor empty, line-numbers visible"
+    // symptom for .tex + .md files that had been touched in a prior
+    // session — the relay had the buffer cached and replayed it
+    // pre-attach.
+    if (view.state.doc.length === 0 && ytext.length > 0) {
+      view.dispatch({
+        changes: { from: 0, insert: ytext.toString() },
+        annotations: [remoteAnnot.of(true)],
+      });
+    }
+
     const observer = (event: Y.YTextEvent, tr: Y.Transaction) => {
       if (tr.origin === YORIGIN_LOCAL) return;
       let pos = 0;
