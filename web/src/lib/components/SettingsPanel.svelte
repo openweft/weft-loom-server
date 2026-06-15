@@ -274,6 +274,18 @@
             oninput={(e) => settings.set('tabSize', Number((e.target as HTMLInputElement).value))}
           />
         </label>
+        <label class="form-control">
+          <span class="label-text text-xs uppercase opacity-70 mb-1">Editor keymap</span>
+          <select
+            class="select select-bordered select-sm"
+            value={settings.current.editorKeymap}
+            onchange={(e) => settings.set('editorKeymap', (e.target as HTMLSelectElement).value as 'default' | 'vim' | 'emacs')}
+          >
+            <option value="default">Default</option>
+            <option value="vim">Vim</option>
+            <option value="emacs">Emacs</option>
+          </select>
+        </label>
         <label class="form-control col-span-2">
           <div class="flex items-center gap-4 flex-wrap">
             <label class="flex items-center gap-2 cursor-pointer">

@@ -12,6 +12,11 @@ export interface FontSettings {
   lineHeight: number; // unitless
 }
 
+// Optional Vim / Emacs keymap layered on top of the default CM6
+// bindings. Lazy-loaded from editorKeymap.ts so the cold-load bundle
+// stays slim — see Editor.svelte's keymapCompartment + $effect.
+export type EditorKeymap = 'default' | 'vim' | 'emacs';
+
 export interface EditorSettings {
   font: FontSettings;
   tabSize: number;
@@ -28,6 +33,10 @@ export interface EditorSettings {
   // (light/dark/cupcake/dracula/...). The Editor reads this to pick
   // the matching CodeMirror palette.
   theme: string;
+  // Modal-editor preference — 'default' keeps the stock CM6 keymap,
+  // 'vim' / 'emacs' load the corresponding @replit/codemirror-* pack
+  // and layer it on top via a Compartment.
+  editorKeymap: EditorKeymap;
 }
 
 const DEFAULT: EditorSettings = {
@@ -44,6 +53,7 @@ const DEFAULT: EditorSettings = {
   autocomplete: true,
   minimap: true,
   theme: 'cupcake',
+  editorKeymap: 'default',
 };
 
 const STORAGE_KEY = 'weft-loom-editor-settings-v1';

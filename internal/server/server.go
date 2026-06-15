@@ -279,6 +279,10 @@ func (s *Server) routes() {
 	// negotiation API, appends to refs.bib (or the first .bib in the
 	// project). The BibliographyPanel surfaces the "+ DOI" affordance.
 	s.mux.HandleFunc("POST /api/projects/{name}/bib/from-doi", s.requireAuth(s.handleDOIToBib))
+	// V0.12 : arXiv search proxy. arXiv.org's public Atom-XML API
+	// doesn't send CORS headers, so the SPA's ArxivSearchPanel hits
+	// this server-side proxy to query + parse upstream results.
+	s.mux.HandleFunc("GET /api/arxiv/search", s.requireAuth(s.handleArxivSearch))
 	// V0.11 : multi-file project scaffolds. The catalogue is
 	// project-agnostic so list is at /api/project-templates ;
 	// applying a scaffold writes into a target project + needs auth.

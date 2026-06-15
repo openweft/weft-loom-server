@@ -41,6 +41,7 @@
   import { closeBrackets } from '@codemirror/autocomplete';
   import { latexRichText, richTextCompartment, applyLatexCommand, type LatexCommand } from '../latexRichText';
   import { settings, vscodeThemes } from '../settings.svelte';
+  import { loadKeymap, type KeymapMode } from '../editorKeymap';
   import { buildVSCodeThemeExtension, vscodeThemeCompartment } from '../vscodeThemeApply.svelte';
   import { lintExtension, lintCompartment } from '../lintAll.svelte';
   import { compileDiagnostics } from '../compileDiagnostics.svelte';
@@ -222,6 +223,11 @@
   const inlineMathCompartment = new Compartment();
   const foldGutterCompartment = new Compartment();
   const sectionFoldingCompartment = new Compartment();
+  // Vim / Emacs bindings are loaded lazily from editorKeymap.ts and
+  // dispatched into this Compartment when settings.editorKeymap flips.
+  // Starts as a no-op extension array so the editor mounts immediately
+  // with the default CM6 keymap.
+  const keymapCompartment = new Compartment();
 
   function inlineMathExt(): Extension {
     return (language === 'latex' || language === 'markdown') ? inlineMathRender() : [];
@@ -330,6 +336,21 @@
       ],
     });
     void loadLanguagePack(language);
+  });
+
+  // Reconfigure the vim/emacs Compartment when the user picks a
+  // different modal keymap. The dynamic import inside loadKeymap()
+  // resolves to `[]` for 'default' or the real Extension for vim /
+  // emacs. Guard against a late resolution after the view has been
+  // destroyed (file flip + fast keymap change).
+  $effect(() => {
+    const mode: KeymapMode = settings.current.editorKeymap;
+    let cancelled = false;
+    void loadKeymap(mode).then((ext) => {
+      if (cancelled || !view) return;
+      view.dispatch({ effects: keymapCompartment.reconfigure(ext) });
+    });
+    return () => { cancelled = true; };
   });
 
   // Reactively push setting changes into the editor. The effect
@@ -831,6 +852,10 @@
         minimapCompartment.of(minimapExt()),
         vscodeThemeCompartment.of(vscodeThemeExt()),
         lintCompartment.of(lintExtension(language, file)),
+        // Vim / Emacs keymap layer. Starts empty ; the $effect below
+        // dynamic-imports the matching @replit/codemirror-* pack and
+        // dispatches a reconfigure once the chunk arrives.
+        keymapCompartment.of([]),
         // T8 LSP : diagnostics published by the LSP server land
         // here. The linter source closure reads from the lspClient
         // singleton ; while no client is open it returns [].

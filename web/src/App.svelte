@@ -28,6 +28,8 @@
   import Editor from './lib/components/Editor.svelte';
   import LatexSymbolPalette from './lib/components/LatexSymbolPalette.svelte';
   import BibliographyPanel from './lib/components/BibliographyPanel.svelte';
+  import ArxivSearchPanel from './lib/components/ArxivSearchPanel.svelte';
+  import ProjectTemplatesGallery from './lib/components/ProjectTemplatesGallery.svelte';
   import CommentsPanel from './lib/components/CommentsPanel.svelte';
   import WordCountPanel from './lib/components/WordCountPanel.svelte';
   import ShortcutHelp from './lib/components/ShortcutHelp.svelte';
@@ -225,6 +227,7 @@
   let sidebarView = $state<'none' | 'explorer' | 'search' | 'scm' | 'collab'>('explorer');
   let gitConfigOpen = $state<boolean>(false);
   let settingsOpen = $state<boolean>(false);
+  let templatesGalleryOpen = $state<boolean>(false);
   let shortcutHelpOpen = $state<boolean>(false);
   let scaffoldOpen = $state<boolean>(false);
   let quickOpenOpen = $state<boolean>(false);
@@ -513,6 +516,13 @@
     const handler = () => cycleWysiwygMode();
     window.addEventListener('weft-loom:toggle-wysiwyg-mode', handler);
     return () => window.removeEventListener('weft-loom:toggle-wysiwyg-mode', handler);
+  });
+
+  // Project templates gallery toggle — wired from MenuBar/CommandPalette.
+  $effect(() => {
+    const handler = () => (templatesGalleryOpen = true);
+    window.addEventListener('weft-loom:open-project-templates', handler);
+    return () => window.removeEventListener('weft-loom:open-project-templates', handler);
   });
 
   // PreviewPane loads as soon as the user might want it (any open
@@ -1423,6 +1433,7 @@
               {#if currentFile && (currentFile.toLowerCase().endsWith('.tex') || language === 'latex' || language === 'markdown')}
                 <LatexSymbolPalette visible={language === 'latex'} />
                 <BibliographyPanel visible={language === 'latex'} {project} />
+                <ArxivSearchPanel visible={language === 'latex'} {project} onClose={() => { /* internal close */ }} />
                 <WordCountPanel
                   {project}
                   file={currentFile}
@@ -1451,6 +1462,7 @@
           </div>
         </div>
       </div>
+      <ProjectTemplatesGallery bind:open={templatesGalleryOpen} onClose={() => (templatesGalleryOpen = false)} />
       <BottomPanel
         bind:open={bottomOpen}
         bind:activeTab={bottomTab}

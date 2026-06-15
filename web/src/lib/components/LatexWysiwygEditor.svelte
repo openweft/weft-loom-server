@@ -23,6 +23,12 @@
   import { wireImageDrop, type UploadImageResult } from '../uploadImage';
   import LatexTableToolbar from './LatexTableToolbar.svelte';
   import WysiwygFindReplace from './WysiwygFindReplace.svelte';
+  import TableWizard from './TableWizard.svelte';
+  import FigureWizard from './FigureWizard.svelte';
+  import TrackChangesPanel from './TrackChangesPanel.svelte';
+  import { wireWysiwygPresence, type PresenceWiring } from '../wysiwygPresence';
+  import { wireSpellFilter } from '../wysiwygSpellFilter';
+  import { attachChangeLog, type ChangeLog } from '../wysiwygAuthorship';
 
   // Y.js bridge origin sentinel — local edits tagged with this so
   // the ytext.observe callback can short-circuit our own writes.
@@ -46,6 +52,55 @@
   // ─── find & replace popover ────────────────────────────────────
   let findReplaceOpen = $state<boolean>(false);
   let dropDestroy: (() => void) | undefined;
+
+  // insertLatexAtCaret : inserts a fresh LaTeX block (from a wizard
+  // or symbol palette) at the current caret. Wraps the source in
+  // a temporary div, parses it via the same latexBodyToHtml the
+  // initial load uses, then splices the resulting children into
+  // the live document. Renders math + cites + figures + refs over
+  // the new content. Triggers onInput so the change syncs.
+  function insertLatexAtCaret(latex: string) {
+    if (!editorEl) return;
+    editorEl.focus();
+    const sel = window.getSelection();
+    const range = (sel && sel.rangeCount > 0 && editorEl.contains(sel.getRangeAt(0).startContainer))
+      ? sel.getRangeAt(0)
+      : (() => {
+          const r = document.createRange();
+          r.selectNodeContents(editorEl);
+          r.collapse(false);
+          return r;
+        })();
+    // Parse the LaTeX snippet into HTML via the parser. Wrap in a
+    // dummy document body so parseLatex's preamble-skipping works.
+    const wrapped = '\\begin{document}\n' + latex + '\n\\end{document}';
+    const tmp = parseLatex(wrapped);
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = tmp.bodyHtml;
+    const frag = document.createDocumentFragment();
+    while (wrapper.firstChild) frag.appendChild(wrapper.firstChild);
+    range.deleteContents();
+    range.insertNode(frag);
+    // Re-run all post-parse passes on the editor surface so the
+    // newly-inserted KaTeX / cite / figure / ref spans light up.
+    const labels = buildLabelMap(editorEl);
+    resolveRefs(editorEl, labels);
+    renderMathNodes(editorEl);
+    renderCiteNodes(editorEl);
+    renderFigureNodes(editorEl);
+    onInput();
+  }
+
+  // ─── V0.10 add-ons ─────────────────────────────────────────────
+  let tableWizardOpen = $state<boolean>(false);
+  let figureWizardOpen = $state<boolean>(false);
+  let trackChangesOpen = $state<boolean>(false);
+  let presenceDestroy: (() => void) | undefined;
+  let spellDestroy: (() => void) | undefined;
+  let changeLog: ChangeLog | undefined;
+  let lastSnapshot = ''; // for change-log before/after diff
+  let identityName = $state<string>('me');
+  let identityColor = $state<string>('hsl(220, 60%, 50%)');
 
   // ─── Y.js collab plumbing ──────────────────────────────────────
   // Same shape as Editor.svelte : create our own Y.Doc + WebsocketProvider
@@ -75,6 +130,12 @@
       ytext!.delete(0, ytext!.length);
       ytext!.insert(0, newSource);
     }, WYSIWYG_LOCAL);
+    // Record the edit in the change log so peers can review +
+    // accept/reject. Skip on initial seed (prev === '').
+    if (changeLog && lastSnapshot !== '' && lastSnapshot !== newSource) {
+      changeLog.recordChange(ydoc.clientID, identityName, identityColor, lastSnapshot, newSource);
+    }
+    lastSnapshot = newSource;
   }
 
   // applyRemoteSource : called on every non-LOCAL ytext mutation
@@ -315,6 +376,15 @@
       const ytextKey = file ? 'file:' + file : 'wysiwyg';
       ytext = ydoc.getText(ytextKey);
 
+      // Read identity from window-exposed awareness so presence
+      // cursors carry the user's color/name. Falls back to a
+      // deterministic-ish placeholder so dev mode still renders.
+      try {
+        const state = provider.awareness.getLocalState() as { user?: { name?: string; color?: string } } | null;
+        if (state?.user?.name) identityName = state.user.name;
+        if (state?.user?.color) identityColor = state.user.color;
+      } catch { /* ignore */ }
+
       // Wait for the WS sync handshake OR 2 s fallback for offline.
       // Mirrors Editor.svelte's seedFromDisk window.
       await new Promise<void>((resolve) => {
@@ -354,6 +424,19 @@
         if (tr.origin === WYSIWYG_LOCAL) return;
         applyRemoteSource(ytext!.toString());
       });
+
+      // V0.10 wire-ups : presence cursors, LaTeX-aware spell filter,
+      // change log for track-changes UI.
+      const localClientID = ydoc.clientID;
+      const presenceWiring: PresenceWiring = wireWysiwygPresence(
+        editorEl,
+        provider.awareness,
+        localClientID,
+      );
+      presenceDestroy = presenceWiring.destroy;
+      spellDestroy = wireSpellFilter(editorEl);
+      changeLog = attachChangeLog(ydoc, file ?? '');
+      lastSnapshot = ytext.toString();
 
       status = 'ready';
       logEvent('latex-wysiwyg', 'loaded', { file, bytes: source.length });
@@ -591,7 +674,30 @@
     onCursorStats({ line, col, selectionLen, words });
   }
   function onSelectionChange() {
-    if (status === 'ready') emitCursorStats();
+    if (status === 'ready') {
+      emitCursorStats();
+      publishLocalSelection();
+    }
+  }
+
+  // publishLocalSelection : push our caret/selection offsets into
+  // Y.js Awareness so peers can paint our presence cursor in their
+  // wysiwygPresence overlay. No-op outside ready + when not focused.
+  function publishLocalSelection() {
+    if (!editorEl || !provider) return;
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return;
+    const range = sel.getRangeAt(0);
+    if (!editorEl.contains(range.startContainer)) return;
+    try {
+      const pre = document.createRange();
+      pre.setStart(editorEl, 0);
+      pre.setEnd(range.startContainer, range.startOffset);
+      const startOffset = pre.toString().length;
+      pre.setEnd(range.endContainer, range.endOffset);
+      const endOffset = pre.toString().length;
+      provider.awareness.setLocalStateField('wysiwygSelection', { startOffset, endOffset });
+    } catch { /* selectionchange races, ignore */ }
   }
 
   // onDrop : inserts an <img class="latex-figure"> at the drop point
@@ -622,9 +728,25 @@
     onInput();
   }
 
+  // Reject-a-change handler : TrackChangesPanel dispatches this
+  // window event ; the editor rewrites Y.Text back to the change's
+  // `before` snapshot. V0.1 safety : only safe when the rejected
+  // change is the LAST one (no concurrent edits on top).
+  function onRollbackChange(e: Event) {
+    const detail = (e as CustomEvent).detail as { id: string; before: string } | null;
+    if (!detail || !ytext || !ydoc) return;
+    ydoc.transact(() => {
+      ytext!.delete(0, ytext!.length);
+      ytext!.insert(0, detail.before);
+    }, WYSIWYG_LOCAL);
+    applyRemoteSource(detail.before);
+    lastSnapshot = detail.before;
+  }
+
   onMount(() => {
     void load();
     document.addEventListener('selectionchange', onSelectionChange);
+    window.addEventListener('weft-loom:rollback-change', onRollbackChange);
     // Wire drag-drop image upload after the editor is mounted.
     if (editorEl) {
       dropDestroy = wireImageDrop(editorEl, project, onDrop);
@@ -633,7 +755,11 @@
   onDestroy(() => {
     if (saveTimer) clearTimeout(saveTimer);
     document.removeEventListener('selectionchange', onSelectionChange);
+    window.removeEventListener('weft-loom:rollback-change', onRollbackChange);
     dropDestroy?.();
+    presenceDestroy?.();
+    spellDestroy?.();
+    try { changeLog?.destroy(); } catch { /* ignore */ }
     try { provider?.destroy(); } catch { /* ignore */ }
     try { ydoc?.destroy(); } catch { /* ignore */ }
   });
@@ -683,6 +809,18 @@
       title="Find & replace (Cmd/Ctrl+F)"
       aria-label="Find and replace"
     >🔍 Find</button>
+    <span class="opacity-30">·</span>
+    <div class="join">
+      <button class="join-item btn btn-xs" onclick={() => (tableWizardOpen = true)} title="Table wizard">▦ Table</button>
+      <button class="join-item btn btn-xs" onclick={() => (figureWizardOpen = true)} title="Figure wizard">🖼 Figure</button>
+    </div>
+    <span class="opacity-30">·</span>
+    <button
+      class="btn btn-xs"
+      onclick={() => (trackChangesOpen = !trackChangesOpen)}
+      title="Track changes (review pending edits)"
+      aria-label="Track changes"
+    >🔖 Changes</button>
     <span class="ml-auto opacity-70 text-[10px] font-mono mr-2">
       {#if status === 'loading'}loading…
       {:else if status === 'saving'}saving…
@@ -731,6 +869,26 @@
       host={editorEl}
       onChange={onInput}
       onClose={() => (findReplaceOpen = false)}
+    />
+  {/if}
+
+  <TableWizard
+    bind:open={tableWizardOpen}
+    onInsert={(latex) => insertLatexAtCaret(latex)}
+    onClose={() => (tableWizardOpen = false)}
+  />
+
+  <FigureWizard
+    bind:open={figureWizardOpen}
+    {project}
+    onInsert={(latex) => insertLatexAtCaret(latex)}
+    onClose={() => (figureWizardOpen = false)}
+  />
+
+  {#if trackChangesOpen && changeLog}
+    <TrackChangesPanel
+      log={changeLog}
+      onClose={() => (trackChangesOpen = false)}
     />
   {/if}
 

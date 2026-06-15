@@ -126,6 +126,46 @@
   background-color: rgba(120, 120, 120, 0.18);
 }
 
+/* WYSIWYG presence overlay (wysiwygPresence.ts). A SIBLING div to
+   the contenteditable host, absolutely positioned to overlap it,
+   with per-peer caret + selection children. The wiring sets
+   `--peer-color` inline on each child from awareness state ; the
+   rules below own layout + base presentation. `pointer-events:
+   none` keeps the overlay from intercepting mouse events meant
+   for the editable host underneath. */
+.wysiwyg-presence-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+.wysiwyg-peer-caret {
+  position: absolute;
+  width: 2px;
+  background: var(--peer-color, hsl(0, 0%, 60%));
+}
+.wysiwyg-peer-caret::after {
+  content: attr(data-name);
+  position: absolute;
+  bottom: 100%;
+  left: -1px;
+  padding: 1px 6px;
+  border-radius: 3px 3px 3px 0;
+  background-color: var(--peer-color, hsl(0, 0%, 60%));
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  color: white;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.wysiwyg-peer-selection {
+  position: absolute;
+  background: var(--peer-color, hsl(0, 0%, 60%));
+  opacity: 0.18;
+  pointer-events: none;
+}
+
 /* Mobile responsive sweep — the SPA is desktop-first ; below md
    (< 768 px) we treat the viewport as a phone : iOS notch + Android
    gesture-bar are the two common hostile areas, so we honour the
