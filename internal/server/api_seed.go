@@ -28,10 +28,18 @@ import (
 )
 
 // staleClaimAfter — how long a claim sticks before any new caller
-// can override it. Avoids the failure mode where a client crashed
-// or disconnected mid-seed and left the registry holding a phantom
-// claim forever, blocking every subsequent open of the same file.
-const staleClaimAfter = 30 * time.Second
+// can override it. The original 30 s was too long for the
+// page-reload UX : after Cmd+R the user's previous claim was still
+// in the registry, the new tab's claim 409'd, + the seed-from-disk
+// path waited 3 s before force-fetching = ~3 s of empty editor.
+//
+// 3 s is plenty to prevent the only race the claim protects
+// against : two BROWSERS opening the same file within the same
+// awareness-sync window + each believing it's alone + both
+// inserting from disk. Awareness propagation is sub-second on the
+// local relay ; a 3 s window covers the worst latency scenario
+// while letting a reload re-claim almost immediately.
+const staleClaimAfter = 3 * time.Second
 
 // seedClaimRegistry is the loom-server-wide map of per-(user,
 // project, file) claims. The value is the moment the claim was

@@ -985,17 +985,69 @@
         return;
       }
       seeded = true;
+      // Fast path : if awareness shows only one client (us), no
+      // double-seed race is possible. Skip the seed-claim handshake
+      // entirely + read straight from disk. Closes the user-reported
+      // "reload → 3 s empty editor" path : after Cmd+R, awareness
+      // sees only the new tab (the old tab's awareness died with the
+      // page), but the server-side seed-claim might still hold a
+      // stale claim from the killed tab. The claim was protecting
+      // against multi-browser racing ; with one client there's
+      // nothing to protect.
+      try {
+        const peerCount = provider!.awareness.getStates().size;
+        if (peerCount <= 1) {
+          const content = await readFile(project, file);
+          if (content && ytext.length === 0 && view) {
+            view.dispatch({ changes: { from: 0, insert: content } });
+            logEvent('seed', 'solo-fast-path', { file, bytes: content.length });
+          }
+          loading = false;
+          return;
+        }
+      } catch { /* fall through to the claim path below */ }
       try {
         const url = '/api/projects/' + encodeURIComponent(project)
           + '/seed-claim/' + file.split('/').map(encodeURIComponent).join('/');
         const resp = await fetch(url, { method: 'POST' });
         if (resp.status === 409) {
-          // Phantom / stale claim : nobody seeded but the lock is
-          // held. Wait 3 s for the rightful seeder ; if the buffer
-          // is still empty, force-fetch the file ourselves. The
-          // ytext.length re-check right before dispatch keeps us
-          // safe from a last-second peer insert.
-          await new Promise((r) => setTimeout(r, 3000));
+          // Someone else holds the claim. Two paths converge here :
+          //   - they're a live peer about to push the seed via Yjs
+          //     update (we should see it via ytext.observe momentarily)
+          //   - they're a stale claim (crashed mid-seed, page reload
+          //     within the 30 s window). No one will push, so we have
+          //     to force-fetch ourselves.
+          //
+          // Race-aware wait : observe ytext until it goes non-empty
+          // OR a 3 s hard deadline expires. Wakes up immediately when
+          // the elected seeder lands content (typical reload = O(ms)),
+          // falls back to force-fetch otherwise.
+          await new Promise<void>((resolve) => {
+            let done = false;
+            const finish = () => {
+              if (done) return;
+              done = true;
+              ytext.unobserve(onChange);
+              clearTimeout(timer);
+              resolve();
+            };
+            const onChange = () => {
+              if (ytext.length > 0) finish();
+            };
+            ytext.observe(onChange);
+            // 500 ms deadline : the awareness propagation + ytext
+            // update from a real co-author is sub-second on the
+            // local relay. If nobody pushes in 500 ms the claim
+            // holder is most likely a stale ghost (page reload
+            // before WS close), so force-fetching ourselves loses
+            // nothing — the `ytext.length === 0` re-check below
+            // still guards against a last-second double-insert.
+            const timer = setTimeout(finish, 500);
+            // Already populated by the time we registered ? Check
+            // once synchronously to avoid the entire wait when the
+            // peer's insert beat us to the observe() call.
+            if (ytext.length > 0) finish();
+          });
           if (ytext.length === 0 && view) {
             try {
               const content = await readFile(project, file);
