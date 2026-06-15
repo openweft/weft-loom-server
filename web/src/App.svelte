@@ -185,18 +185,27 @@
   let LazySpreadsheetEditor = $state<AnySvelteComponent | null>(null);
   let LazyNotebookEditor = $state<AnySvelteComponent | null>(null);
   let LazyPreviewPane = $state<AnySvelteComponent | null>(null);
-  // Per-tab WYSIWYG mode flag : when true + the file is .tex,
-  // render LatexWysiwygEditor instead of the CodeMirror Editor.
-  // Persisted to localStorage so a refresh keeps the user's choice.
-  let wysiwygMode = $state<boolean>(
+  // Per-tab .tex view mode : 'source' (CodeMirror), 'wysiwyg'
+  // (LatexWysiwygEditor), or 'split' (both side-by-side). Persisted
+  // so a refresh keeps the user's choice. Cycles source→wysiwyg→
+  // split→source on each toggle event.
+  type TexViewMode = 'source' | 'wysiwyg' | 'split';
+  let wysiwygMode = $state<TexViewMode>(
     (() => {
-      try { return localStorage.getItem('weft-loom-tex-wysiwyg') === '1'; }
-      catch { return false; }
+      try {
+        const v = localStorage.getItem('weft-loom-tex-wysiwyg');
+        if (v === 'wysiwyg' || v === 'split') return v;
+        // Legacy '1' = full WYSIWYG
+        if (v === '1') return 'wysiwyg';
+        return 'source';
+      } catch { return 'source'; }
     })(),
   );
-  function toggleWysiwygMode() {
-    wysiwygMode = !wysiwygMode;
-    try { localStorage.setItem('weft-loom-tex-wysiwyg', wysiwygMode ? '1' : '0'); } catch {}
+  function cycleWysiwygMode() {
+    wysiwygMode = wysiwygMode === 'source' ? 'wysiwyg'
+                : wysiwygMode === 'wysiwyg' ? 'split'
+                : 'source';
+    try { localStorage.setItem('weft-loom-tex-wysiwyg', wysiwygMode); } catch {}
   }
   let language = $state<string>('markdown');
   // openFiles[] : the multi-tab editor list, ordered left → right.
@@ -498,10 +507,10 @@
   });
 
   // Editor toolbar's "WYSIWYG" button dispatches
-  // `weft-loom:toggle-wysiwyg-mode` so the in-editor toolbar can
-  // flip the App-level mode flag.
+  // `weft-loom:toggle-wysiwyg-mode` to cycle source → wysiwyg →
+  // split → source. Each click moves one step.
   $effect(() => {
-    const handler = () => toggleWysiwygMode();
+    const handler = () => cycleWysiwygMode();
     window.addEventListener('weft-loom:toggle-wysiwyg-mode', handler);
     return () => window.removeEventListener('weft-loom:toggle-wysiwyg-mode', handler);
   });
@@ -1345,18 +1354,47 @@
                     <div class="flex-1 flex items-center justify-center text-base-content/50">Loading WYSIWYG editor…</div>
                   {/if}
                 {/key}
-              {:else if currentFile.toLowerCase().endsWith('.tex') && wysiwygMode}
-                <!-- LaTeX WYSIWYG mode : contenteditable surface that
-                     round-trips via parseLatex / serializeLatex. The
-                     preamble is preserved verbatim ; the body is
-                     parsed into HTML for editing then re-serialised
-                     on save. Toggled via the "WYSIWYG" toolbar button. -->
+              {:else if currentFile.toLowerCase().endsWith('.tex') && wysiwygMode === 'wysiwyg'}
+                <!-- WYSIWYG-only mode : contenteditable surface that
+                     round-trips via parseLatex / serializeLatex. -->
                 {#key project + '|tex-wyswg|' + currentFile}
                   {#if LazyLatexWysiwygEditor}
                     <LazyLatexWysiwygEditor {project} file={currentFile} />
                   {:else}
                     <div class="flex-1 flex items-center justify-center text-base-content/50">Loading LaTeX WYSIWYG editor…</div>
                   {/if}
+                {/key}
+              {:else if currentFile.toLowerCase().endsWith('.tex') && wysiwygMode === 'split'}
+                <!-- Split mode : CodeMirror source on the left, the
+                     WYSIWYG contenteditable on the right. Each saves
+                     to disk independently ; cross-pane sync via the
+                     file being read+written by both. Beats Overleaf
+                     which only offers one view at a time. -->
+                {#key project + '|tex-split|' + currentFile}
+                  <div class="flex-1 flex overflow-hidden">
+                    <div class="flex-1 min-w-0 overflow-hidden border-r border-base-300">
+                      <Editor
+                        {project}
+                        {language}
+                        file={currentFile}
+                        {identity}
+                        {revisionMode}
+                        {jumpToLine}
+                        onStatus={(s) => (connectionStatus = s)}
+                        onYDoc={(d) => (ydoc = d)}
+                        onAwareness={(a) => (awareness = a)}
+                        onYTextTick={(n) => (ytextTick = n)}
+                        onCursorStats={(s) => { cursorLine = s.line; cursorCol = s.col; selectionLen = s.selectionLen; wordCount = s.words; }}
+                      />
+                    </div>
+                    <div class="flex-1 min-w-0 overflow-hidden">
+                      {#if LazyLatexWysiwygEditor}
+                        <LazyLatexWysiwygEditor {project} file={currentFile} />
+                      {:else}
+                        <div class="flex-1 flex items-center justify-center text-base-content/50">Loading LaTeX WYSIWYG editor…</div>
+                      {/if}
+                    </div>
+                  </div>
                 {/key}
               {:else}
                 {#key project + '|' + currentFile}

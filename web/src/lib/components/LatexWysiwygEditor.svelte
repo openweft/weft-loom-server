@@ -16,6 +16,7 @@
   import { parseLatex, serializeLatex, type ParsedLatex } from '../latexWysiwyg';
   import { readFile, writeFile } from '../api';
   import { logEvent, logError } from '../logbus';
+  import { bib } from '../bibStore.svelte';
 
   interface Props {
     project: string;
@@ -133,14 +134,13 @@
   async function load() {
     try {
       status = 'loading';
+      bib.setProject(project);
       const source = await readFile(project, file);
       parsed = parseLatex(source);
       editorEl.innerHTML = parsed.bodyHtml;
-      // After the doc is parsed, replace every .math-* span with
-      // its KaTeX-rendered output. The data-tex attribute carries
-      // the canonical LaTeX source ; we leave it on the node so
-      // serializeLatex picks it back up on save.
       renderMathNodes(editorEl);
+      renderCiteNodes(editorEl);
+      renderFigureNodes(editorEl);
       status = 'ready';
       logEvent('latex-wysiwyg', 'loaded', { file, bytes: source.length });
     } catch (e) {
@@ -149,6 +149,79 @@
       logError('latex-wysiwyg', 'load_failed', e, { file });
     }
   }
+
+  // renderCiteNodes replaces the [key] placeholder text of each
+  // .cite span with the BibTeX author-year string when available.
+  // Falls back to the key itself when the entry isn't loaded (yet
+  // — bibStore polls .bib on a timer + we re-render on tick).
+  function renderCiteNodes(root: HTMLElement) {
+    const nodes = root.querySelectorAll('.latex-cite');
+    nodes.forEach((node) => {
+      const el = node as HTMLElement;
+      const key = el.getAttribute('data-key') ?? '';
+      const entry = bib.entries.find((e) => e.key === key);
+      const label = entry ? formatBibLabel(entry) : key;
+      el.textContent = '[' + label + ']';
+      el.title = entry ? `${entry.fields?.author ?? ''} (${entry.fields?.year ?? '?'}) — ${entry.fields?.title ?? key}` : 'unknown bib key';
+      if (!el.dataset.clickWired) {
+        el.dataset.clickWired = '1';
+        el.addEventListener('click', () => {
+          // Surface the bib panel for editing — fast affordance ;
+          // V0.4 will let the user pick a different key inline.
+          window.dispatchEvent(new CustomEvent('weft-loom:toggle-bib'));
+        });
+      }
+    });
+  }
+
+  // renderFigureNodes wires up the <img class="latex-figure">
+  // src attribute from data-path. Resolves relative paths against
+  // the same project the .tex lives in via /api/projects/.../files/.
+  // Marks the node contenteditable=false so click-deletes are
+  // atomic, and click opens a tiny popover-style prompt for V0.4 ;
+  // for now the alt-text + path are visible on hover.
+  function renderFigureNodes(root: HTMLElement) {
+    const imgs = root.querySelectorAll('img.latex-figure');
+    imgs.forEach((img) => {
+      const el = img as HTMLImageElement;
+      const path = el.getAttribute('data-path') ?? '';
+      if (!path) return;
+      const url = '/api/projects/' + encodeURIComponent(project)
+        + '/files/' + path.split('/').map(encodeURIComponent).join('/');
+      el.src = url;
+      el.contentEditable = 'false';
+      el.title = `\\includegraphics{${path}}`;
+    });
+  }
+
+  function formatBibLabel(entry: { fields?: Record<string, string>; key: string }): string {
+    const f = entry.fields ?? {};
+    const authorRaw = f.author ?? '';
+    const year = f.year ?? '';
+    // First author surname : "Einstein, A." → "Einstein", "Albert Einstein" → "Einstein".
+    let surname = '';
+    if (authorRaw) {
+      const firstAuthor = authorRaw.split(/\s+and\s+/i)[0];
+      if (firstAuthor.includes(',')) {
+        surname = firstAuthor.split(',')[0].trim();
+      } else {
+        const parts = firstAuthor.trim().split(/\s+/);
+        surname = parts[parts.length - 1];
+      }
+    }
+    if (surname && year) return `${surname} ${year}`;
+    if (surname) return surname;
+    return entry.key;
+  }
+
+  // Re-render cite labels when the bib store ticks (new entries
+  // arrived from disk). Cheap : just walks the visible spans.
+  $effect(() => {
+    void bib.entries.length;
+    if (editorEl && status === 'ready') {
+      renderCiteNodes(editorEl);
+    }
+  });
 
   // renderMathNodes walks the surface, renders each math span via
   // KaTeX, and marks it contenteditable=false so the user can't
@@ -382,5 +455,46 @@
     position: fixed;
     z-index: 50;
     max-width: 24rem;
+  }
+  .latex-wysiwyg-surface :global(.latex-cite) {
+    color: hsl(220, 70%, 50%);
+    background: rgba(80, 140, 255, 0.08);
+    border-radius: 3px;
+    padding: 0 4px;
+    cursor: pointer;
+    user-select: none;
+    font-size: 0.9em;
+  }
+  .latex-wysiwyg-surface :global(.latex-cite:hover) {
+    background: rgba(80, 140, 255, 0.22);
+  }
+  .latex-wysiwyg-surface :global(.latex-ref) {
+    color: hsl(280, 60%, 50%);
+    background: rgba(180, 100, 220, 0.10);
+    border-radius: 3px;
+    padding: 0 4px;
+    cursor: pointer;
+    user-select: none;
+    font-size: 0.9em;
+  }
+  .latex-wysiwyg-surface :global(.latex-label) {
+    color: hsl(280, 30%, 60%);
+    opacity: 0.6;
+    cursor: help;
+    user-select: none;
+  }
+  .latex-wysiwyg-surface :global(.latex-footnote) {
+    color: hsl(40, 80%, 45%);
+    cursor: help;
+    vertical-align: super;
+    font-size: 0.7em;
+    user-select: none;
+  }
+  .latex-wysiwyg-surface :global(.latex-figure) {
+    display: block;
+    max-width: 100%;
+    margin: 0.8em auto;
+    border: 1px solid hsl(0, 0%, 70%);
+    border-radius: 4px;
   }
 </style>

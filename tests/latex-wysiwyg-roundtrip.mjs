@@ -79,9 +79,10 @@ test('inlineLatexToHtml : inline math $...$', () => {
 });
 
 test('inlineLatexToHtml : unknown commands fall through to latex-raw', () => {
-  const html = inlineLatexToHtml('\\cite{key}');
+  // \frac is unknown V0.1 ; it should round-trip via latex-raw.
+  const html = inlineLatexToHtml('\\frac{1}{2}');
   assert.ok(html.includes('class="latex-raw"'));
-  assert.ok(html.includes('data-tex="\\cite{key}"'));
+  assert.ok(html.includes('data-tex="\\frac{1}{2}"'));
 });
 
 test('latexBodyToHtml : section + paragraph', () => {
@@ -143,6 +144,52 @@ This paragraph has \\textbf{bold} + \\textit{italic} and math $a+b$.
   assert.ok(round.includes('\\textit{italic}'));
   assert.ok(round.includes('\\begin{itemize}'));
   assert.ok(round.includes('\\item Apple'));
+});
+
+test('inlineLatexToHtml : \\cite{key} → latex-cite span', () => {
+  const html = inlineLatexToHtml('See \\cite{einstein1905}.');
+  assert.ok(html.includes('class="latex-cite"'));
+  assert.ok(html.includes('data-key="einstein1905"'));
+  assert.ok(html.includes('[einstein1905]'));
+});
+
+test('inlineLatexToHtml : \\ref{x} \\label{x}', () => {
+  assert.ok(inlineLatexToHtml('\\ref{sec:intro}').includes('class="latex-ref"'));
+  assert.ok(inlineLatexToHtml('\\label{eq:1}').includes('class="latex-label"'));
+});
+
+test('inlineLatexToHtml : \\href{url}{label} multi-arg', () => {
+  const html = inlineLatexToHtml('\\href{https://x.org}{X.org}');
+  assert.ok(html.includes('href="https://x.org"'));
+  assert.ok(html.includes('>X.org</a>'));
+});
+
+test('inlineLatexToHtml : \\includegraphics with opts', () => {
+  const html = inlineLatexToHtml('\\includegraphics[width=5cm]{fig.png}');
+  assert.ok(html.includes('<img'));
+  assert.ok(html.includes('data-path="fig.png"'));
+  assert.ok(html.includes('data-opts="width=5cm"'));
+});
+
+test('roundtrip : cite/ref/label survive', () => {
+  const src = `\\begin{document}
+See \\cite{key1} on \\ref{sec:intro} \\label{eq:foo}.
+\\end{document}`;
+  const parsed = parseLatex(src);
+  const round = serializeLatex(parsed, parsed.bodyHtml);
+  assert.ok(round.includes('\\cite{key1}'));
+  assert.ok(round.includes('\\ref{sec:intro}'));
+  assert.ok(round.includes('\\label{eq:foo}'));
+});
+
+test('roundtrip : includegraphics with opts survives', () => {
+  const src = `\\begin{document}
+\\includegraphics[width=10cm]{fig.png}
+\\end{document}`;
+  const parsed = parseLatex(src);
+  const round = serializeLatex(parsed, parsed.bodyHtml);
+  assert.ok(round.includes('\\includegraphics[width=10cm]{fig.png}'),
+    `roundtrip missing includegraphics : ${round}`);
 });
 
 test('roundtrip : unknown commands survive untouched via latex-raw', () => {

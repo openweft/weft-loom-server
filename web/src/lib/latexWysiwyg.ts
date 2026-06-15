@@ -164,7 +164,7 @@ export function inlineLatexToHtml(s: string): string {
     if (ch === '\\') {
       const cmd = readCommand(s, i);
       if (cmd) {
-        const html = renderInlineCommand(cmd.name, cmd.arg);
+        const html = renderInlineCommand(cmd.name, cmd.args);
         out.push(html);
         i = cmd.end;
         continue;
@@ -216,34 +216,64 @@ function findInlineMathEnd(s: string, from: number): number {
 
 interface CommandRead {
   name: string;
-  arg: string | null;
+  args: string[];
   end: number;
 }
 
-// readCommand parses `\name{arg}` at position i. Returns the
-// command name + the brace-balanced argument + the index past the
-// closing brace. Returns null when the input doesn't start with a
-// command-shaped sequence.
+// readCommand parses `\name[opt]{arg}{arg}...` at position i.
+// Collects every consecutive brace-pair AND optional bracket-pair
+// following the name. Returns null when the input doesn't start
+// with a command-shaped sequence. Optional `[opts]` are included
+// as the first arg (so \includegraphics[width=5cm]{x.png} yields
+// args = ["width=5cm", "x.png"]).
 function readCommand(s: string, i: number): CommandRead | null {
-  const m = s.slice(i).match(/^\\([a-zA-Z]+)\*?\{/);
+  const m = s.slice(i).match(/^\\([a-zA-Z]+)\*?/);
   if (!m) return null;
-  const nameLen = m[0].length;
-  const start = i + nameLen;
-  let depth = 1;
-  let j = start;
-  while (j < s.length && depth > 0) {
-    if (s[j] === '\\' && j + 1 < s.length) { j += 2; continue; }
-    if (s[j] === '{') depth++;
-    else if (s[j] === '}') depth--;
-    if (depth === 0) break;
-    j++;
+  let j = i + m[0].length;
+  const args: string[] = [];
+  while (j < s.length) {
+    if (s[j] === '[') {
+      const end = findMatching(s, j, '[', ']');
+      if (end < 0) break;
+      args.push(s.slice(j + 1, end));
+      j = end + 1;
+      continue;
+    }
+    if (s[j] === '{') {
+      const end = findMatching(s, j, '{', '}');
+      if (end < 0) break;
+      args.push(s.slice(j + 1, end));
+      j = end + 1;
+      continue;
+    }
+    break;
   }
-  if (depth !== 0) return null; // unmatched brace
-  return { name: m[1], arg: s.slice(start, j), end: j + 1 };
+  if (args.length === 0) {
+    // Bare command like \LaTeX with no args ; treat as raw.
+    return null;
+  }
+  return { name: m[1], args, end: j };
 }
 
-function renderInlineCommand(name: string, arg: string | null): string {
-  if (arg === null) return rawSpan('\\' + name);
+// findMatching returns the index of the closing delim that
+// balances the opening one at `start`, respecting nested pairs
+// and backslash-escaped chars. -1 if unbalanced.
+function findMatching(s: string, start: number, open: string, close: string): number {
+  let depth = 1;
+  for (let j = start + 1; j < s.length; j++) {
+    if (s[j] === '\\' && j + 1 < s.length) { j++; continue; }
+    if (s[j] === open) depth++;
+    else if (s[j] === close) {
+      depth--;
+      if (depth === 0) return j;
+    }
+  }
+  return -1;
+}
+
+function renderInlineCommand(name: string, args: string[]): string {
+  if (args.length === 0) return rawSpan('\\' + name);
+  const arg = args[0];
   const inner = inlineLatexToHtml(arg);
   switch (name) {
     case 'textbf':
@@ -255,16 +285,31 @@ function renderInlineCommand(name: string, arg: string | null): string {
       return `<code>${inner}</code>`;
     case 'underline':
       return `<u>${inner}</u>`;
-    case 'href': {
-      // \href{url}{label} — peek ahead in arg if it's `url}{label`
-      // shape. readCommand only grabs ONE brace pair so we expose
-      // the URL as data + assume the label follows. For V0.1, the
-      // single-arg case treats the arg AS the label.
-      // TODO V0.2 : multi-arg readCommand.
+    case 'href':
+      // \href{url}{label}
+      if (args.length >= 2) {
+        return `<a href="${escapeAttr(args[0])}">${inlineLatexToHtml(args[1])}</a>`;
+      }
       return `<a href="${escapeAttr(arg)}">${escapeHtml(arg)}</a>`;
+    case 'url':
+      return `<a href="${escapeAttr(arg)}">${escapeHtml(arg)}</a>`;
+    case 'cite':
+      return `<span class="latex-cite" data-key="${escapeAttr(arg)}" contenteditable="false">[${escapeHtml(arg)}]</span>`;
+    case 'ref':
+      return `<span class="latex-ref" data-label="${escapeAttr(arg)}" contenteditable="false">[ref:${escapeHtml(arg)}]</span>`;
+    case 'label':
+      return `<span class="latex-label" data-label="${escapeAttr(arg)}" contenteditable="false" title="label: ${escapeAttr(arg)}">¶</span>`;
+    case 'footnote':
+      return `<span class="latex-footnote" data-tex="${escapeAttr(arg)}" contenteditable="false" title="footnote">†</span>`;
+    case 'includegraphics': {
+      // \includegraphics[opts]{path} : opts in args[0] when bracket
+      // syntax was used, path in args[args.length - 1].
+      const path = args[args.length - 1];
+      const opts = args.length > 1 ? args[0] : '';
+      return `<img class="latex-figure" src="" data-path="${escapeAttr(path)}" data-opts="${escapeAttr(opts)}" alt="${escapeAttr(path)}" />`;
     }
     default:
-      return rawSpan(`\\${name}{${arg}}`);
+      return rawSpan(`\\${name}${args.map((a) => '{' + a + '}').join('')}`);
   }
 }
 
@@ -332,6 +377,11 @@ function nodeToLatex(node: Node): string {
       const href = (el as HTMLAnchorElement).getAttribute('href') ?? '';
       return `\\href{${href}}{${inner}}`;
     }
+    case 'img': {
+      const path = el.getAttribute('data-path') ?? '';
+      const opts = el.getAttribute('data-opts') ?? '';
+      return opts ? `\\includegraphics[${opts}]{${path}}` : `\\includegraphics{${path}}`;
+    }
     case 'ul': {
       const items = Array.from(el.querySelectorAll(':scope > li'))
         .map((li) => `  \\item ${nodeChildrenToLatex(li)}`)
@@ -356,6 +406,18 @@ function nodeToLatex(node: Node): string {
       }
       if (cls.includes('latex-raw')) {
         return el.getAttribute('data-tex') ?? inner;
+      }
+      if (cls.includes('latex-cite')) {
+        return `\\cite{${el.getAttribute('data-key') ?? ''}}`;
+      }
+      if (cls.includes('latex-ref')) {
+        return `\\ref{${el.getAttribute('data-label') ?? ''}}`;
+      }
+      if (cls.includes('latex-label')) {
+        return `\\label{${el.getAttribute('data-label') ?? ''}}`;
+      }
+      if (cls.includes('latex-footnote')) {
+        return `\\footnote{${el.getAttribute('data-tex') ?? ''}}`;
       }
       return inner;
     }
@@ -403,6 +465,17 @@ function htmlBodyToLatexRegex(html: string): string {
     .replace(/<a\s+href="([^"]+)">(.*?)<\/a>/gs, '\\href{$1}{$2}')
     .replace(/<p>(.*?)<\/p>/gs, '$1\n\n')
     .replace(/<span\s+class="latex-raw"\s+data-tex="([^"]*)"[^>]*>.*?<\/span>/gs, (_, tex) => unescapeAttr(tex))
+    .replace(/<span\s+class="latex-cite"\s+data-key="([^"]*)"[^>]*>.*?<\/span>/gs, (_, key) => `\\cite{${unescapeAttr(key)}}`)
+    .replace(/<span\s+class="latex-ref"\s+data-label="([^"]*)"[^>]*>.*?<\/span>/gs, (_, lbl) => `\\ref{${unescapeAttr(lbl)}}`)
+    .replace(/<span\s+class="latex-label"\s+data-label="([^"]*)"[^>]*>.*?<\/span>/gs, (_, lbl) => `\\label{${unescapeAttr(lbl)}}`)
+    .replace(/<span\s+class="latex-footnote"\s+data-tex="([^"]*)"[^>]*>.*?<\/span>/gs, (_, tex) => `\\footnote{${unescapeAttr(tex)}}`)
+    .replace(/<img\s+([^>]*?)\/?>/g, (_, attrs) => {
+      const pathM = attrs.match(/data-path="([^"]*)"/);
+      const optsM = attrs.match(/data-opts="([^"]*)"/);
+      const path = pathM ? unescapeAttr(pathM[1]) : '';
+      const opts = optsM ? unescapeAttr(optsM[1]) : '';
+      return opts ? `\\includegraphics[${opts}]{${path}}` : `\\includegraphics{${path}}`;
+    })
     .replace(/<span\s+class="math math-inline"\s+data-tex="([^"]*)"[^>]*>.*?<\/span>/gs, (_, tex) => `$${unescapeAttr(tex)}$`)
     .replace(/<div\s+class="math math-display"\s+data-tex="([^"]*)"[^>]*>.*?<\/div>/gs, (_, tex) => `\\[${unescapeAttr(tex)}\\]\n`)
     .replace(/&amp;/g, '&')
