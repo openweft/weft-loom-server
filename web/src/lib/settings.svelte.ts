@@ -157,6 +157,71 @@ class CompileCommandStore {
 
 export const compileCommands = new CompileCommandStore();
 
+// ----- Per-project LaTeX compiler selection -----------------------
+//
+// The CompilerSelector UI binds against this store. Engine = pdflatex
+// / lualatex / xelatex. Bib = bibtex / biber. One pair per project so
+// switching projects restores the previous choice ; the backend
+// `start-compile` body carries `engine` + `bib` so the dispatcher
+// invokes the matching binary inside the workspace μVM.
+//
+// Default = pdflatex + bibtex (broadest TeX Live coverage, what
+// pre-V0.7 hard-coded).
+
+export type LatexEngine = 'pdflatex' | 'lualatex' | 'xelatex';
+export type BibEngine = 'bibtex' | 'biber';
+
+export interface CompilerChoice {
+  engine: LatexEngine;
+  bib: BibEngine;
+}
+
+const COMPILER_CHOICE_KEY = 'weft-loom-compiler-choices-v1';
+
+function loadCompilerChoices(): Record<string, CompilerChoice> {
+  try {
+    const raw = localStorage.getItem(COMPILER_CHOICE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') return parsed as Record<string, CompilerChoice>;
+    return {};
+  } catch {
+    return {};
+  }
+}
+
+const COMPILER_DEFAULT: CompilerChoice = { engine: 'pdflatex', bib: 'bibtex' };
+
+class CompilerChoiceStore {
+  current = $state<Record<string, CompilerChoice>>(loadCompilerChoices());
+
+  get(project: string): CompilerChoice {
+    const c = this.current[project];
+    if (!c) return { ...COMPILER_DEFAULT };
+    return { ...COMPILER_DEFAULT, ...c };
+  }
+
+  setEngine(project: string, engine: LatexEngine) {
+    const next = { ...this.current };
+    next[project] = { ...this.get(project), engine };
+    this.current = next;
+    this.persist();
+  }
+
+  setBib(project: string, bib: BibEngine) {
+    const next = { ...this.current };
+    next[project] = { ...this.get(project), bib };
+    this.current = next;
+    this.persist();
+  }
+
+  private persist() {
+    try { localStorage.setItem(COMPILER_CHOICE_KEY, JSON.stringify(this.current)); } catch { /* ignore */ }
+  }
+}
+
+export const compilerChoices = new CompilerChoiceStore();
+
 // VSCode theme import — TextMate-style colour theme JSON, as
 // exported by VSCode's `Developer: Generate Color Theme From
 // Current Settings`. We keep the raw JSON + extract the few fields

@@ -62,6 +62,11 @@
         items: [
           { kind: 'item', labelKey: 'menu.file.new', shortcut: 'Cmd+N', action: onNewFile },
           { kind: 'item', labelKey: 'menu.file.scaffold', action: onScaffold },
+          {
+            kind: 'item',
+            labelKey: 'menu.file.newProjectFromTemplate',
+            action: () => window.dispatchEvent(new CustomEvent('weft-loom:open-project-templates')),
+          },
           { kind: 'divider' },
           { kind: 'item', labelKey: 'menu.file.switchProject', shortcut: 'Cmd+P', action: onSwitchProject },
           { kind: 'divider' },

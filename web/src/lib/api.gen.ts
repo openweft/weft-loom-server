@@ -159,8 +159,12 @@ export interface components {
              * @example https://example.com/schemas/StartCompileBody.json
              */
             readonly $schema?: string;
+            /** @description Bibliography processor : bibtex | biber. Defaults to bibtex. */
+            bib?: string;
             /** @description Optional verbatim shell command — overrides the language's default when set. Inside the workspace μVM, the dispatcher runs sh -c <command>. */
             command?: string;
+            /** @description LaTeX engine to invoke for the latex language : pdflatex | lualatex | xelatex. Defaults to pdflatex. */
+            engine?: string;
             /** @description Main source file (e.g. main.tex, main.go). Per-language default applies when empty. */
             entry?: string;
             /** @description Appended to the language's default build command. */

@@ -24,6 +24,16 @@ type startCompileBody struct {
 	// string, NOT a list, so the user types the same shell command
 	// they'd paste in a terminal.
 	Command string `json:"command,omitempty" doc:"Optional verbatim shell command — overrides the language's default when set. Inside the workspace μVM, the dispatcher runs sh -c <command>."`
+	// Engine : LaTeX engine binary the dispatcher invokes for the
+	// `latex` language. One of `pdflatex` / `lualatex` / `xelatex`.
+	// Defaults to pdflatex when empty. Ignored for non-LaTeX
+	// languages.
+	Engine string `json:"engine,omitempty" doc:"LaTeX engine to invoke for the latex language : pdflatex | lualatex | xelatex. Defaults to pdflatex."`
+	// Bib : bibliography processor invoked between the two LaTeX
+	// passes when the project carries a bibliography database.
+	// One of `bibtex` / `biber`. Defaults to bibtex. Ignored when
+	// no bibliography is referenced.
+	Bib string `json:"bib,omitempty" doc:"Bibliography processor : bibtex | biber. Defaults to bibtex."`
 }
 
 type startCompileInput struct {
@@ -59,6 +69,8 @@ func mountCompileAPI(api huma.API, s *Server) {
 			Entry:           in.Body.Entry,
 			ExtraArgs:       in.Body.ExtraArgs,
 			CommandOverride: in.Body.Command,
+			Engine:          in.Body.Engine,
+			BibEngine:       in.Body.Bib,
 		})
 		if err != nil {
 			return nil, huma.Error400BadRequest("compile start", err)

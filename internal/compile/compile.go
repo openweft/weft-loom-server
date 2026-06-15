@@ -45,6 +45,17 @@ type JobSpec struct {
 	// dispatches that command instead of the built-in one.
 	// Empty string preserves the existing behaviour.
 	CommandOverride string `json:"command,omitempty"`
+	// Engine : LaTeX engine binary the compiler invokes for the
+	// `latex` language. One of `pdflatex` / `lualatex` / `xelatex`.
+	// Empty defaults to `pdflatex`. Unknown values are normalised
+	// back to `pdflatex` with a log line. Ignored for non-LaTeX
+	// languages.
+	Engine string `json:"engine,omitempty"`
+	// BibEngine : bibliography processor — `bibtex` or `biber`.
+	// Empty defaults to `bibtex`. Only invoked when the LaTeX
+	// scratch dir produced the matching trigger file (.aux with
+	// \bibdata for bibtex, .bcf for biber).
+	BibEngine string `json:"bib,omitempty"`
 	// Identity is populated by Start() from the auth.Identity ; the
 	// workspace dispatch path uses it to resolve the per-user VM.
 	Identity string `json:"-"`
@@ -280,14 +291,86 @@ func (s *Service) run(ident auth.Identity, id string, spec JobSpec, j *runningJo
 	})
 }
 
-// compileLatex runs pdflatex on the project's main.tex (or spec.Entry)
-// into scratchDir. Captures stdout line-by-line into the event channel
-// so the user sees the LaTeX log as it streams.
+// resolveLatexEngine maps the user's engine selector to a binary
+// name. Unknown values fall back to pdflatex with a log warning ;
+// `emit` is used so the warning surfaces in the compile output the
+// user is already watching. Returns (binary, fallbackHappened).
+//
+// Binary lookup convention :
+//   - "pdflatex" / "" → pdflatex (default ; broadest TeX Live coverage)
+//   - "lualatex"      → lualatex (Lua scripting, modern font handling)
+//   - "xelatex"       → xelatex  (Unicode + system fonts)
+// Anything else is normalised to pdflatex.
+func resolveLatexEngine(choice string, emit func(Event)) string {
+	switch choice {
+	case "", "pdflatex":
+		return "pdflatex"
+	case "lualatex":
+		return "lualatex"
+	case "xelatex":
+		return "xelatex"
+	}
+	emit(Event{Kind: "log", Line: fmt.Sprintf(
+		"WARN : unknown engine %q ; falling back to pdflatex", choice,
+	)})
+	return "pdflatex"
+}
+
+// resolveBibEngine picks bibtex or biber. Same fallback contract as
+// resolveLatexEngine — unknown values normalise to bibtex with a
+// warning streamed to the compile log.
+func resolveBibEngine(choice string, emit func(Event)) string {
+	switch choice {
+	case "", "bibtex":
+		return "bibtex"
+	case "biber":
+		return "biber"
+	}
+	emit(Event{Kind: "log", Line: fmt.Sprintf(
+		"WARN : unknown bib engine %q ; falling back to bibtex", choice,
+	)})
+	return "bibtex"
+}
+
+// bibTrigger inspects scratchDir for the file the bib engine consumes :
+//   - biber  : `<base>.bcf`  (produced by biblatex with backend=biber)
+//   - bibtex : `<base>.aux`  containing a `\bibdata{}` line
+// Returns the base name (without extension) when a bib run is wanted,
+// or "" when no bibliography was referenced.
+func bibTrigger(scratchDir, base, engine string) string {
+	if engine == "biber" {
+		if _, err := os.Stat(filepath.Join(scratchDir, base+".bcf")); err == nil {
+			return base
+		}
+		return ""
+	}
+	auxPath := filepath.Join(scratchDir, base+".aux")
+	aux, err := os.ReadFile(auxPath)
+	if err != nil {
+		return ""
+	}
+	if strings.Contains(string(aux), "\\bibdata") || strings.Contains(string(aux), "\\citation") {
+		return base
+	}
+	return ""
+}
+
+// compileLatex runs the selected LaTeX engine on the project's
+// main.tex (or spec.Entry) into scratchDir. Captures stdout line-by-
+// line into the event channel so the user sees the LaTeX log as it
+// streams. When a bibliography is referenced, runs bibtex / biber
+// between the two passes.
 //
 // Dispatch path :
 //   WEFT_LOOM_BACKEND=microvm → microvm.go (weft-loom-texlive image)
-//   otherwise                → host pdflatex subprocess (dev fallback)
+//   otherwise                → host subprocess (dev fallback)
+//
+// Engine selection : spec.Engine picks pdflatex/lualatex/xelatex ;
+// spec.BibEngine picks bibtex/biber. Unknown / missing binaries
+// fall back to pdflatex+bibtex with a warning surfaced in the log.
 func (s *Service) compileLatex(workDir, scratchDir string, spec JobSpec, emit func(Event)) (string, error) {
+	engine := resolveLatexEngine(spec.Engine, emit)
+	bibEngine := resolveBibEngine(spec.BibEngine, emit)
 	entry := spec.Entry
 	if entry == "" {
 		entry = "main.tex"
@@ -322,6 +405,10 @@ func (s *Service) compileLatex(workDir, scratchDir string, spec JobSpec, emit fu
 	}
 	args = append(args, spec.ExtraArgs...)
 
+	base := strings.TrimSuffix(filepath.Base(entry), filepath.Ext(entry))
+
+	emit(Event{Kind: "log", Line: fmt.Sprintf("engine=%s bib=%s", engine, bibEngine)})
+
 	// V0.4 unified path : when the user has a workspace VM with a
 	// NATS conn, dispatch via the Containers + ExecSession pattern
 	// instead of the legacy `weft microvm run` CLI. Same wire shape
@@ -331,59 +418,126 @@ func (s *Service) compileLatex(workDir, scratchDir string, spec JobSpec, emit fu
 	vm := s.resolveVMForCompile(spec)
 	emit(Event{Kind: "log", Line: fmt.Sprintf("⏱  resolveVMForCompile  %6dms  vm=%v", time.Since(resolveStart).Milliseconds(), vm != nil)})
 	if vm != nil {
-		cmd := append([]string{"pdflatex"}, args...)
-		for pass := 1; pass <= 2; pass++ {
-			passStart := time.Now()
-			emit(Event{Kind: "log", Line: fmt.Sprintf("--- workspace pass %d ---", pass)})
-			out, err := s.compileInWorkspace(context.Background(), vm, workDir, "latex", cmd, emit)
-			emit(Event{Kind: "log", Line: fmt.Sprintf("⏱  pass.%d.end           %6dms", pass, time.Since(passStart).Milliseconds())})
-			if err != nil {
+		cmd := append([]string{engine}, args...)
+		// Pass 1 — produces .aux / .bcf so the bib engine has input.
+		passStart := time.Now()
+		emit(Event{Kind: "log", Line: "--- workspace pass 1 ---"})
+		if _, err := s.compileInWorkspace(context.Background(), vm, workDir, "latex", cmd, emit); err != nil {
+			return "", err
+		}
+		emit(Event{Kind: "log", Line: fmt.Sprintf("⏱  pass.1.end           %6dms", time.Since(passStart).Milliseconds())})
+		// Optional bib pass.
+		if bibBase := bibTrigger(scratchDir, base, bibEngine); bibBase != "" {
+			emit(Event{Kind: "log", Line: fmt.Sprintf("--- workspace %s ---", bibEngine)})
+			bibCmd := bibCommand(bibEngine, scratchDir, bibBase)
+			if _, err := s.compileInWorkspace(context.Background(), vm, workDir, "latex", bibCmd, emit); err != nil {
 				return "", err
 			}
-			if pass == 2 {
-				return out, nil
-			}
 		}
+		// Pass 2.
+		passStart = time.Now()
+		emit(Event{Kind: "log", Line: "--- workspace pass 2 ---"})
+		out, err := s.compileInWorkspace(context.Background(), vm, workDir, "latex", cmd, emit)
+		emit(Event{Kind: "log", Line: fmt.Sprintf("⏱  pass.2.end           %6dms", time.Since(passStart).Milliseconds())})
+		if err != nil {
+			return "", err
+		}
+		return out, nil
 	}
 	if useMicroVM() {
-		cmd := append([]string{"pdflatex"}, args...)
-		// Two passes inside the VM. Could be wrapped in a single
-		// shell call but the line-level streaming is cleaner this way.
-		for pass := 1; pass <= 2; pass++ {
-			emit(Event{Kind: "log", Line: fmt.Sprintf("--- microvm pass %d ---", pass)})
-			out, err := s.compileInMicroVM(workDir, scratchDir, spec, false, cmd, emit)
-			if err != nil {
+		cmd := append([]string{engine}, args...)
+		emit(Event{Kind: "log", Line: "--- microvm pass 1 ---"})
+		if _, err := s.compileInMicroVM(workDir, scratchDir, spec, false, cmd, emit); err != nil {
+			return "", err
+		}
+		if bibBase := bibTrigger(scratchDir, base, bibEngine); bibBase != "" {
+			emit(Event{Kind: "log", Line: fmt.Sprintf("--- microvm %s ---", bibEngine)})
+			bibCmd := bibCommand(bibEngine, scratchDir, bibBase)
+			if _, err := s.compileInMicroVM(workDir, scratchDir, spec, false, bibCmd, emit); err != nil {
 				return "", err
 			}
-			if pass == 2 {
-				return out, nil
+		}
+		emit(Event{Kind: "log", Line: "--- microvm pass 2 ---"})
+		out, err := s.compileInMicroVM(workDir, scratchDir, spec, false, cmd, emit)
+		if err != nil {
+			return "", err
+		}
+		return out, nil
+	}
+
+	// Host subprocess fallback. Look up the chosen engine — if it's
+	// missing, fall back to pdflatex so the user gets *some* PDF
+	// rather than a dead-end error. Same fallback for the bib engine.
+	bin, err := exec.LookPath(engine)
+	if err != nil {
+		if engine != "pdflatex" {
+			emit(Event{Kind: "log", Line: fmt.Sprintf("WARN : %s not on PATH ; falling back to pdflatex", engine)})
+			engine = "pdflatex"
+			bin, err = exec.LookPath("pdflatex")
+		}
+		if err != nil {
+			return "", fmt.Errorf("%s not installed on the loom host (install TeX Live, or set WEFT_LOOM_BACKEND=microvm with the openweft toolchain)", engine)
+		}
+	}
+	emit(Event{Kind: "log", Line: engine + " " + strings.Join(args, " ")})
+	emit(Event{Kind: "log", Line: "--- pass 1 ---"})
+	if perr := runStreaming(bin, args, workDir, emit); perr != nil {
+		return "", fmt.Errorf("%s failed : %w", engine, perr)
+	}
+	if bibBase := bibTrigger(scratchDir, base, bibEngine); bibBase != "" {
+		bibBin, bibErr := exec.LookPath(bibEngine)
+		if bibErr != nil && bibEngine != "bibtex" {
+			emit(Event{Kind: "log", Line: fmt.Sprintf("WARN : %s not on PATH ; falling back to bibtex", bibEngine)})
+			bibEngine = "bibtex"
+			bibBin, bibErr = exec.LookPath("bibtex")
+		}
+		if bibErr != nil {
+			emit(Event{Kind: "log", Line: fmt.Sprintf("WARN : %s not installed ; skipping bibliography pass", bibEngine)})
+		} else {
+			emit(Event{Kind: "log", Line: fmt.Sprintf("--- %s ---", bibEngine)})
+			bibArgs := bibArgsFor(bibEngine, bibBase)
+			if berr := runStreaming(bibBin, bibArgs, scratchDir, emit); berr != nil {
+				// Non-fatal : bibtex / biber failures often leave the
+				// PDF compilable with missing-references warnings. Log
+				// + carry on so the user still gets a draft PDF.
+				emit(Event{Kind: "log", Line: fmt.Sprintf("WARN : %s exited with error : %v", bibEngine, berr)})
 			}
 		}
 	}
-
-	// Host subprocess fallback.
-	bin, err := exec.LookPath("pdflatex")
-	if err != nil {
-		return "", fmt.Errorf("pdflatex not installed on the loom host (install TeX Live, or set WEFT_LOOM_BACKEND=microvm with the openweft toolchain)")
+	emit(Event{Kind: "log", Line: "--- pass 2 ---"})
+	if perr := runStreaming(bin, args, workDir, emit); perr != nil {
+		return "", fmt.Errorf("%s failed : %w", engine, perr)
 	}
-	emit(Event{Kind: "log", Line: "pdflatex " + strings.Join(args, " ")})
-	var lastErr error
-	for pass := 1; pass <= 2; pass++ {
-		emit(Event{Kind: "log", Line: fmt.Sprintf("--- pass %d ---", pass)})
-		lastErr = runStreaming(bin, args, workDir, emit)
-		if lastErr != nil {
-			break
-		}
-	}
-	if lastErr != nil {
-		return "", fmt.Errorf("pdflatex failed : %w", lastErr)
-	}
-	base := strings.TrimSuffix(filepath.Base(entry), filepath.Ext(entry))
 	pdf := filepath.Join(scratchDir, base+".pdf")
 	if _, err := os.Stat(pdf); err != nil {
-		return "", fmt.Errorf("pdflatex finished but no PDF at %s", pdf)
+		return "", fmt.Errorf("%s finished but no PDF at %s", engine, pdf)
 	}
 	return pdf, nil
+}
+
+// bibArgsFor builds the bib-engine CLI args. biber takes the base
+// (no extension) ; bibtex takes the .aux filename relative to its CWD
+// (which we set to scratchDir).
+func bibArgsFor(engine, base string) []string {
+	if engine == "biber" {
+		return []string{base}
+	}
+	return []string{base}
+}
+
+// bibCommand builds the command for the workspace / microVM dispatch
+// paths : same binary + args as the host path, but expressed as a
+// single `[]string` ready to be appended to the dispatcher's exec
+// invocation. The CWD inside the VM is the project's workDir, so we
+// pass the scratch-dir-relative base — biber / bibtex resolve under
+// scratchDir which is bind-mounted at the same path.
+func bibCommand(engine, scratchDir, base string) []string {
+	// scratchDir is an absolute path inside the workspace mount ;
+	// the dispatcher CDs into workDir before exec, so bibtex / biber
+	// need an absolute path to the .aux/.bcf file. Both accept an
+	// absolute path with no extension as the base argument.
+	abs := filepath.Join(scratchDir, base)
+	return []string{engine, abs}
 }
 
 // compileMarkdown : detects Marp front-matter ; runs marp-cli for

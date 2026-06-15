@@ -98,6 +98,13 @@ export interface CompileSpec {
   // commands" section. Empty string falls back to the built-in
   // per-language command.
   command?: string;
+  // engine — LaTeX engine selector (pdflatex / lualatex / xelatex).
+  // Populated by CompilerSelector ; ignored by the backend for
+  // non-LaTeX languages. Empty defaults to pdflatex.
+  engine?: string;
+  // bib — bibliography processor (bibtex / biber). Same scope as
+  // engine — LaTeX only, backend default = bibtex.
+  bib?: string;
 }
 
 export async function startCompile(

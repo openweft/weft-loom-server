@@ -29,6 +29,7 @@
   import { wireWysiwygPresence, type PresenceWiring } from '../wysiwygPresence';
   import { wireSpellFilter } from '../wysiwygSpellFilter';
   import { attachChangeLog, type ChangeLog } from '../wysiwygAuthorship';
+  import { snapshotFormatting, applyFormatting, type FormatSnapshot } from '../formatPainter';
 
   // Y.js bridge origin sentinel — local edits tagged with this so
   // the ytext.observe callback can short-circuit our own writes.
@@ -101,6 +102,31 @@
   let lastSnapshot = ''; // for change-log before/after diff
   let identityName = $state<string>('me');
   let identityColor = $state<string>('hsl(220, 60%, 50%)');
+
+  // ─── format painter ────────────────────────────────────────────
+  // Word-style : click the brush → next selection inherits the
+  // formatting captured at click time.
+  let painterSnap = $state<FormatSnapshot | null>(null);
+  function toggleFormatPainter() {
+    if (painterSnap) {
+      painterSnap = null; // cancel
+      return;
+    }
+    const snap = snapshotFormatting(window.getSelection());
+    if (snap) {
+      painterSnap = snap;
+    }
+  }
+  function onSurfaceMouseUp() {
+    // If the painter is armed, apply on the next selection up-event.
+    if (!painterSnap) return;
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed) {
+      const changed = applyFormatting(sel, painterSnap);
+      painterSnap = null;
+      if (changed) onInput();
+    }
+  }
 
   // ─── Y.js collab plumbing ──────────────────────────────────────
   // Same shape as Editor.svelte : create our own Y.Doc + WebsocketProvider
@@ -821,6 +847,15 @@
       title="Track changes (review pending edits)"
       aria-label="Track changes"
     >🔖 Changes</button>
+    <span class="opacity-30">·</span>
+    <button
+      class="btn btn-xs"
+      class:btn-active={painterSnap !== null}
+      aria-pressed={painterSnap !== null}
+      onclick={toggleFormatPainter}
+      title="Format painter — click sample text, then select target"
+      aria-label="Format painter"
+    >🎨 Paint</button>
     <span class="ml-auto opacity-70 text-[10px] font-mono mr-2">
       {#if status === 'loading'}loading…
       {:else if status === 'saving'}saving…
@@ -852,6 +887,7 @@
     spellcheck="true"
     oninput={onInput}
     onclick={onSurfaceClick}
+    onmouseup={onSurfaceMouseUp}
     data-testid="latex-wysiwyg-surface"
   ></div>
 

@@ -6,8 +6,9 @@
   // their hands off the editor.
   import { onMount, onDestroy } from 'svelte';
   import { startCompile } from '../api';
-  import { compileCommands } from '../settings.svelte';
+  import { compileCommands, compilerChoices } from '../settings.svelte';
   import { logError } from '../logbus';
+  import CompilerSelector from './CompilerSelector.svelte';
 
   interface Props {
     project: string;
@@ -249,12 +250,21 @@
     }
     try {
       const customCmd = compileCommands.get(language);
+      // Pull the per-project LaTeX engine + bib choice. Sent on
+      // every compile so the dispatcher picks the matching binary.
+      // Ignored server-side for non-LaTeX languages.
+      const choice = compilerChoices.get(project);
       const id = await startCompile(project, {
         language,
         entry: entry || undefined,
         command: customCmd || undefined,
+        engine: language === 'latex' ? choice.engine : undefined,
+        bib: language === 'latex' ? choice.bib : undefined,
       });
       if (customCmd) push({ kind: 'log', text: 'custom command : ' + customCmd, ts: Date.now() });
+      if (language === 'latex') {
+        push({ kind: 'log', text: `engine : ${choice.engine}  bib : ${choice.bib}`, ts: Date.now() });
+      }
       push({ kind: 'log', text: `job ${id} started`, ts: Date.now() });
       es?.close();
       es = new EventSource(
@@ -396,6 +406,14 @@
         </button>
       </div>
       <div class="ml-auto flex gap-2 items-center">
+        {#if language === 'latex'}
+          <!-- Per-project LaTeX engine + bib processor selector.
+               Persisted via compilerChoices store ; threaded into
+               the next startCompile() call so the backend dispatch
+               invokes the matching binary inside the workspace μVM. -->
+          <CompilerSelector {project} />
+          <span class="opacity-30">|</span>
+        {/if}
         {#if compilable}
           <label
             class="cursor-pointer label gap-1 text-[10px] py-0"
