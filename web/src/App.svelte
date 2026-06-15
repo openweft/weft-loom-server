@@ -181,9 +181,23 @@
   // slot before mounting. Saved ≈ 1.5 MB off the cold-load.
   type AnySvelteComponent = typeof FileExplorer;
   let LazyWysiwygEditor = $state<AnySvelteComponent | null>(null);
+  let LazyLatexWysiwygEditor = $state<AnySvelteComponent | null>(null);
   let LazySpreadsheetEditor = $state<AnySvelteComponent | null>(null);
   let LazyNotebookEditor = $state<AnySvelteComponent | null>(null);
   let LazyPreviewPane = $state<AnySvelteComponent | null>(null);
+  // Per-tab WYSIWYG mode flag : when true + the file is .tex,
+  // render LatexWysiwygEditor instead of the CodeMirror Editor.
+  // Persisted to localStorage so a refresh keeps the user's choice.
+  let wysiwygMode = $state<boolean>(
+    (() => {
+      try { return localStorage.getItem('weft-loom-tex-wysiwyg') === '1'; }
+      catch { return false; }
+    })(),
+  );
+  function toggleWysiwygMode() {
+    wysiwygMode = !wysiwygMode;
+    try { localStorage.setItem('weft-loom-tex-wysiwyg', wysiwygMode ? '1' : '0'); } catch {}
+  }
   let language = $state<string>('markdown');
   // openFiles[] : the multi-tab editor list, ordered left → right.
   // Adding a file that's already open just activates it.
@@ -476,7 +490,20 @@
       void import('./lib/components/WysiwygEditor.svelte').then((m) => {
         LazyWysiwygEditor = m.default as AnySvelteComponent;
       });
+    } else if (lower.endsWith('.tex') && !LazyLatexWysiwygEditor) {
+      void import('./lib/components/LatexWysiwygEditor.svelte').then((m) => {
+        LazyLatexWysiwygEditor = m.default as AnySvelteComponent;
+      });
     }
+  });
+
+  // Editor toolbar's "WYSIWYG" button dispatches
+  // `weft-loom:toggle-wysiwyg-mode` so the in-editor toolbar can
+  // flip the App-level mode flag.
+  $effect(() => {
+    const handler = () => toggleWysiwygMode();
+    window.addEventListener('weft-loom:toggle-wysiwyg-mode', handler);
+    return () => window.removeEventListener('weft-loom:toggle-wysiwyg-mode', handler);
   });
 
   // PreviewPane loads as soon as the user might want it (any open
@@ -1316,6 +1343,19 @@
                     <LazyWysiwygEditor {project} file={currentFile} />
                   {:else}
                     <div class="flex-1 flex items-center justify-center text-base-content/50">Loading WYSIWYG editor…</div>
+                  {/if}
+                {/key}
+              {:else if currentFile.toLowerCase().endsWith('.tex') && wysiwygMode}
+                <!-- LaTeX WYSIWYG mode : contenteditable surface that
+                     round-trips via parseLatex / serializeLatex. The
+                     preamble is preserved verbatim ; the body is
+                     parsed into HTML for editing then re-serialised
+                     on save. Toggled via the "WYSIWYG" toolbar button. -->
+                {#key project + '|tex-wyswg|' + currentFile}
+                  {#if LazyLatexWysiwygEditor}
+                    <LazyLatexWysiwygEditor {project} file={currentFile} />
+                  {:else}
+                    <div class="flex-1 flex items-center justify-center text-base-content/50">Loading LaTeX WYSIWYG editor…</div>
                   {/if}
                 {/key}
               {:else}

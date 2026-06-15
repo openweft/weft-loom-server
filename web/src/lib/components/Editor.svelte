@@ -1383,11 +1383,16 @@
           title="Word count + writing goals"
           aria-label="Toggle word count">🔢</button>
       </div>
-      <!-- Preview = the rendered PreviewPane side-by-side with the
-           source. READ-ONLY ; the actual editable WYSIWYG view for
-           LaTeX is a follow-up (parseLatex/writeLatex round-trip into
-           the contenteditable WysiwygEditor surface). Until then this
-           button is labelled "Preview" so the UI doesn't lie. -->
+      <!-- View switcher : Source (this CodeMirror view) ↔ WYSIWYG
+           (LatexWysiwygEditor in App.svelte, parseLatex/serializeLatex
+           round-trip into a contenteditable surface). Preview is the
+           read-only rendered PDF/HTML pane, complementary to both. -->
+      <button
+        class="btn btn-xs"
+        onclick={() => window.dispatchEvent(new CustomEvent('weft-loom:toggle-wysiwyg-mode'))}
+        title="Switch to WYSIWYG view (editable Word-like surface for LaTeX)"
+        aria-label="Switch to WYSIWYG"
+      >✍ WYSIWYG</button>
       <button
         class="btn btn-xs"
         onclick={() => window.dispatchEvent(new CustomEvent('weft-loom:toggle-preview'))}
