@@ -780,6 +780,15 @@
     previewOpen = !previewOpen;
     try { localStorage.setItem('weft-loom-preview-open', previewOpen ? '1' : '0'); } catch {}
   }
+  // Editor toolbar's "WYSIWYG" button dispatches `weft-loom:toggle-preview`
+  // so the LaTeX format toolbar can flip the preview without owning
+  // the previewOpen state directly. Mirrors the toggle-bib /
+  // toggle-comments / toggle-words / toggle-palette pattern.
+  $effect(() => {
+    const handler = () => togglePreview();
+    window.addEventListener('weft-loom:toggle-preview', handler);
+    return () => window.removeEventListener('weft-loom:toggle-preview', handler);
+  });
   // Preview pane width (px) — the preview is now a STANDALONE
   // panel docked to the right of the editor column (sibling to
   // ChatRoom / AIChatPanel), not nested inside the editor split.

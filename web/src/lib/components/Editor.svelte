@@ -104,32 +104,15 @@
 
   let { project, language, file, identity, onStatus, onYDoc, onAwareness, onYTextTick, onCursorStats, revisionMode, jumpToLine }: Props = $props();
 
-  // Rich-text mode for LaTeX : Overleaf-style inline decorations.
-  // Inline rich-text decoration mode : decorates the LaTeX source
-  // so headings appear sized + bold inline, math renders as KaTeX
-  // widgets, etc. The user pointed out this "in-source" mode is the
-  // wrong UX for LaTeX (Overleaf's Rich Text is a SEPARATE WYSIWYG
-  // view, not in-source decorations). Default OFF now — the
-  // PreviewPane carries the "rendered view" role ; the source pane
-  // stays clean. The toggle remains for users who liked the
-  // decorations. Truly editable Word-like view = V0.9 follow-up
-  // (HTML contenteditable round-tripping back to LaTeX).
-  let richTextEnabled = $state<boolean>(
-    (() => {
-      try { return localStorage.getItem('weft-loom-rich-text') === '1'; } catch { return false; }
-    })(),
-  );
-  function toggleRichText() {
-    richTextEnabled = !richTextEnabled;
-    try { localStorage.setItem('weft-loom-rich-text', richTextEnabled ? '1' : '0'); } catch { /* ignore */ }
-    if (view) {
-      view.dispatch({
-        effects: richTextCompartment.reconfigure(
-          latexRichText(language === 'latex' && richTextEnabled, project),
-        ),
-      });
-    }
-  }
+  // Rich-text in-source decorations were the wrong UX for LaTeX —
+  // user feedback : the rendered view belongs in a SEPARATE pane
+  // (the PreviewPane, à la Overleaf), not as inline source
+  // decorations. The toolbar now exposes a single "WYSIWYG" button
+  // that toggles the PreviewPane via window.dispatchEvent. The
+  // richTextCompartment stays in place as a no-op (always `false`)
+  // so any extension order assumptions don't break ; the
+  // latexRichText.ts implementation is retained for a possible
+  // V0.9 HTML-contenteditable round-trip surface.
 
   function fmt(cmd: LatexCommand) {
     if (view) applyLatexCommand(view, cmd);
@@ -825,7 +808,7 @@
         // \textbf, math, lists render inline (Overleaf parity).
         // Compartment so the toolbar button can flip it without
         // tearing down the editor.
-        richTextCompartment.of(latexRichText(language === 'latex' && richTextEnabled, project)),
+        richTextCompartment.of(latexRichText(false, project)),
         // V0.1.5 : inline KaTeX rendering for LaTeX + markdown.
         // `$E=mc^2$` / `$$...$$` / `\(...\)` / `\[...\]` segments
         // render live while the cursor is outside them ; entering
@@ -1400,22 +1383,17 @@
           title="Word count + writing goals"
           aria-label="Toggle word count">🔢</button>
       </div>
-      <div class="join">
-        <button
-          class="join-item btn btn-xs"
-          class:btn-active={richTextEnabled}
-          aria-pressed={richTextEnabled}
-          onclick={toggleRichText}
-          title="Rich-text view : headings, bold, math rendered inline"
-        >📜 Rich Text</button>
-        <button
-          class="join-item btn btn-xs"
-          class:btn-active={!richTextEnabled}
-          aria-pressed={!richTextEnabled}
-          onclick={toggleRichText}
-          title="Source view : raw LaTeX commands"
-        >&lt;/&gt; Source</button>
-      </div>
+      <!-- WYSIWYG = the rendered PreviewPane side-by-side with the
+           source. Replaces the old in-source "Rich Text" decoration
+           toggle, which the user pointed out makes no sense for
+           LaTeX : the rendered view belongs in a SEPARATE pane (à la
+           Overleaf), not as inline source decorations. -->
+      <button
+        class="btn btn-xs"
+        onclick={() => window.dispatchEvent(new CustomEvent('weft-loom:toggle-preview'))}
+        title="Toggle WYSIWYG preview pane (rendered LaTeX alongside source)"
+        aria-label="Toggle WYSIWYG preview"
+      >👁 WYSIWYG</button>
     </div>
   {/if}
   <div class="flex-1 overflow-hidden relative">
