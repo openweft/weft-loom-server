@@ -96,6 +96,16 @@ function buildDecorations(view: EditorView): DecorationSet {
       // this segment — otherwise the user can't edit the source.
       const cursorInside = selectionFrom <= m.to && selectionTo >= m.from;
       if (cursorInside) continue;
+      // CRITICAL : CodeMirror forbids Decoration.replace that crosses
+      // a line break from a ViewPlugin (they must come from a
+      // StateField). A multi-line display-math segment ($$ … \n … $$
+      // or \[ … \n … \]) would throw RangeError + abort the dispatch,
+      // leaving the editor visually empty for the surrounding insert.
+      // Skip such matches here ; the PreviewPane still renders them.
+      // Single-line inline math + same-line display math still get
+      // their widgets.
+      const slice = view.state.doc.sliceString(m.from, m.to);
+      if (slice.indexOf('\n') >= 0) continue;
       // Always inline replace — CodeMirror block widgets require
       // line-aligned bounds, but our regex matches the `$$`/`\[`
       // delimiters which sit mid-line, so block:true throws +
