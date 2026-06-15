@@ -30,6 +30,7 @@
   import BibliographyPanel from './lib/components/BibliographyPanel.svelte';
   import CommentsPanel from './lib/components/CommentsPanel.svelte';
   import WordCountPanel from './lib/components/WordCountPanel.svelte';
+  import ShortcutHelp from './lib/components/ShortcutHelp.svelte';
   import { commentsArray, commentFromMap, resolveAnchors, type CommentRecord } from './lib/comments';
   import type { CommentRange } from './lib/commentDecorations';
   import TabBar from './lib/components/TabBar.svelte';
@@ -86,6 +87,16 @@
     if (ev.key === ',') {
       ev.preventDefault();
       settingsOpen = true;
+      return;
+    }
+    // Cmd+/ : Keyboard shortcut cheat sheet. VSCode-style binding.
+    // Editor.svelte also binds Cmd+/ to toggleComment but that's
+    // a CodeMirror keymap and only fires when the editor has
+    // focus ; this global hook handles the case where the user
+    // hits Cmd+/ from anywhere else (sidebar, statusbar, modal).
+    if (ev.key === '/' && !ev.shiftKey) {
+      ev.preventDefault();
+      shortcutHelpOpen = true;
       return;
     }
   }
@@ -190,6 +201,7 @@
   let sidebarView = $state<'none' | 'explorer' | 'search' | 'scm' | 'collab'>('explorer');
   let gitConfigOpen = $state<boolean>(false);
   let settingsOpen = $state<boolean>(false);
+  let shortcutHelpOpen = $state<boolean>(false);
   let quickOpenOpen = $state<boolean>(false);
   // The "New File…" command-palette entry opens the NewFileDialog ;
   // declared alongside the other modal-open flags.
@@ -1483,6 +1495,7 @@
     onSynced={refreshExplorer}
   />
   <SettingsPanel bind:open={settingsOpen} onClose={() => (settingsOpen = false)} />
+  <ShortcutHelp bind:open={shortcutHelpOpen} onClose={() => (shortcutHelpOpen = false)} />
   <NewFileDialog
     bind:open={newFileOpen}
     {project}
