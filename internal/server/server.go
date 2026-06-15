@@ -279,6 +279,11 @@ func (s *Server) routes() {
 	// negotiation API, appends to refs.bib (or the first .bib in the
 	// project). The BibliographyPanel surfaces the "+ DOI" affordance.
 	s.mux.HandleFunc("POST /api/projects/{name}/bib/from-doi", s.requireAuth(s.handleDOIToBib))
+	// V0.11 : multi-file project scaffolds. The catalogue is
+	// project-agnostic so list is at /api/project-templates ;
+	// applying a scaffold writes into a target project + needs auth.
+	s.mux.HandleFunc("GET /api/project-templates", s.requireAuth(s.handleProjectTemplatesList))
+	s.mux.HandleFunc("POST /api/projects/{name}/scaffold", s.requireAuth(s.handleProjectScaffold))
 	// V0.3 LLM chat surface — stub responses for now ; full wiring
 	// to Ollama / Anthropic / OpenAI lands when the backend config
 	// surface is in place.

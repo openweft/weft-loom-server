@@ -31,6 +31,7 @@
   import CommentsPanel from './lib/components/CommentsPanel.svelte';
   import WordCountPanel from './lib/components/WordCountPanel.svelte';
   import ShortcutHelp from './lib/components/ShortcutHelp.svelte';
+  import ScaffoldDialog from './lib/components/ScaffoldDialog.svelte';
   import { commentsArray, commentFromMap, resolveAnchors, type CommentRecord } from './lib/comments';
   import type { CommentRange } from './lib/commentDecorations';
   import TabBar from './lib/components/TabBar.svelte';
@@ -202,6 +203,7 @@
   let gitConfigOpen = $state<boolean>(false);
   let settingsOpen = $state<boolean>(false);
   let shortcutHelpOpen = $state<boolean>(false);
+  let scaffoldOpen = $state<boolean>(false);
   let quickOpenOpen = $state<boolean>(false);
   // The "New File…" command-palette entry opens the NewFileDialog ;
   // declared alongside the other modal-open flags.
@@ -857,8 +859,14 @@
       weftLoomTriggerCompile?: () => Promise<unknown>;
       weftLoomTemplates?: unknown;
       weftLoomWriteODT?: unknown;
+      weftLoomScaffoldOpen?: () => void;
     };
     w.weftLoomOpenFile = openFileByPath;
+    // V0.11 : expose the multi-file scaffold dialog opener so the
+    // puppeteer test (and any future CLI / keyboard shortcut) can
+    // surface the picker without poking through the MenuBar's
+    // daisyUI dropdown which only opens on focus/hover.
+    w.weftLoomScaffoldOpen = () => { scaffoldOpen = true; };
     // T6 / H4 : single owner of comment-anchor resolution. The editor
     // decoration AND the CommentsPanel list both consume the same
     // resolved snapshot — App.svelte runs ytext.observe + observeDeep
@@ -1096,6 +1104,7 @@
     onCompile={toggleLog}
     onExportPDF={exportPDF}
     onExportProjectZip={exportProjectZip}
+    onScaffold={() => (scaffoldOpen = true)}
     onRevisionMode={() => onRevisionToggle(!revisionMode)}
     onOpenSettings={() => (settingsOpen = true)}
   />
@@ -1496,6 +1505,16 @@
   />
   <SettingsPanel bind:open={settingsOpen} onClose={() => (settingsOpen = false)} />
   <ShortcutHelp bind:open={shortcutHelpOpen} onClose={() => (shortcutHelpOpen = false)} />
+  <ScaffoldDialog
+    bind:open={scaffoldOpen}
+    {project}
+    onClose={() => (scaffoldOpen = false)}
+    onApplied={(entry) => {
+      scaffoldOpen = false;
+      refreshExplorer();
+      if (entry) onOpenFile(entry, languageForPath(entry));
+    }}
+  />
   <NewFileDialog
     bind:open={newFileOpen}
     {project}

@@ -28,6 +28,7 @@
     onCompile: () => void;
     onExportPDF: () => void;
     onExportProjectZip: () => void;
+    onScaffold: () => void;
     onRevisionMode: () => void;
     onOpenSettings: () => void;
   }
@@ -44,6 +45,7 @@
     onCompile,
     onExportPDF,
     onExportProjectZip,
+    onScaffold,
     onRevisionMode,
     onOpenSettings,
   }: Props = $props();
@@ -59,6 +61,7 @@
         nameKey: 'menubar.file',
         items: [
           { kind: 'item', labelKey: 'menu.file.new', shortcut: 'Cmd+N', action: onNewFile },
+          { kind: 'item', labelKey: 'menu.file.scaffold', action: onScaffold },
           { kind: 'divider' },
           { kind: 'item', labelKey: 'menu.file.switchProject', shortcut: 'Cmd+P', action: onSwitchProject },
           { kind: 'divider' },
