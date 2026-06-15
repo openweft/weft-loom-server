@@ -12,6 +12,8 @@
   // source view byte-for-byte.
 
   import { onMount, onDestroy } from 'svelte';
+  import * as Y from 'yjs';
+  import { WebsocketProvider } from 'y-websocket';
   import katex from 'katex';
   import { parseLatex, serializeLatex, type ParsedLatex } from '../latexWysiwyg';
   import { readFile, writeFile } from '../api';
@@ -21,6 +23,10 @@
   import { wireImageDrop, type UploadImageResult } from '../uploadImage';
   import LatexTableToolbar from './LatexTableToolbar.svelte';
   import WysiwygFindReplace from './WysiwygFindReplace.svelte';
+
+  // Y.js bridge origin sentinel — local edits tagged with this so
+  // the ytext.observe callback can short-circuit our own writes.
+  const WYSIWYG_LOCAL = 'wysiwyg-local';
 
   interface Props {
     project: string;
@@ -40,6 +46,55 @@
   // ─── find & replace popover ────────────────────────────────────
   let findReplaceOpen = $state<boolean>(false);
   let dropDestroy: (() => void) | undefined;
+
+  // ─── Y.js collab plumbing ──────────────────────────────────────
+  // Same shape as Editor.svelte : create our own Y.Doc + WebsocketProvider
+  // connected to the project's /sync WS room. Both editors (source +
+  // WYSIWYG) attach to the SAME Y.Text key "file:<path>" so remote
+  // edits from either side land in both views via the relay.
+  let ydoc: Y.Doc | undefined;
+  let provider: WebsocketProvider | undefined;
+  let ytext: Y.Text | undefined;
+  let muteObserver = false; // true while we're applying a remote update
+
+  function wsURL(p: string): string {
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${window.location.host}/api/projects/${encodeURIComponent(p)}/sync`;
+  }
+
+  // pushToYtext : called after every local edit (debounced). Reads
+  // the live host.innerHTML, serializes back to LaTeX source, and
+  // writes the result into the Y.Text inside a LOCAL-origin
+  // transaction so the observer below recognises it as our own.
+  function pushToYtext() {
+    if (!ytext || !ydoc || !editorEl) return;
+    const newSource = serializeLatex(parsed, editorEl.innerHTML);
+    const prev = ytext.toString();
+    if (newSource === prev) return;
+    ydoc.transact(() => {
+      ytext!.delete(0, ytext!.length);
+      ytext!.insert(0, newSource);
+    }, WYSIWYG_LOCAL);
+  }
+
+  // applyRemoteSource : called on every non-LOCAL ytext mutation
+  // (peer's edit, relay-cached state). Parses the new source +
+  // rewrites the host innerHTML + re-runs the render+resolve passes.
+  // Caret is reset to start — V0.2 preserves it.
+  function applyRemoteSource(source: string) {
+    if (!editorEl) return;
+    parsed = parseLatex(source);
+    muteObserver = true;
+    editorEl.innerHTML = parsed.bodyHtml;
+    // Drain any pending MutationObserver records the innerHTML
+    // assignment queued, then re-run renders.
+    const labels = buildLabelMap(editorEl);
+    resolveRefs(editorEl, labels);
+    renderMathNodes(editorEl);
+    renderCiteNodes(editorEl);
+    renderFigureNodes(editorEl);
+    muteObserver = false;
+  }
 
   // ─── table toolbar ─────────────────────────────────────────────
   // Anchored at a cell when the user clicks one ; gives them
@@ -250,9 +305,40 @@
     try {
       status = 'loading';
       bib.setProject(project);
-      const source = await readFile(project, file);
+
+      // Y.js bootstrap : create the same { ydoc, provider, ytext }
+      // triple Editor.svelte does, so remote peers (source view in
+      // split mode, OR a second browser on the same file) share the
+      // ytext "file:<path>" buffer via the relay.
+      ydoc = new Y.Doc();
+      provider = new WebsocketProvider(wsURL(project), 'default', ydoc);
+      const ytextKey = file ? 'file:' + file : 'wysiwyg';
+      ytext = ydoc.getText(ytextKey);
+
+      // Wait for the WS sync handshake OR 2 s fallback for offline.
+      // Mirrors Editor.svelte's seedFromDisk window.
+      await new Promise<void>((resolve) => {
+        let done = false;
+        const finish = () => { if (!done) { done = true; resolve(); } };
+        provider!.once('sync', finish);
+        setTimeout(finish, 2000);
+      });
+
+      // Source-of-truth resolution :
+      //   - ytext has content (relay-cached OR a peer pushed) →
+      //     trust it ; parse + render
+      //   - else → seed from disk + push the source into ytext so
+      //     peers joining later get it
+      let source = ytext.toString();
+      if (source.length === 0) {
+        source = await readFile(project, file);
+        if (source.length > 0) {
+          ydoc.transact(() => { ytext!.insert(0, source); }, WYSIWYG_LOCAL);
+        }
+      }
       parsed = parseLatex(source);
       editorEl.innerHTML = parsed.bodyHtml;
+
       // Build label map BEFORE renderMathNodes : the KaTeX render
       // overwrites .math-env innerHTML which would wipe the nested
       // latex-label children parser emits for ref resolution.
@@ -261,6 +347,14 @@
       renderMathNodes(editorEl);
       renderCiteNodes(editorEl);
       renderFigureNodes(editorEl);
+
+      // Observe ytext for remote updates. Local origin tagging
+      // prevents the feedback loop.
+      ytext.observe((event, tr) => {
+        if (tr.origin === WYSIWYG_LOCAL) return;
+        applyRemoteSource(ytext!.toString());
+      });
+
       status = 'ready';
       logEvent('latex-wysiwyg', 'loaded', { file, bytes: source.length });
     } catch (e) {
@@ -423,9 +517,14 @@
   }
 
   function onInput() {
+    if (muteObserver) return; // applying a remote update, skip echo
     dirty = true;
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => { void save(); }, 600);
+    // Push to Y.Text immediately so peers see edits sub-second.
+    // The disk save still debounces ; the ytext push is cheap +
+    // lossy-safe (overwrite the whole string).
+    pushToYtext();
     emitCursorStats();
   }
 
@@ -535,6 +634,8 @@
     if (saveTimer) clearTimeout(saveTimer);
     document.removeEventListener('selectionchange', onSelectionChange);
     dropDestroy?.();
+    try { provider?.destroy(); } catch { /* ignore */ }
+    try { ydoc?.destroy(); } catch { /* ignore */ }
   });
 </script>
 
