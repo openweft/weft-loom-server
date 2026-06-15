@@ -86,7 +86,10 @@ interface Diagnostic {
   docLength: number;
   lineCount: number;
   contentHeight: number;
-  reason: 'low-contrast' | 'zero-paint';
+  opacity?: number;
+  visibility?: string;
+  fontSize?: string;
+  reason: 'low-contrast' | 'zero-paint' | 'opacity-zero' | 'visibility-hidden' | 'zero-font-size' | 'transparent-color';
 }
 
 // check returns null when the editor is healthy or a Diagnostic
@@ -109,12 +112,44 @@ function check(view: EditorView): Diagnostic | null {
   const firstLine = contentEl.querySelector('.cm-line');
   if (!firstLine) return null; // editor not laid out yet
 
-  const fg = parseRGB(getComputedStyle(firstLine).color);
+  const lineStyle = getComputedStyle(firstLine);
+  const contentStyle = getComputedStyle(contentEl);
+  const docLines = view.state.doc.lines;
+  const contentRect = contentEl.getBoundingClientRect();
+
+  const mkDiag = (reason: Diagnostic['reason'], extra: Partial<Diagnostic> = {}): Diagnostic => ({
+    fg: lineStyle.color,
+    bg: 'unknown',
+    contrast: 0,
+    docLength,
+    lineCount: docLines,
+    contentHeight: contentRect.height,
+    opacity: parseFloat(lineStyle.opacity),
+    visibility: lineStyle.visibility,
+    fontSize: lineStyle.fontSize,
+    reason,
+    ...extra,
+  });
+
+  // Cheap rule-out checks before the contrast math : if any of
+  // these fire, the contrast result would be meaningless anyway.
+  if (parseFloat(lineStyle.opacity) === 0 || parseFloat(contentStyle.opacity) === 0) {
+    return mkDiag('opacity-zero');
+  }
+  if (lineStyle.visibility === 'hidden' || contentStyle.visibility === 'hidden') {
+    return mkDiag('visibility-hidden');
+  }
+  if (lineStyle.color === 'transparent' || lineStyle.color === 'rgba(0, 0, 0, 0)') {
+    return mkDiag('transparent-color');
+  }
+  if (parseFloat(lineStyle.fontSize) === 0) {
+    return mkDiag('zero-font-size');
+  }
+
+  const fg = parseRGB(lineStyle.color);
   if (!fg) return null; // colour parser couldn't read — give up quietly
 
   const bg = effectiveBackgroundOf(editorEl) ?? [255, 255, 255];
-
-  const contentRect = contentEl.getBoundingClientRect();
 
   // Zero-paint check : doc has content, line numbers render (we
   // know the viewport is initialised), but cm-content has no
@@ -125,8 +160,11 @@ function check(view: EditorView): Diagnostic | null {
       bg: `rgb(${bg.join(', ')})`,
       contrast: contrastRatio(fg, bg),
       docLength,
-      lineCount: view.state.doc.lines,
+      lineCount: docLines,
       contentHeight: contentRect.height,
+      opacity: parseFloat(lineStyle.opacity),
+      visibility: lineStyle.visibility,
+      fontSize: lineStyle.fontSize,
       reason: 'zero-paint',
     };
   }
@@ -140,8 +178,11 @@ function check(view: EditorView): Diagnostic | null {
       bg: `rgb(${bg.join(', ')})`,
       contrast: ratio,
       docLength,
-      lineCount: view.state.doc.lines,
+      lineCount: docLines,
       contentHeight: contentRect.height,
+      opacity: parseFloat(lineStyle.opacity),
+      visibility: lineStyle.visibility,
+      fontSize: lineStyle.fontSize,
       reason: 'low-contrast',
     };
   }
