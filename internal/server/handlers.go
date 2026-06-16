@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/coder/websocket"
 
@@ -31,7 +32,26 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
+// internalDir is the per-project namespace where server-side
+// sidecars live (sharing.json, owner, public-share.json, history
+// snapshots, label index, …). These are NOT user content — the only
+// legitimate way to read or mutate them is via the dedicated APIs
+// (api_sharing, api_publicshare, etc.). The /files/ handlers refuse
+// access to this path so a collaborator can't read the owner subject
+// + PUT a forged value to escalate themselves to owner.
+const internalDir = ".weft-loom"
+
+// isInternalPath reports whether path lives under the server-side
+// sidecar namespace. Used by the /files/ handlers to refuse access.
+func isInternalPath(path string) bool {
+	return path == internalDir || strings.HasPrefix(path, internalDir+"/")
+}
+
 func (s *Server) handleReadFile(w http.ResponseWriter, r *http.Request) {
+	if isInternalPath(filePath(r)) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
 	ident, _ := auth.IdentityFrom(r.Context())
 	rc, err := s.opts.Projects.ReadFile(r.Context(), ident, projectName(r), filePath(r))
 	if err != nil {
@@ -57,6 +77,10 @@ func (s *Server) handleReadFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleWriteFile(w http.ResponseWriter, r *http.Request) {
+	if isInternalPath(filePath(r)) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "internal path"})
+		return
+	}
 	ident, _ := auth.IdentityFrom(r.Context())
 	defer r.Body.Close()
 	// Buffer the body so we can both pass it to the project store AND
@@ -84,6 +108,10 @@ func (s *Server) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteFile(w http.ResponseWriter, r *http.Request) {
+	if isInternalPath(filePath(r)) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "internal path"})
+		return
+	}
 	ident, _ := auth.IdentityFrom(r.Context())
 	if err := s.opts.Projects.DeleteFile(r.Context(), ident, projectName(r), filePath(r)); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})

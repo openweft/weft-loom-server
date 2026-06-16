@@ -286,6 +286,63 @@ func TestHumaRawHandlers_StillAuthGuarded(t *testing.T) {
 	}
 }
 
+// TestInternalPathBlocked pins the privilege-escalation fix : an
+// authenticated user must not be able to read/write/list .weft-loom/
+// via the generic /files/ endpoints. Pre-fix, any authed user could
+// PUT .weft-loom/owner with their own subject and become the project
+// owner, then add themselves as a collaborator via the sharing API.
+func TestInternalPathBlocked(t *testing.T) {
+	srv, store := newTestServer(t)
+	defer srv.Close()
+	seedProject(t, store, "p1", "paper.tex", "hello")
+	// Seed an internal sidecar directly so the listing has something
+	// to potentially leak.
+	seedProject(t, store, "p1", ".weft-loom/owner", "alice")
+
+	// 1. GET refuses .weft-loom/ paths.
+	r1, err := http.Get(srv.URL + "/api/projects/p1/files/.weft-loom/owner")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	r1.Body.Close()
+	if r1.StatusCode != http.StatusNotFound {
+		t.Errorf("GET .weft-loom/owner = %d ; want 404", r1.StatusCode)
+	}
+
+	// 2. PUT refuses .weft-loom/ paths (the escalation vector).
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/projects/p1/files/.weft-loom/owner", strings.NewReader("attacker"))
+	r2, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT: %v", err)
+	}
+	r2.Body.Close()
+	if r2.StatusCode != http.StatusForbidden {
+		t.Errorf("PUT .weft-loom/owner = %d ; want 403", r2.StatusCode)
+	}
+
+	// 3. DELETE refuses .weft-loom/ paths.
+	req, _ = http.NewRequest(http.MethodDelete, srv.URL+"/api/projects/p1/files/.weft-loom/owner", nil)
+	r3, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	r3.Body.Close()
+	if r3.StatusCode != http.StatusForbidden {
+		t.Errorf("DELETE .weft-loom/owner = %d ; want 403", r3.StatusCode)
+	}
+
+	// 4. Listing must not surface .weft-loom/* paths.
+	r4, err := http.Get(srv.URL + "/api/projects/p1/files")
+	if err != nil {
+		t.Fatalf("LIST: %v", err)
+	}
+	defer r4.Body.Close()
+	body, _ := io.ReadAll(r4.Body)
+	if strings.Contains(string(body), ".weft-loom") {
+		t.Errorf("listing leaked .weft-loom : %s", body)
+	}
+}
+
 func mapKeys(m map[string]any) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

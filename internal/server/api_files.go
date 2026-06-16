@@ -44,6 +44,11 @@ func mountFilesIndexAPI(api huma.API, s *Server) {
 			return nil, huma.Error500InternalServerError("list files", err)
 		}
 		for _, f := range files {
+			// Skip the server-side sidecar namespace — sharing.json,
+			// owner, public-share.json etc. are not user content.
+			if isInternalPath(f.Path) {
+				continue
+			}
 			out.Body.Items = append(out.Body.Items, fileOut{
 				Path: f.Path,
 				Size: f.Size,
