@@ -15,6 +15,13 @@
   // the server is the source of truth and the round-trip is one
   // call away.
 
+  import {
+    getPublicShare,
+    createPublicShare,
+    deletePublicShare,
+    type PublicShareRecord,
+  } from '../api';
+
   interface Props {
     project: string;
     onClose: () => void;
@@ -22,12 +29,7 @@
 
   let { project, onClose }: Props = $props();
 
-  // Wire-shape mirrored from api_publicshare.go : both URL fields come
-  // back from the server so the SPA doesn't have to guess the path
-  // prefix.
-  type ShareRecord = { token: string; url: string; created: string };
-
-  let share = $state<ShareRecord | null>(null);
+  let share = $state<PublicShareRecord | null>(null);
   let loading = $state(true);
   let busy = $state(false);
   let err = $state<string | null>(null);
@@ -45,16 +47,9 @@
     loading = true;
     err = null;
     try {
-      const r = await fetch(`/api/projects/${encodeURIComponent(project)}/public-share`);
-      if (r.status === 404) {
-        share = null;
-      } else if (r.ok) {
-        share = (await r.json()) as ShareRecord;
-      } else {
-        err = `GET ${r.status}`;
-      }
+      share = await getPublicShare(project);
     } catch (e) {
-      err = String(e);
+      err = e instanceof Error ? e.message : String(e);
     } finally {
       loading = false;
     }
@@ -65,16 +60,9 @@
     err = null;
     copied = false;
     try {
-      const r = await fetch(`/api/projects/${encodeURIComponent(project)}/public-share`, {
-        method: 'POST',
-      });
-      if (!r.ok) {
-        err = `POST ${r.status}`;
-        return;
-      }
-      share = (await r.json()) as ShareRecord;
+      share = await createPublicShare(project);
     } catch (e) {
-      err = String(e);
+      err = e instanceof Error ? e.message : String(e);
     } finally {
       busy = false;
     }
@@ -85,16 +73,10 @@
     err = null;
     copied = false;
     try {
-      const r = await fetch(`/api/projects/${encodeURIComponent(project)}/public-share`, {
-        method: 'DELETE',
-      });
-      if (r.status !== 204 && !r.ok) {
-        err = `DELETE ${r.status}`;
-        return;
-      }
+      await deletePublicShare(project);
       share = null;
     } catch (e) {
-      err = String(e);
+      err = e instanceof Error ? e.message : String(e);
     } finally {
       busy = false;
     }

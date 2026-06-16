@@ -6,36 +6,20 @@
 
   import { onMount } from 'svelte';
   import { logError } from '../logbus';
+  import {
+    listHistory,
+    getHistorySnapshot,
+    diffHistory,
+    setHistoryLabel,
+    restoreHistory,
+    type HistoryEntry,
+    type HistorySnapshot,
+    type HistoryDiff,
+  } from '../api';
 
-  interface Entry {
-    ts: string;
-    author: string;
-    size: number;
-    label?: string;
-  }
-  interface SnapshotPayload {
-    ts: string;
-    author: string;
-    size: number;
-    content: string;
-  }
-  interface DiffLine {
-    kind: 'add' | 'remove' | 'context';
-    text: string;
-    oldLineNum: number;
-    newLineNum: number;
-  }
-  interface DiffHunk {
-    oldStart: number;
-    newStart: number;
-    lines: DiffLine[];
-  }
-  interface DiffPayload {
-    from: string;
-    to: string;
-    summary: { added: number; removed: number };
-    hunks: DiffHunk[];
-  }
+  type Entry = HistoryEntry;
+  type SnapshotPayload = HistorySnapshot;
+  type DiffPayload = HistoryDiff;
   interface Props {
     project: string;
     file: string;
@@ -64,22 +48,15 @@
   let editingLabelTs = $state<string | null>(null);
   let labelDraft = $state<string>('');
 
-  function url(path: string): string {
-    return '/api/projects/' + encodeURIComponent(project) + path;
-  }
-
   async function refresh() {
     if (!project || !file) return;
     loading = true;
     loadError = undefined;
     try {
-      const r = await fetch(url('/history?file=' + encodeURIComponent(file)));
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const data = await r.json();
-      entries = Array.isArray(data?.entries) ? data.entries : [];
+      entries = await listHistory(project, file);
       lastRefresh = Date.now();
     } catch (e) {
-      loadError = String(e);
+      loadError = e instanceof Error ? e.message : String(e);
       logError('history', 'list-failed', e);
     } finally {
       loading = false;
@@ -93,11 +70,8 @@
     diffError = undefined;
     // Kick off BOTH in parallel — the user can toggle the view mode
     // without an extra round-trip.
-    const snapP = fetch(url('/history/snapshot?file=' + encodeURIComponent(file) + '&at=' + encodeURIComponent(ts)))
-      .then(async (r) => {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        preview = await r.json();
-      })
+    const snapP = getHistorySnapshot(project, file, ts)
+      .then((s) => { preview = s; })
       .catch((e) => { logError('history', 'snapshot-failed', e); });
     const diffP = fetchDiff(ts, diffTarget);
     await Promise.allSettled([snapP, diffP]);
@@ -106,27 +80,17 @@
   async function fetchDiff(fromTs: string, toRef: string) {
     diff = undefined;
     diffError = undefined;
-    const qs = '?file=' + encodeURIComponent(file)
-      + '&from=' + encodeURIComponent(fromTs)
-      + '&to=' + encodeURIComponent(toRef);
     try {
-      const r = await fetch(url('/history/diff' + qs));
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      diff = await r.json();
+      diff = await diffHistory(project, file, fromTs, toRef);
     } catch (e) {
-      diffError = String(e);
+      diffError = e instanceof Error ? e.message : String(e);
       logError('history', 'diff-failed', e);
     }
   }
 
   async function saveLabel(ts: string, label: string) {
     try {
-      const r = await fetch(url('/history/label'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file, at: ts, label }),
-      });
-      if (!r.ok) throw new Error('HTTP ' + r.status);
+      await setHistoryLabel(project, file, ts, label);
       // Refresh so the label surfaces on the timeline immediately.
       await refresh();
     } catch (e) {
@@ -159,18 +123,13 @@
     restoring = true;
     restoreError = undefined;
     try {
-      const r = await fetch(url('/history/restore'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file, at: ts }),
-      });
-      if (!r.ok) throw new Error('HTTP ' + r.status);
+      await restoreHistory(project, file, ts);
       // The writeFile path will broadcast via Yjs. Local view picks
       // it up on the next file load. Force a refresh so the new
       // snapshot entry (from the restore-write) appears.
       await refresh();
     } catch (e) {
-      restoreError = String(e);
+      restoreError = e instanceof Error ? e.message : String(e);
       logError('history', 'restore-failed', e);
     } finally {
       restoring = false;

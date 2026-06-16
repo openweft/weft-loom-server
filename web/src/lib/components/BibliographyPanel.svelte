@@ -13,6 +13,7 @@
   import { settings } from '../settings.svelte';
   import BibStylePicker from './BibStylePicker.svelte';
   import { formatBibliographystyleLine } from '../bibStyles';
+  import { bibFromDoi, zoteroSync, readFile, writeFile } from '../api';
 
   interface Props {
     visible: boolean;
@@ -67,42 +68,22 @@
     zoteroResult = undefined;
     try {
       // 1. Pull the BibTeX bytes from the server-side relay.
-      const r = await fetch(
-        '/api/projects/' + encodeURIComponent(project) + '/zotero/sync',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ user_id: userId, api_key: apiKey }),
-        },
-      );
-      if (!r.ok) {
-        const errBody = await r.json().catch(() => ({}));
-        throw new Error(errBody.error ?? ('HTTP ' + r.status));
-      }
-      const incoming = await r.text();
+      const incoming = await zoteroSync(project, userId, apiKey);
       // 2. Read the existing refs.bib (404 = file doesn't exist yet,
       //    we'll create it on write).
-      const fileUrl = '/api/projects/' + encodeURIComponent(project) + '/files/' + encodeURIComponent('refs.bib');
       let existing = '';
       try {
-        const er = await fetch(fileUrl);
-        if (er.ok) existing = await er.text();
-      } catch { /* ignore — treat as missing */ }
+        existing = await readFile(project, 'refs.bib');
+      } catch {
+        // No refs.bib yet — writeFile will create it.
+      }
       // 3. Concatenate + ensure a separating newline so we don't
       //    fuse the last existing entry with the first incoming one.
       let combined = existing;
       if (combined.length > 0 && !combined.endsWith('\n')) combined += '\n';
       combined += incoming;
       // 4. Write the combined file back.
-      const wr = await fetch(fileUrl, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/octet-stream' },
-        body: combined,
-      });
-      if (!wr.ok) {
-        const errBody = await wr.json().catch(() => ({}));
-        throw new Error(errBody.error ?? ('write failed: HTTP ' + wr.status));
-      }
+      await writeFile(project, 'refs.bib', combined, 'application/octet-stream');
       zoteroResult = { count: countBibEntries(incoming), bytes: incoming.length };
       void bib.refresh();
     } catch (e) {
@@ -119,19 +100,7 @@
     doiError = undefined;
     doiResult = undefined;
     try {
-      const r = await fetch(
-        '/api/projects/' + encodeURIComponent(project) + '/bib/from-doi',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ doi: doiInput.trim() }),
-        },
-      );
-      if (!r.ok) {
-        const errBody = await r.json().catch(() => ({}));
-        throw new Error(errBody.error ?? ('HTTP ' + r.status));
-      }
-      doiResult = await r.json();
+      doiResult = await bibFromDoi(project, doiInput.trim());
       // Refresh the bib cache so the new entry surfaces in the list
       // without waiting on the next poll tick.
       void bib.refresh();

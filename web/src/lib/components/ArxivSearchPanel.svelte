@@ -11,7 +11,7 @@
   // is toggled by a `weft-loom:toggle-arxiv` window event (mirrors
   // the BibliographyPanel pattern).
 
-  import { readFile, writeFile } from '../api';
+  import { readFile, writeFile, arxivSearch, type ArxivEntry } from '../api';
   import { bib } from '../bibStore.svelte';
   import { logError } from '../logbus';
 
@@ -21,15 +21,6 @@
     onClose?: () => void;
   }
   let { visible, project, onClose }: Props = $props();
-
-  interface ArxivEntry {
-    id: string;
-    title: string;
-    authors: string[];
-    summary: string;
-    year: string;
-    primaryCategory: string;
-  }
 
   let open = $state(false);
   let query = $state('');
@@ -44,15 +35,7 @@
     error = undefined;
     entries = [];
     try {
-      const r = await fetch(
-        '/api/arxiv/search?q=' + encodeURIComponent(query.trim()) + '&max=20',
-      );
-      if (!r.ok) {
-        const body = await r.json().catch(() => ({}));
-        throw new Error(body.error ?? ('HTTP ' + r.status));
-      }
-      const data = await r.json();
-      entries = data.entries ?? [];
+      entries = await arxivSearch(query.trim(), 20);
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
       logError('arxiv', 'search-failed', e);

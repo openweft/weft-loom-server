@@ -13,10 +13,7 @@
   // enough information that end users can identify the sender they
   // should whitelist in their own inbox.
 
-  interface EmailConfig {
-    configured: boolean;
-    from?: string;
-  }
+  import { getEmailConfig, type EmailConfig } from '../api';
 
   let config = $state<EmailConfig | null>(null);
   let loading = $state(false);
@@ -26,11 +23,9 @@
     loading = true;
     err = null;
     try {
-      const r = await fetch('/api/admin/email/config');
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      config = (await r.json()) as EmailConfig;
+      config = await getEmailConfig();
     } catch (e) {
-      err = String(e);
+      err = e instanceof Error ? e.message : String(e);
     } finally {
       loading = false;
     }

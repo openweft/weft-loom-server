@@ -131,3 +131,268 @@ export async function cancelCompile(project: string, jobID: string): Promise<voi
     throw new Error(`cancel-compile ${resp.status}: ${await resp.text()}`);
   }
 }
+
+// --- Sharing (per-project ACL editor) ---------------------------------
+
+export type ShareRole = 'editor' | 'commenter' | 'viewer';
+
+export interface Share {
+  user: string;
+  role: ShareRole;
+}
+
+export async function listSharing(project: string): Promise<Share[]> {
+  const { data, error } = await api.GET('/api/projects/{name}/sharing', {
+    params: { path: { name: project } },
+  });
+  if (error) throw new Error(`list-sharing: ${JSON.stringify(error)}`);
+  return (data.shares ?? []) as Share[];
+}
+
+export async function upsertShare(
+  project: string,
+  user: string,
+  role: ShareRole,
+): Promise<Share[]> {
+  const { data, error } = await api.POST('/api/projects/{name}/sharing', {
+    params: { path: { name: project } },
+    body: { user, role },
+  });
+  if (error) throw new Error(`upsert-sharing: ${JSON.stringify(error)}`);
+  return (data.shares ?? []) as Share[];
+}
+
+export async function deleteShare(project: string, user: string): Promise<void> {
+  const { error, response } = await api.DELETE('/api/projects/{name}/sharing/{user}', {
+    params: { path: { name: project, user } },
+  });
+  // 204 No Content is success — openapi-fetch surfaces it via response.ok.
+  if (error && !response.ok) {
+    throw new Error(`delete-sharing: ${JSON.stringify(error)}`);
+  }
+}
+
+// --- Public share (read-only token link) ------------------------------
+
+export interface PublicShareRecord {
+  token: string;
+  url: string;
+  created: string;
+}
+
+export async function createPublicShare(project: string): Promise<PublicShareRecord> {
+  const { data, error } = await api.POST('/api/projects/{name}/public-share', {
+    params: { path: { name: project } },
+  });
+  if (error) throw new Error(`create-public-share: ${JSON.stringify(error)}`);
+  return data as PublicShareRecord;
+}
+
+// getPublicShare reads the current token. 404 means no link exists yet ;
+// we map that to `null` so the caller's "no public link" UI branch can
+// trigger on a missing share without an error popup.
+export async function getPublicShare(project: string): Promise<PublicShareRecord | null> {
+  const { data, error, response } = await api.GET('/api/projects/{name}/public-share', {
+    params: { path: { name: project } },
+  });
+  if (response.status === 404) return null;
+  if (error) throw new Error(`get-public-share: ${JSON.stringify(error)}`);
+  return (data ?? null) as PublicShareRecord | null;
+}
+
+export async function deletePublicShare(project: string): Promise<void> {
+  const { error, response } = await api.DELETE('/api/projects/{name}/public-share', {
+    params: { path: { name: project } },
+  });
+  if (error && !response.ok) {
+    throw new Error(`delete-public-share: ${JSON.stringify(error)}`);
+  }
+}
+
+// --- History (per-file snapshot timeline) -----------------------------
+
+export interface HistoryEntry {
+  ts: string;
+  author: string;
+  size: number;
+  label?: string;
+}
+
+export interface HistorySnapshot extends HistoryEntry {
+  content?: string;
+}
+
+export interface HistoryDiffLine {
+  kind: 'add' | 'remove' | 'context';
+  text: string;
+  oldLineNum: number;
+  newLineNum: number;
+}
+
+export interface HistoryDiffHunk {
+  oldStart: number;
+  newStart: number;
+  lines: HistoryDiffLine[];
+}
+
+export interface HistoryDiff {
+  from: string;
+  to: string;
+  summary: { added: number; removed: number };
+  hunks: HistoryDiffHunk[];
+}
+
+export async function listHistory(project: string, file: string): Promise<HistoryEntry[]> {
+  const { data, error } = await api.GET('/api/projects/{name}/history', {
+    params: { path: { name: project }, query: { file } },
+  });
+  if (error) throw new Error(`list-history: ${JSON.stringify(error)}`);
+  return (data.entries ?? []) as HistoryEntry[];
+}
+
+export async function getHistorySnapshot(
+  project: string,
+  file: string,
+  at: string,
+): Promise<HistorySnapshot> {
+  const { data, error } = await api.GET('/api/projects/{name}/history/snapshot', {
+    params: { path: { name: project }, query: { file, at } },
+  });
+  if (error) throw new Error(`get-history-snapshot: ${JSON.stringify(error)}`);
+  return data as HistorySnapshot;
+}
+
+export async function diffHistory(
+  project: string,
+  file: string,
+  from: string,
+  to: string,
+): Promise<HistoryDiff> {
+  const { data, error } = await api.GET('/api/projects/{name}/history/diff', {
+    params: { path: { name: project }, query: { file, from, to } },
+  });
+  if (error) throw new Error(`diff-history: ${JSON.stringify(error)}`);
+  // The wire shape's `hunks` may come back as null when there's no
+  // diff ; normalise to [] so callers can hunks.length without a
+  // nullish dance.
+  const d = data as HistoryDiff & { hunks: HistoryDiffHunk[] | null };
+  return { ...d, hunks: d.hunks ?? [] };
+}
+
+export async function setHistoryLabel(
+  project: string,
+  file: string,
+  at: string,
+  label: string,
+): Promise<{ at: string; label: string }> {
+  const { data, error } = await api.POST('/api/projects/{name}/history/label', {
+    params: { path: { name: project } },
+    body: { file, at, label },
+  });
+  if (error) throw new Error(`set-history-label: ${JSON.stringify(error)}`);
+  return data as { at: string; label: string };
+}
+
+export async function restoreHistory(
+  project: string,
+  file: string,
+  at: string,
+): Promise<void> {
+  const { error, response } = await api.POST('/api/projects/{name}/history/restore', {
+    params: { path: { name: project } },
+    body: { file, at },
+  });
+  if (error && !response.ok) {
+    throw new Error(`restore-history: ${JSON.stringify(error)}`);
+  }
+}
+
+// --- Bibliography helpers ---------------------------------------------
+//
+// The three bib endpoints (bib-from-doi, zotero-sync, arxiv-search) are
+// typed in the OpenAPI spec as `application/json: string` with
+// `contentEncoding: base64` — huma annotates the `Body []byte`
+// envelope that way. On the wire the server actually emits structured
+// JSON (bib-from-doi, arxiv-search) or raw text/plain BibTeX
+// (zotero-sync), so we bypass openapi-fetch's type-driven parsing
+// here and read the raw response.
+
+export interface DoiImportResult {
+  entry: string;
+  target: string;
+  appended: boolean;
+}
+
+export async function bibFromDoi(
+  project: string,
+  doi: string,
+  target?: string,
+): Promise<DoiImportResult> {
+  const url = `/api/projects/${encodeURIComponent(project)}/bib/from-doi`;
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(target ? { doi, target } : { doi }),
+  });
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    throw new Error(body?.error ?? `bib-from-doi: HTTP ${resp.status}`);
+  }
+  return (await resp.json()) as DoiImportResult;
+}
+
+// zoteroSync returns the raw BibTeX bytes (text/plain) so the caller
+// can append them to refs.bib via the file API.
+export async function zoteroSync(
+  project: string,
+  userID: string,
+  apiKey: string,
+): Promise<string> {
+  const url = `/api/projects/${encodeURIComponent(project)}/zotero/sync`;
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userID, api_key: apiKey }),
+  });
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    throw new Error(body?.error ?? `zotero-sync: HTTP ${resp.status}`);
+  }
+  return resp.text();
+}
+
+export interface ArxivEntry {
+  id: string;
+  title: string;
+  authors: string[];
+  summary: string;
+  year: string;
+  primaryCategory: string;
+}
+
+export async function arxivSearch(
+  q: string,
+  max: number = 20,
+): Promise<ArxivEntry[]> {
+  const url = `/api/arxiv/search?q=${encodeURIComponent(q)}&max=${max}`;
+  const resp = await fetch(url);
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    throw new Error(body?.error ?? `arxiv-search: HTTP ${resp.status}`);
+  }
+  const data = (await resp.json()) as { entries?: ArxivEntry[] };
+  return data.entries ?? [];
+}
+
+// --- Admin email config -----------------------------------------------
+
+export interface EmailConfig {
+  configured: boolean;
+  from: string;
+}
+
+export async function getEmailConfig(): Promise<EmailConfig> {
+  const { data, error } = await api.GET('/api/admin/email/config');
+  if (error) throw new Error(`admin-email-config: ${JSON.stringify(error)}`);
+  return { configured: data.configured, from: data.from ?? '' };
+}

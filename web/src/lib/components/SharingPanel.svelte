@@ -10,10 +10,7 @@
   // file writes), viewer (read-only). The names mirror common SaaS
   // editor conventions so they're self-documenting in the UI.
 
-  interface Share {
-    user: string;
-    role: 'editor' | 'commenter' | 'viewer';
-  }
+  import { listSharing, upsertShare, deleteShare, type Share, type ShareRole } from '../api';
 
   interface Props {
     project: string;
@@ -23,7 +20,7 @@
 
   let shares = $state<Share[]>([]);
   let inviteUser = $state('');
-  let inviteRole = $state<Share['role']>('editor');
+  let inviteRole = $state<ShareRole>('editor');
   let loading = $state(true);
   let busy = $state(false);
   let error = $state<string | null>(null);
@@ -32,14 +29,7 @@
     loading = true;
     error = null;
     try {
-      const r = await fetch(`/api/projects/${encodeURIComponent(project)}/sharing`);
-      if (!r.ok) {
-        error = `Failed to load shares (HTTP ${r.status}).`;
-        shares = [];
-        return;
-      }
-      const body = (await r.json()) as { shares?: Share[] };
-      shares = body.shares ?? [];
+      shares = await listSharing(project);
     } catch (e) {
       error = e instanceof Error ? e.message : 'Network error loading shares.';
       shares = [];
@@ -59,18 +49,8 @@
     busy = true;
     error = null;
     try {
-      const r = await fetch(`/api/projects/${encodeURIComponent(project)}/sharing`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user, role: inviteRole }),
-      });
-      if (!r.ok) {
-        const body = await r.json().catch(() => ({}));
-        error = body?.error ?? `Failed to add share (HTTP ${r.status}).`;
-        return;
-      }
+      shares = await upsertShare(project, user, inviteRole);
       inviteUser = '';
-      await load();
     } catch (e) {
       error = e instanceof Error ? e.message : 'Network error adding share.';
     } finally {
@@ -83,15 +63,7 @@
     busy = true;
     error = null;
     try {
-      const r = await fetch(
-        `/api/projects/${encodeURIComponent(project)}/sharing/${encodeURIComponent(user)}`,
-        { method: 'DELETE' },
-      );
-      if (!r.ok && r.status !== 204) {
-        const body = await r.json().catch(() => ({}));
-        error = body?.error ?? `Failed to remove share (HTTP ${r.status}).`;
-        return;
-      }
+      await deleteShare(project, user);
       await load();
     } catch (e) {
       error = e instanceof Error ? e.message : 'Network error removing share.';
