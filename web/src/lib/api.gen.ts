@@ -104,6 +104,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/lsp": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List languages with an available LSP server
+         * @description Returns the set of language identifiers the SPA can use to open a WebSocket against /api/lsp/{lang}. Progressive enhancement gate.
+         */
+        get: operations["list-lsp-languages"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/project-templates": {
         parameters: {
             query?: never;
@@ -936,6 +956,16 @@ export interface components {
             readonly $schema?: string;
             items: components["schemas"]["ProjectOut"][] | null;
         };
+        LspListOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/LspListOutputBody.json
+             */
+            readonly $schema?: string;
+            /** @description Languages with a resolvable LSP server on this host */
+            available: string[] | null;
+        };
         NotebookExecInputBody: {
             /**
              * Format: uri
@@ -1289,6 +1319,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HealthzOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "list-lsp-languages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LspListOutputBody"];
                 };
             };
             /** @description Error */

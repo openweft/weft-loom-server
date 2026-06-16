@@ -828,6 +828,34 @@
                 ],
                 "type": "object"
             },
+            "LspListOutputBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/LspListOutputBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "available": {
+                        "description": "Languages with a resolvable LSP server on this host",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": [
+                            "array",
+                            "null"
+                        ]
+                    }
+                },
+                "required": [
+                    "available"
+                ],
+                "type": "object"
+            },
             "NotebookExecInputBody": {
                 "additionalProperties": false,
                 "properties": {
@@ -1551,6 +1579,38 @@
                 "summary": "Liveness probe",
                 "tags": [
                     "meta"
+                ]
+            }
+        },
+        "/api/lsp": {
+            "get": {
+                "description": "Returns the set of language identifiers the SPA can use to open a WebSocket against /api/lsp/{lang}. Progressive enhancement gate.",
+                "operationId": "list-lsp-languages",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/LspListOutputBody"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "List languages with an available LSP server",
+                "tags": [
+                    "lsp"
                 ]
             }
         },

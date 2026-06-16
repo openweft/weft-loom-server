@@ -146,15 +146,6 @@ func (s *Server) handleLSP(w http.ResponseWriter, r *http.Request) {
 	loomlsp.HandleWS(w, r.WithContext(ctx), r.PathValue("lang"), s.opts.Logger, s.wsAcceptOpts())
 }
 
-// handleLSPList : reports which LSP servers are actually resolvable
-// on this host so the SPA can enable LSP-backed features
-// progressively. Returns { available: ["latex", "go", …] }.
-func (s *Server) handleLSPList(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"available": loomlsp.AvailableLanguages(),
-	})
-}
 
 // handleSyncTeX answers SyncTeX queries against the .synctex.gz
 // stream pdflatex produced alongside the PDF.

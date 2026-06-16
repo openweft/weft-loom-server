@@ -338,7 +338,7 @@ func (s *Server) routes() {
 	// outside /api/projects/ since the LSP itself opens the project
 	// dir via initialize's rootUri.
 	s.mux.HandleFunc("GET /api/lsp/{lang}", s.requireAuth(s.handleLSP))
-	s.mux.HandleFunc("GET /api/lsp", s.requireAuth(s.handleLSPList))
+	// GET /api/lsp typed via mountLSPAPI (api_lsp.go).
 	// /api/projects/{name}/notebook/exec flows through the huma typed
 	// API — see mountNotebookAPI in api_notebook.go.
 	s.mux.HandleFunc("GET /api/projects/{name}/sync", s.handleSync)

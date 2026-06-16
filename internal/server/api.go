@@ -47,6 +47,7 @@ func mountAPI(mux *http.ServeMux, s *Server) huma.API {
 	mountNotebookAPI(api, s)
 	mountSeedAPI(api, s)
 	mountEventsAPI(api, s)
+	mountLSPAPI(api, s)
 
 	return api
 }

@@ -11,6 +11,8 @@
 import type { Diagnostic } from '@codemirror/lint';
 import type { EditorView } from '@codemirror/view';
 
+import { api } from './api';
+
 export interface LSPDiagnostic {
   range: {
     start: { line: number; character: number };
@@ -264,9 +266,8 @@ export function createLSPClient(opts: {
 // $PATH. Returns the set ; falls back to empty on error.
 export async function fetchAvailableLanguages(opts?: { signal?: AbortSignal }): Promise<Set<string>> {
   try {
-    const r = await fetch('/api/lsp', { signal: opts?.signal });
-    if (!r.ok) return new Set();
-    const data = await r.json() as { available?: string[] };
+    const { data, error } = await api.GET('/api/lsp', { signal: opts?.signal });
+    if (error || !data) return new Set();
     return new Set(data.available ?? []);
   } catch { return new Set(); }
 }
