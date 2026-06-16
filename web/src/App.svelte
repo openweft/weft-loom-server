@@ -30,6 +30,7 @@
   import Editor from './lib/components/Editor.svelte';
   import LatexSymbolPalette from './lib/components/LatexSymbolPalette.svelte';
   import BibliographyPanel from './lib/components/BibliographyPanel.svelte';
+  import SnippetsPanel from './lib/components/SnippetsPanel.svelte';
   import ArxivSearchPanel from './lib/components/ArxivSearchPanel.svelte';
   import ProjectTemplatesGallery from './lib/components/ProjectTemplatesGallery.svelte';
   import CommentsPanel from './lib/components/CommentsPanel.svelte';
@@ -1459,6 +1460,7 @@
               {#if currentFile && (currentFile.toLowerCase().endsWith('.tex') || language === 'latex' || language === 'markdown')}
                 <LatexSymbolPalette visible={language === 'latex'} />
                 <BibliographyPanel visible={language === 'latex'} {project} />
+                <SnippetsPanel visible={!!currentFile} {project} />
                 <ArxivSearchPanel visible={language === 'latex'} {project} onClose={() => { /* internal close */ }} />
                 <WordCountPanel
                   {project}
@@ -1469,6 +1471,7 @@
                 />
                 <CommentsPanel
                   {ydoc}
+                  {project}
                   file={currentFile}
                   {identity}
                   visible={!!currentFile}

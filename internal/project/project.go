@@ -46,11 +46,30 @@ type Store interface {
 	ReadFile(ctx context.Context, ident auth.Identity, project, path string) (io.ReadCloser, error)
 	WriteFile(ctx context.Context, ident auth.Identity, project, path string, body io.Reader) error
 	DeleteFile(ctx context.Context, ident auth.Identity, project, path string) error
+	// Rename moves a project from oldName to newName for the caller.
+	// Implementations refuse if newName already exists and propagate
+	// ErrInvalidName for malformed targets. Sidecars under
+	// .weft-loom/ (sharing.json, owner) travel with the directory ;
+	// git remotes stay attached because git is content-addressed.
+	Rename(ctx context.Context, ident auth.Identity, oldName, newName string) error
 }
 
 // ErrAccessDenied is returned by Store impls when the caller lacks
 // permission. Handlers translate to 403.
 var ErrAccessDenied = errors.New("project: access denied")
+
+// ErrProjectExists is returned by Rename when the destination name is
+// already taken. Handlers translate to 409.
+var ErrProjectExists = errors.New("project: destination name already exists")
+
+// ErrInvalidName is returned by Rename when the destination name is
+// empty, sanitises to empty, or matches the .weft-loom reserved
+// sidecar prefix. Handlers translate to 400.
+var ErrInvalidName = errors.New("project: invalid name")
+
+// ErrNotFound is returned by Rename when the source project doesn't
+// exist on disk. Handlers translate to 404.
+var ErrNotFound = errors.New("project: not found")
 
 // LocalStore is the V0.1 backend : projects live under <root>/<owner>/<name>.
 // Owner is identity.Subject ; the subject is sanitised to a safe
@@ -180,6 +199,62 @@ func (s *LocalStore) DeleteFile(_ context.Context, ident auth.Identity, project,
 	}
 	if err := os.Remove(full); err != nil && !os.IsNotExist(err) {
 		return err
+	}
+	return nil
+}
+
+// Rename moves <root>/<owner>/<oldName> to <root>/<owner>/<newName>.
+// The whole directory (including .weft-loom/ sidecars and the .git
+// dir) travels atomically via os.Rename — git remains attached
+// because git is content-addressed and the working directory name
+// doesn't matter. Refuses if the destination already exists ; that
+// gate is non-atomic vs concurrent Rename calls, but the second
+// caller in a race loses on os.Rename itself (ENOTEMPTY on most
+// filesystems) so we never silently overwrite.
+func (s *LocalStore) Rename(_ context.Context, ident auth.Identity, oldName, newName string) error {
+	if err := validateRenameTarget(newName); err != nil {
+		return err
+	}
+	src, err := s.projectDir(ident, oldName)
+	if err != nil {
+		return err
+	}
+	dst, err := s.projectDir(ident, newName)
+	if err != nil {
+		return err
+	}
+	if src == dst {
+		return ErrInvalidName
+	}
+	if _, err := os.Stat(src); os.IsNotExist(err) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	if _, err := os.Stat(dst); err == nil {
+		return ErrProjectExists
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return os.Rename(src, dst)
+}
+
+// validateRenameTarget : non-empty, no path separators, not
+// .weft-loom/ reserved name. Mirrors the sanitise() character set so
+// the same names that round-trip through other Store methods also
+// round-trip through Rename.
+func validateRenameTarget(name string) error {
+	if name == "" {
+		return ErrInvalidName
+	}
+	if strings.ContainsAny(name, "/\\") {
+		return ErrInvalidName
+	}
+	if name == ".weft-loom" || strings.HasPrefix(name, ".") {
+		return ErrInvalidName
+	}
+	if sanitise(name) != name {
+		return ErrInvalidName
 	}
 	return nil
 }

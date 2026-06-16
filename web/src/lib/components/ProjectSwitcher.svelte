@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { listProjects, type Project } from '../api';
+  import { listProjects, renameProject, type Project } from '../api';
   import CloneProjectDialog from './CloneProjectDialog.svelte';
   import { clickOutside } from '../actions';
 
@@ -41,6 +41,18 @@
   function onCloned(name: string) {
     refresh();
     onSwitch(name, 'markdown');
+  }
+
+  async function promptRename(p: Project) {
+    const newName = window.prompt(`Rename project "${p.name}" to :`, p.name);
+    if (!newName || newName === p.name) return;
+    try {
+      const renamed = await renameProject(p.name, newName.trim());
+      await refresh();
+      if (p.name === current) onSwitch(renamed.name, renamed.language ?? 'markdown');
+    } catch (e) {
+      window.alert(`Rename failed : ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   function toggle() {
@@ -89,16 +101,26 @@
       {:else}
         {#each projects as p}
           <li>
-            <button
-              type="button"
-              onclick={() => selectProject(p)}
-              class:menu-active={p.name === current}
-            >
-              <span class="font-mono">{p.name}</span>
-              {#if p.language}
-                <span class="badge badge-ghost badge-xs ml-auto">{p.language}</span>
-              {/if}
-            </button>
+            <div class="flex items-center gap-1 w-full">
+              <button
+                type="button"
+                onclick={() => selectProject(p)}
+                class:menu-active={p.name === current}
+                class="flex-1 text-left"
+              >
+                <span class="font-mono">{p.name}</span>
+                {#if p.language}
+                  <span class="badge badge-ghost badge-xs ml-auto">{p.language}</span>
+                {/if}
+              </button>
+              <button
+                type="button"
+                class="btn btn-ghost btn-xs opacity-50 hover:opacity-100"
+                title={`Rename ${p.name}`}
+                aria-label={`Rename ${p.name}`}
+                onclick={(e) => { e.stopPropagation(); promptRename(p); }}
+              >✎</button>
+            </div>
           </li>
         {/each}
       {/if}

@@ -37,6 +37,7 @@ func mountAPI(mux *http.ServeMux, s *Server) huma.API {
 	mountFilesIndexAPI(api, s)
 	mountCompileAPI(api, s)
 	mountSharingAPI(api, s)
+	mountNotifyAPI(api, s)
 	mountPublicShareAdminAPI(api, s)
 	mountHistoryAPI(api, s)
 	mountBibAPI(api, s)
@@ -48,6 +49,7 @@ func mountAPI(mux *http.ServeMux, s *Server) huma.API {
 	mountSeedAPI(api, s)
 	mountEventsAPI(api, s)
 	mountLSPAPI(api, s)
+	mountSnippetsAPI(api, s)
 
 	return api
 }

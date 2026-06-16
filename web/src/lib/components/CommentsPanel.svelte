@@ -32,9 +32,11 @@
     extractMentionedClientIDs,
     type MentionCandidate,
   } from '../mentionAutocomplete';
+  import { notifyMention } from '../api';
 
   interface Props {
     ydoc?: Y.Doc;
+    project?: string;
     file?: string;
     identity?: Identity;
     visible: boolean;
@@ -46,7 +48,24 @@
     // dispatches a `jumpToLine` effect on the editor.
     onJumpToOffset?: (from: number, to: number) => void;
   }
-  let { ydoc, file, identity, visible, awareness, onJumpToOffset }: Props = $props();
+  let { ydoc, project, file, identity, visible, awareness, onJumpToOffset }: Props = $props();
+
+  // notifyMentioned fan-outs the email notification for @-mentioned
+  // peers. Fire-and-forget : commenters never wait on SMTP.
+  // extractMentionedClientIDs returns lowercased mention NAMES — the
+  // server treats those as dex subjects (in dev mode subject == name ;
+  // in prod the SPA would surface email via awareness or a future
+  // identity lookup).
+  function notifyMentioned(recipients: string[], body: string) {
+    if (!project || !file || recipients.length === 0) return;
+    const excerpt = body.length > 400 ? body.slice(0, 400) + '…' : body;
+    notifyMention(project, {
+      recipients,
+      comment_excerpt: excerpt,
+      author_name: identity?.name ?? 'someone',
+      file_path: file,
+    }).catch(() => { /* fire-and-forget */ });
+  }
 
   let open = $state(false);
   let comments = $state<CommentRecord[]>([]);
@@ -300,6 +319,7 @@
       mentions,
     };
     ydoc.transact(() => { arr!.push([newCommentMap(rec)]); }, 'comment-add');
+    notifyMentioned(mentions, body);
     pendingBody = '';
   }
 
@@ -370,6 +390,7 @@
       mentions,
     };
     ydoc.transact(() => { arr!.push([newCommentMap(rec)]); }, 'comment-reply');
+    notifyMentioned(mentions, body);
     replyDrafts = { ...replyDrafts, [rootId]: '' };
     replyOpen = null;
   }

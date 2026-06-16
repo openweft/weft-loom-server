@@ -15,10 +15,15 @@
 //   - Markdown (link, image, code fence, table)
 //   - JS / TS (fn, const, import, log)
 //
-// Future : user-defined snippets persisted under .weft-loom/snippets.json.
-// V0.1 ships only the curated defaults.
+// V0.x : user snippets persisted under .weft-loom/snippets.json ; see
+// api_snippets.go for the wire contract. The SPA layers user entries on
+// top of the curated defaults below via mergeUserSnippets() — the host
+// component (Editor.svelte for completions, SnippetsPanel.svelte for
+// the picker) calls listSnippets() and feeds the result through that
+// helper before building the CompletionSource.
 
 import { snippetCompletion, type CompletionContext, type CompletionResult } from '@codemirror/autocomplete';
+import type { UserSnippet } from './api';
 
 interface SnippetDef {
   label: string;
@@ -284,3 +289,34 @@ export function snippetSource(language: string) {
 export function snippetCount(language: string): number {
   return SNIPPETS.filter((s) => !s.langs || s.langs.split(',').includes(language)).length;
 }
+
+// mergeUserSnippets lifts the per-project UserSnippet[] (from
+// listSnippets()) into the same SnippetDef shape as the curated table.
+// Order : shipped first, user appended — the snippetCompletion source
+// is order-insensitive (boost drives ranking) but the picker renders
+// users at the bottom so a familiar default isn't shoved off-screen by
+// a long user list. User scope→langs ; an empty scope means "all
+// languages", consistent with `langs: undefined` on the shipped side.
+export function mergeUserSnippets(shipped: SnippetDef[], user: UserSnippet[]): SnippetDef[] {
+  const lifted: SnippetDef[] = user.map((u) => ({
+    label: u.label,
+    detail: u.hotkey ? `user · ${u.hotkey}` : 'user snippet',
+    template: u.body,
+    langs: u.scope?.trim() ? u.scope.trim() : undefined,
+    type: 'snippet',
+  }));
+  return shipped.concat(lifted);
+}
+
+// shippedSnippets exposes the curated default table so the picker can
+// list them alongside the user entries. The completion source path
+// (snippetSource) is unchanged ; this is just a read accessor for
+// SnippetsPanel.svelte. Returned read-only — callers must not mutate.
+export function shippedSnippets(): readonly SnippetDef[] {
+  return SNIPPETS;
+}
+
+// Re-export the SnippetDef shape so consumers (the picker) can type
+// merged-collection callbacks against it without reaching into the
+// module's internals.
+export type { SnippetDef };

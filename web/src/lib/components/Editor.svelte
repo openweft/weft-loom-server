@@ -1402,6 +1402,10 @@
           title="Bibliography"
           aria-label="Toggle bibliography">📚</button>
         <button class="join-item btn btn-xs btn-ghost"
+          onclick={() => window.dispatchEvent(new CustomEvent('weft-loom:toggle-snippets'))}
+          title="Snippets (user-defined + built-in)"
+          aria-label="Toggle snippets">✂️</button>
+        <button class="join-item btn btn-xs btn-ghost"
           onclick={() => window.dispatchEvent(new CustomEvent('weft-loom:toggle-comments'))}
           title="Comments"
           aria-label="Toggle comments">💬</button>

@@ -9,6 +9,7 @@
   import LanguageSwitcher from './LanguageSwitcher.svelte';
   import ThemeSwitcher from './ThemeSwitcher.svelte';
   import SyncBadge from './SyncBadge.svelte';
+  import SaveIndicator from './SaveIndicator.svelte';
 
   interface Props {
     project: string;
@@ -55,6 +56,12 @@
   <div class="flex-none gap-1 sm:gap-2 flex items-center">
     <ProjectSwitcher current={project} {onSwitch} bind:open={switcherOpen} />
     <SyncBadge {project} />
+    <!-- Autosave indicator — Overleaf-style transient "Saved at
+         HH:MM:SS" chip ; subscribes to the global
+         weft-loom-autosave-completed event Editor.svelte fires
+         after a debounced writeFile() resolves. Sits next to
+         SyncBadge so save + push state line up visually. -->
+    <SaveIndicator />
     <!-- Language switcher is desktop-only — on phones the user
          doesn't usually flip locales mid-edit and the picker eats
          scarce horizontal room. -->

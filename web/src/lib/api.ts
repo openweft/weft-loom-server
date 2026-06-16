@@ -26,6 +26,23 @@ export async function listProjects(): Promise<Project[]> {
   return data.items ?? [];
 }
 
+// renameProject moves a project from oldName to newName for the
+// caller. Returns the resulting projectOut (Name + Language +
+// CreatedAt) so the UI can patch its local list without a full
+// re-fetch. Throws on 400 (invalid name), 409 (dest exists), or any
+// other non-2xx — callers should surface the message inline.
+export async function renameProject(
+  oldName: string,
+  newName: string,
+): Promise<Project> {
+  const { data, error } = await api.POST('/api/projects/{name}/rename', {
+    params: { path: { name: oldName } },
+    body: { newName },
+  });
+  if (error) throw new Error(`rename-project: ${JSON.stringify(error)}`);
+  return data as Project;
+}
+
 export async function listFiles(project: string): Promise<File[]> {
   const { data, error } = await api.GET('/api/projects/{name}/files', {
     params: { path: { name: project } },
@@ -169,6 +186,54 @@ export async function deleteShare(project: string, user: string): Promise<void> 
   // 204 No Content is success — openapi-fetch surfaces it via response.ok.
   if (error && !response.ok) {
     throw new Error(`delete-sharing: ${JSON.stringify(error)}`);
+  }
+}
+
+// --- User-defined snippets (per project) ------------------------------
+//
+// Backed by the .weft-loom/snippets.json sidecar (see api_snippets.go).
+// The SPA merges these with the curated SNIPPETS[] defaults in
+// snippets.ts before feeding the CodeMirror completion source — see
+// mergeUserSnippets there.
+
+export interface UserSnippet {
+  id: string;
+  label: string;
+  body: string;
+  hotkey?: string;
+  scope?: string;
+}
+
+export async function listSnippets(project: string): Promise<UserSnippet[]> {
+  const { data, error } = await api.GET('/api/projects/{name}/snippets', {
+    params: { path: { name: project } },
+  });
+  if (error) throw new Error(`list-snippets: ${JSON.stringify(error)}`);
+  return (data.snippets ?? []) as UserSnippet[];
+}
+
+// upsertSnippet returns the persisted snippet (with the server-
+// allocated id when the caller didn't supply one). Pass `id` to
+// replace an existing entry, omit it to create a fresh one.
+export async function upsertSnippet(
+  project: string,
+  snippet: { id?: string; label: string; body: string; hotkey?: string; scope?: string },
+): Promise<UserSnippet> {
+  const { data, error } = await api.POST('/api/projects/{name}/snippets', {
+    params: { path: { name: project } },
+    body: snippet,
+  });
+  if (error) throw new Error(`upsert-snippet: ${JSON.stringify(error)}`);
+  return data as UserSnippet;
+}
+
+export async function deleteSnippet(project: string, id: string): Promise<void> {
+  const { error, response } = await api.DELETE('/api/projects/{name}/snippets/{id}', {
+    params: { path: { name: project, id } },
+  });
+  // 204 No Content is success — openapi-fetch surfaces it via response.ok.
+  if (error && !response.ok) {
+    throw new Error(`delete-snippet: ${JSON.stringify(error)}`);
   }
 }
 
@@ -617,4 +682,30 @@ export async function chatStub(
   });
   if (error) throw new Error(`chat-stub: ${JSON.stringify(error)}`);
   return { reply: data.reply, model: data.model };
+}
+
+// notifyMention enqueues an email to every @-mentioned recipient
+// who is on the project's ACL. Fire-and-forget on the SPA side :
+// commenters never wait on SMTP. Server returns 202 immediately ;
+// SMTP runs in a background goroutine.
+//
+// recipientEmails is OPTIONAL — when omitted the server uses the
+// subject as the email (dev mode) ; in prod the SPA fills it from
+// awareness state where the peer publishes its email claim.
+export async function notifyMention(
+  project: string,
+  body: {
+    recipients: string[];
+    recipient_emails?: string[];
+    comment_excerpt: string;
+    author_name: string;
+    file_path: string;
+  },
+): Promise<{ notified: number }> {
+  const { data, error } = await api.POST('/api/projects/{name}/notify-mention', {
+    params: { path: { name: project } },
+    body,
+  });
+  if (error) throw new Error(`notify-mention: ${JSON.stringify(error)}`);
+  return { notified: data?.notified ?? 0 };
 }

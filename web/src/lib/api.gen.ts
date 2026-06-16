@@ -498,6 +498,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{name}/notify-mention": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Email-notify users @-mentioned in a comment
+         * @description Fire-and-forget : enqueues an email to every recipient who is also on the project's sharing.json. Returns 202 immediately ; SMTP runs in a background goroutine. Recipients NOT on the ACL refuse the whole request with 403 (anti-spam guard).
+         */
+        post: operations["notify-mention"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{name}/public-share": {
         parameters: {
             query?: never;
@@ -521,6 +541,26 @@ export interface paths {
          * @description Removes the sidecar + drops the token from the in-memory index. Idempotent — returns 204 even when no share existed.
          */
         delete: operations["delete-public-share"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{name}/rename": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rename a project
+         * @description Renames the project directory under the caller's storage root. Sidecars under .weft-loom/ (sharing.json, owner) travel with the directory ; git remotes stay attached because git is content-addressed. Refuses if the destination name is already taken (409) or invalid (400).
+         */
+        post: operations["rename-project"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -605,6 +645,50 @@ export interface paths {
          * @description Idempotent : returns 204 whether or not the user was on the ACL. Only the project owner may mutate.
          */
         delete: operations["delete-sharing"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{name}/snippets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List user-defined snippets for a project
+         * @description Returns the per-project snippets the user has saved. Merged client-side with the curated default set in snippets.ts.
+         */
+        get: operations["list-snippets"];
+        put?: never;
+        /**
+         * Create or update a user snippet
+         * @description Idempotent upsert keyed by id. If the request body omits id the server generates a 32-char hex id and returns it in the response. The per-project cap is 200 snippets ; the 201st create returns 413.
+         */
+        post: operations["upsert-snippet"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{name}/snippets/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove a user snippet
+         * @description Idempotent : returns 204 whether or not the id existed.
+         */
+        delete: operations["delete-snippet"];
         options?: never;
         head?: never;
         patch?: never;
@@ -995,6 +1079,37 @@ export interface components {
             /** @description Captured stdout from the cell's interpreter. */
             stdout: string;
         };
+        NotifyMentionInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/NotifyMentionInputBody.json
+             */
+            readonly $schema?: string;
+            /** @description Display name of the commenter. */
+            author_name: string;
+            /** @description First ~200 chars of the comment body for the email preview. */
+            comment_excerpt: string;
+            /** @description Path of the file the comment was attached to. */
+            file_path: string;
+            /** @description Optional emails aligned 1:1 with recipients. When absent the subject itself is used as the email. */
+            recipient_emails?: string[] | null;
+            /** @description Subjects (or display names matching sharing.json User entries) extracted from @-mentions in the comment body. */
+            recipients: string[] | null;
+        };
+        NotifyMentionOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/NotifyMentionOutputBody.json
+             */
+            readonly $schema?: string;
+            /**
+             * Format: int64
+             * @description Number of recipient addresses the mailer was asked to deliver to.
+             */
+            notified: number;
+        };
         OciImageStatus: {
             detail?: string;
             image: string;
@@ -1013,6 +1128,12 @@ export interface components {
             images: components["schemas"]["OciImageStatus"][] | null;
         };
         ProjectOut: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/ProjectOut.json
+             */
+            readonly $schema?: string;
             /**
              * Format: date-time
              * @description Last modification time of the project directory
@@ -1052,6 +1173,16 @@ export interface components {
             token: string;
             /** @description Shareable URL path (/public/<token>) */
             url: string;
+        };
+        RenameProjectInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/RenameProjectInputBody.json
+             */
+            readonly $schema?: string;
+            /** @description Desired new project name (filesystem-safe identifier) */
+            newName: string;
         };
         ScaffoldFile: {
             path: string;
@@ -1122,6 +1253,51 @@ export interface components {
             role: string;
             /** @description User subject (dex sub claim) to invite or update */
             user: string;
+        };
+        SnippetListOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/SnippetListOutputBody.json
+             */
+            readonly $schema?: string;
+            snippets: components["schemas"]["SnippetOut"][] | null;
+        };
+        SnippetOut: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/SnippetOut.json
+             */
+            readonly $schema?: string;
+            /** @description Verbatim text inserted at the cursor */
+            body: string;
+            /** @description Optional keyboard shortcut hint (display-only ; binding lives in the editor settings) */
+            hotkey?: string;
+            /** @description Stable id ; URL-safe (^[a-zA-Z0-9_-]{1,64}$) */
+            id: string;
+            /** @description Short label shown in the picker (e.g. "My preamble") */
+            label: string;
+            /** @description Optional language slug (latex|markdown|…) ; empty = all languages */
+            scope?: string;
+        };
+        SnippetUpsertInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/SnippetUpsertInputBody.json
+             */
+            readonly $schema?: string;
+            /** @description Verbatim text to insert (non-empty after trim) */
+            body: string;
+            /** @description Optional keyboard hint */
+            hotkey?: string;
+            /** @description Optional id ; absent → server generates one. Matches ^[a-zA-Z0-9_-]{1,64}$. */
+            id?: string;
+            /** @description Short label (non-empty after trim) */
+            label: string;
+            /** @description Optional language slug ; empty = all */
+            scope?: string;
         };
         StartCompileBody: {
             /**
@@ -2012,6 +2188,42 @@ export interface operations {
             };
         };
     };
+    "notify-mention": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NotifyMentionInputBody"];
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotifyMentionOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
     "get-public-share": {
         parameters: {
             query?: never;
@@ -2094,6 +2306,42 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "rename-project": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Current project name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RenameProjectInputBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectOut"];
+                };
             };
             /** @description Error */
             default: {
@@ -2253,6 +2501,106 @@ export interface operations {
                 name: string;
                 /** @description User subject to remove from the ACL */
                 user: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "list-snippets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SnippetListOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "upsert-snippet": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SnippetUpsertInputBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SnippetOut"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "delete-snippet": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project name */
+                name: string;
+                /** @description Snippet id to remove */
+                id: string;
             };
             cookie?: never;
         };

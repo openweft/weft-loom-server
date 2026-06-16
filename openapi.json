@@ -916,6 +916,82 @@
                 ],
                 "type": "object"
             },
+            "NotifyMentionInputBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/NotifyMentionInputBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "author_name": {
+                        "description": "Display name of the commenter.",
+                        "type": "string"
+                    },
+                    "comment_excerpt": {
+                        "description": "First ~200 chars of the comment body for the email preview.",
+                        "type": "string"
+                    },
+                    "file_path": {
+                        "description": "Path of the file the comment was attached to.",
+                        "type": "string"
+                    },
+                    "recipient_emails": {
+                        "description": "Optional emails aligned 1:1 with recipients. When absent the subject itself is used as the email.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": [
+                            "array",
+                            "null"
+                        ]
+                    },
+                    "recipients": {
+                        "description": "Subjects (or display names matching sharing.json User entries) extracted from @-mentions in the comment body.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": [
+                            "array",
+                            "null"
+                        ]
+                    }
+                },
+                "required": [
+                    "recipients",
+                    "comment_excerpt",
+                    "author_name",
+                    "file_path"
+                ],
+                "type": "object"
+            },
+            "NotifyMentionOutputBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/NotifyMentionOutputBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "notified": {
+                        "description": "Number of recipient addresses the mailer was asked to deliver to.",
+                        "format": "int64",
+                        "type": "integer"
+                    }
+                },
+                "required": [
+                    "notified"
+                ],
+                "type": "object"
+            },
             "OciImageStatus": {
                 "additionalProperties": false,
                 "properties": {
@@ -974,6 +1050,15 @@
             "ProjectOut": {
                 "additionalProperties": false,
                 "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/ProjectOut.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
                     "created_at": {
                         "description": "Last modification time of the project directory",
                         "format": "date-time",
@@ -1084,6 +1169,30 @@
                     "token",
                     "url",
                     "created"
+                ],
+                "type": "object"
+            },
+            "RenameProjectInputBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/RenameProjectInputBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "newName": {
+                        "description": "Desired new project name (filesystem-safe identifier)",
+                        "maxLength": 128,
+                        "minLength": 1,
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "newName"
                 ],
                 "type": "object"
             },
@@ -1264,6 +1373,112 @@
                 "required": [
                     "user",
                     "role"
+                ],
+                "type": "object"
+            },
+            "SnippetListOutputBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/SnippetListOutputBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "snippets": {
+                        "items": {
+                            "$ref": "#/components/schemas/SnippetOut"
+                        },
+                        "type": [
+                            "array",
+                            "null"
+                        ]
+                    }
+                },
+                "required": [
+                    "snippets"
+                ],
+                "type": "object"
+            },
+            "SnippetOut": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/SnippetOut.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "body": {
+                        "description": "Verbatim text inserted at the cursor",
+                        "type": "string"
+                    },
+                    "hotkey": {
+                        "description": "Optional keyboard shortcut hint (display-only ; binding lives in the editor settings)",
+                        "type": "string"
+                    },
+                    "id": {
+                        "description": "Stable id ; URL-safe (^[a-zA-Z0-9_-]{1,64}$)",
+                        "type": "string"
+                    },
+                    "label": {
+                        "description": "Short label shown in the picker (e.g. \"My preamble\")",
+                        "type": "string"
+                    },
+                    "scope": {
+                        "description": "Optional language slug (latex|markdown|\u2026) ; empty = all languages",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "id",
+                    "label",
+                    "body"
+                ],
+                "type": "object"
+            },
+            "SnippetUpsertInputBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/SnippetUpsertInputBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "body": {
+                        "description": "Verbatim text to insert (non-empty after trim)",
+                        "type": "string"
+                    },
+                    "hotkey": {
+                        "description": "Optional keyboard hint",
+                        "type": "string"
+                    },
+                    "id": {
+                        "description": "Optional id ; absent \u2192 server generates one. Matches ^[a-zA-Z0-9_-]{1,64}$.",
+                        "type": "string"
+                    },
+                    "label": {
+                        "description": "Short label (non-empty after trim)",
+                        "type": "string"
+                    },
+                    "scope": {
+                        "description": "Optional language slug ; empty = all",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "label",
+                    "body"
                 ],
                 "type": "object"
             },
@@ -2579,6 +2794,60 @@
                 ]
             }
         },
+        "/api/projects/{name}/notify-mention": {
+            "post": {
+                "description": "Fire-and-forget : enqueues an email to every recipient who is also on the project's sharing.json. Returns 202 immediately ; SMTP runs in a background goroutine. Recipients NOT on the ACL refuse the whole request with 403 (anti-spam guard).",
+                "operationId": "notify-mention",
+                "parameters": [
+                    {
+                        "description": "Project name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Project name",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/NotifyMentionInputBody"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "202": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/NotifyMentionOutputBody"
+                                }
+                            }
+                        },
+                        "description": "Accepted"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Email-notify users @-mentioned in a comment",
+                "tags": [
+                    "notify"
+                ]
+            }
+        },
         "/api/projects/{name}/public-share": {
             "delete": {
                 "description": "Removes the sidecar + drops the token from the in-memory index. Idempotent \u2014 returns 204 even when no share existed.",
@@ -2697,6 +2966,60 @@
                 "summary": "Issue (or rotate) a public-share token for the project",
                 "tags": [
                     "public-share"
+                ]
+            }
+        },
+        "/api/projects/{name}/rename": {
+            "post": {
+                "description": "Renames the project directory under the caller's storage root. Sidecars under .weft-loom/ (sharing.json, owner) travel with the directory ; git remotes stay attached because git is content-addressed. Refuses if the destination name is already taken (409) or invalid (400).",
+                "operationId": "rename-project",
+                "parameters": [
+                    {
+                        "description": "Current project name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Current project name",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/RenameProjectInputBody"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProjectOut"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Rename a project",
+                "tags": [
+                    "projects"
                 ]
             }
         },
@@ -2948,6 +3271,149 @@
                 "summary": "Remove a share entry",
                 "tags": [
                     "sharing"
+                ]
+            }
+        },
+        "/api/projects/{name}/snippets": {
+            "get": {
+                "description": "Returns the per-project snippets the user has saved. Merged client-side with the curated default set in snippets.ts.",
+                "operationId": "list-snippets",
+                "parameters": [
+                    {
+                        "description": "Project name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Project name",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SnippetListOutputBody"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "List user-defined snippets for a project",
+                "tags": [
+                    "snippets"
+                ]
+            },
+            "post": {
+                "description": "Idempotent upsert keyed by id. If the request body omits id the server generates a 32-char hex id and returns it in the response. The per-project cap is 200 snippets ; the 201st create returns 413.",
+                "operationId": "upsert-snippet",
+                "parameters": [
+                    {
+                        "description": "Project name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Project name",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/SnippetUpsertInputBody"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SnippetOut"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Create or update a user snippet",
+                "tags": [
+                    "snippets"
+                ]
+            }
+        },
+        "/api/projects/{name}/snippets/{id}": {
+            "delete": {
+                "description": "Idempotent : returns 204 whether or not the id existed.",
+                "operationId": "delete-snippet",
+                "parameters": [
+                    {
+                        "description": "Project name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Project name",
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Snippet id to remove",
+                        "in": "path",
+                        "name": "id",
+                        "required": true,
+                        "schema": {
+                            "description": "Snippet id to remove",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Remove a user snippet",
+                "tags": [
+                    "snippets"
                 ]
             }
         },

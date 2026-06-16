@@ -219,6 +219,59 @@ func (s *PostgresStore) DeleteFile(ctx context.Context, ident auth.Identity, pro
 	return nil
 }
 
+// Rename moves the project row in Postgres + the working tree on
+// disk. Both happen in one transaction so a crash mid-rename leaves
+// either the old name or the new one in a consistent state. The
+// UPDATE clause WHERE owner_subject=$1 doubles as the authorization
+// check ; an attacker renaming someone else's project hits 0 rows
+// affected and we surface ErrAccessDenied. A unique constraint on
+// (owner_subject, name) maps a name collision to ErrProjectExists.
+func (s *PostgresStore) Rename(ctx context.Context, ident auth.Identity, oldName, newName string) error {
+	if ident.Subject == "" {
+		return ErrAccessDenied
+	}
+	if err := validateRenameTarget(newName); err != nil {
+		return err
+	}
+	if oldName == newName {
+		return ErrInvalidName
+	}
+	src := s.projectDir(ident, oldName)
+	dst := s.projectDir(ident, newName)
+	if _, err := os.Stat(src); os.IsNotExist(err) {
+		return ErrNotFound
+	}
+	if _, err := os.Stat(dst); err == nil {
+		return ErrProjectExists
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("tx begin: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	tag, err := tx.Exec(ctx, `
+		UPDATE projects SET name = $3, updated_at = NOW()
+		WHERE  owner_subject = $1 AND name = $2`,
+		ident.Subject, oldName, newName)
+	if err != nil {
+		// Unique-violation on (owner_subject, name) — destination
+		// row already exists. PG SQLSTATE 23505.
+		if strings.Contains(err.Error(), "23505") {
+			return ErrProjectExists
+		}
+		return fmt.Errorf("rename row: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrAccessDenied
+	}
+	if err := os.Rename(src, dst); err != nil {
+		return fmt.Errorf("rename dir: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
 // authorize : caller must own the project. V0.3 will widen this to
 // project ACL via dex groups ; V0.2.1 keeps the per-owner gate that
 // LocalStore enforces too.
