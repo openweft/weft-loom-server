@@ -74,7 +74,13 @@ func relayShellToNATS(
 	if err != nil {
 		return fmt.Errorf("subscribe out: %w", err)
 	}
-	defer func() { _ = outSub.Unsubscribe() }()
+	// outSub gets swapped at L147 ; we read it fresh from the closure
+	// + nil-guard because re-subscribe can fail and leave it nil.
+	defer func() {
+		if outSub != nil {
+			_ = outSub.Unsubscribe()
+		}
+	}()
 
 	// Step 3 : publish open. The agent runs Validate on its side
 	// and starts the pty pump.
