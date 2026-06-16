@@ -176,8 +176,10 @@ func (s *Service) compileInWorkspace(
 		bytesOut  atomic.Uint64 // server → guest (open + stdin)
 		bytesIn   atomic.Uint64 // guest → server (stdout + exit code)
 		firstByte atomic.Int64  // unix-ms of first 'o' or 'e' frame
+		doneOnce  sync.Once
 	)
 	done := make(chan struct{})
+	signalDone := func() { doneOnce.Do(func() { close(done) }) }
 
 	sub, err := vm.Conn.Subscribe(outSubject, func(_ string, data []byte) {
 		if len(data) == 0 {
@@ -212,7 +214,7 @@ func (s *Service) compileInWorkspace(
 					logBuf = nil
 				}
 				mu.Unlock()
-				close(done)
+				signalDone()
 			}
 		}
 	})
