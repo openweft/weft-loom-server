@@ -18,6 +18,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/adapters/humago"
+
 	"github.com/openweft/weft-loom-server/internal/auth"
 	"github.com/openweft/weft-loom-server/internal/compile"
 	"github.com/openweft/weft-loom-server/internal/project"
@@ -42,13 +45,13 @@ func newPublicShareTestServer(t *testing.T) (*httptest.Server, *project.LocalSto
 	}
 
 	// Wrap the server so we can intercept the public-share routes
-	// without touching routes() / handlers.go. The order matters :
-	// /public/* routes don't pass through requireAuth, the admin
-	// routes do (s.requireAuth handles the dev-mode identity).
+	// without touching routes() / handlers.go. The 3 admin endpoints
+	// flow through huma (the migration target) ; the 2 /public/* routes
+	// stay raw because they're no-auth + binary streaming. Identity
+	// injection is wired below for the admin path.
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/projects/{name}/public-share", s.requireAuth(s.handlePublicShareCreate))
-	mux.HandleFunc("GET /api/projects/{name}/public-share", s.requireAuth(s.handlePublicShareGet))
-	mux.HandleFunc("DELETE /api/projects/{name}/public-share", s.requireAuth(s.handlePublicShareDelete))
+	api := humago.New(mux, huma.DefaultConfig("weft-loom-server API (test)", "v1"))
+	mountPublicShareAdminAPI(api, s)
 	mux.HandleFunc("GET /public/{token}/files", s.handlePublicListFiles)
 	mux.HandleFunc("GET /public/{token}/files/{path...}", s.handlePublicReadFile)
 	// Everything else delegates to the real Server (so the seeded

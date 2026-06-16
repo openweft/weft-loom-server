@@ -31,6 +31,7 @@ package server
 //	GET    /public/{token}/files/{path...}          → octet-stream
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -43,6 +44,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/danielgtaylor/huma/v2"
 
 	"github.com/openweft/weft-loom-server/internal/auth"
 	"github.com/openweft/weft-loom-server/internal/eventbus"
@@ -229,93 +232,139 @@ func randomToken() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
-// handlePublicShareCreate generates a new token + persists it. If
-// one already exists for this project the call is idempotent : we
-// rotate to a new token (the prior URL stops working). Returns the
-// fresh token + the shareable path.
-func (s *Server) handlePublicShareCreate(w http.ResponseWriter, r *http.Request) {
-	ident, _ := auth.IdentityFrom(r.Context())
-	proj := projectName(r)
-	dir, err := s.projectWorkingDir(ident, proj)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	if _, statErr := os.Stat(dir); errors.Is(statErr, os.ErrNotExist) {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
-		return
-	}
-	// Make sure the index is hot so a rotation correctly evicts the
-	// prior token from the lookup map.
-	s.publicShares().ensureLoaded(s.projectStorageRoot())
-	if prev, ok := readPublicShare(dir); ok && prev.Token != "" {
-		s.publicShares().clear(prev.Token)
-	}
-	tok, err := randomToken()
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	rec := publicShareRecord{Token: tok, Created: time.Now().UTC().Format(time.RFC3339)}
-	if err := writePublicShare(dir, rec); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	s.publicShares().set(tok, publicShareTarget{Owner: sanitiseFor(ident.Subject), Project: sanitiseFor(proj)})
-	s.events.Publish(eventbus.Event{
-		Source: "server", Component: "publicshare", Verb: "create",
-		Project: proj, Fields: map[string]any{"subject": ident.Subject},
-	})
-	writeJSON(w, http.StatusOK, map[string]string{
-		"token":   tok,
-		"url":     "/public/" + tok,
-		"created": rec.Created,
-	})
+// publicShareInput identifies the target project via the {name} path
+// segment. Shared across the 3 admin huma operations.
+type publicShareInput struct {
+	Project string `path:"name" doc:"Project name (filesystem-safe identifier)"`
 }
 
-// handlePublicShareGet returns the current token (404 if none).
-func (s *Server) handlePublicShareGet(w http.ResponseWriter, r *http.Request) {
-	ident, _ := auth.IdentityFrom(r.Context())
-	dir, err := s.projectWorkingDir(ident, projectName(r))
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
+// publicShareOut is the JSON envelope returned by POST + GET.
+type publicShareOut struct {
+	Body struct {
+		Token   string `json:"token" doc:"32-character hex share token"`
+		URL     string `json:"url" doc:"Shareable URL path (/public/<token>)"`
+		Created string `json:"created" doc:"RFC3339 timestamp the token was issued"`
 	}
-	rec, ok := readPublicShare(dir)
-	if !ok || rec.Token == "" {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no public share"})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{
-		"token":   rec.Token,
-		"url":     "/public/" + rec.Token,
-		"created": rec.Created,
-	})
 }
 
-// handlePublicShareDelete removes the sidecar + drops the token
-// from the in-memory index. Idempotent : 204 even when no share
-// existed.
-func (s *Server) handlePublicShareDelete(w http.ResponseWriter, r *http.Request) {
-	ident, _ := auth.IdentityFrom(r.Context())
-	proj := projectName(r)
-	dir, err := s.projectWorkingDir(ident, proj)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	if prev, ok := readPublicShare(dir); ok && prev.Token != "" {
-		s.publicShares().clear(prev.Token)
-	}
-	if err := removePublicShare(dir); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	s.events.Publish(eventbus.Event{
-		Source: "server", Component: "publicshare", Verb: "revoke",
-		Project: proj, Fields: map[string]any{"subject": ident.Subject},
+// publicShareDeleteOut models a 204 No Content response.
+type publicShareDeleteOut struct {
+	Status int
+}
+
+// mountPublicShareAdminAPI wires the 3 owner-authenticated public-share
+// admin endpoints onto huma. The 2 public /public/{token}/... routes
+// stay on raw mux (binary streaming + no-auth — they don't fit huma's
+// typed model). The 3 admin ops :
+//
+//	POST   /api/projects/{name}/public-share  → { token, url, created }
+//	GET    /api/projects/{name}/public-share  → { token, url, created } | 404
+//	DELETE /api/projects/{name}/public-share  → 204
+//
+// All reuse the existing helpers (publicShareSidecar, ensureLoaded,
+// resolvePublic) — only the I/O envelope changes.
+func mountPublicShareAdminAPI(api huma.API, s *Server) {
+	huma.Register(api, huma.Operation{
+		OperationID: "create-public-share",
+		Method:      "POST",
+		Path:        "/api/projects/{name}/public-share",
+		Summary:     "Issue (or rotate) a public-share token for the project",
+		Description: "Generates a fresh 32-hex-char token + persists the sidecar. If a token already existed for this project it is replaced (the prior URL stops working). Returns the new token, its shareable URL, and the RFC3339 issue time.",
+		Tags:        []string{"public-share"},
+	}, func(ctx context.Context, in *publicShareInput) (*publicShareOut, error) {
+		if s == nil {
+			return nil, huma.Error500InternalServerError("server not initialised")
+		}
+		ident, _ := auth.IdentityFrom(ctx)
+		dir, err := s.projectWorkingDir(ident, in.Project)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("resolve project dir", err)
+		}
+		if _, statErr := os.Stat(dir); errors.Is(statErr, os.ErrNotExist) {
+			return nil, huma.Error404NotFound("project not found")
+		}
+		// Make sure the index is hot so a rotation correctly evicts the
+		// prior token from the lookup map.
+		s.publicShares().ensureLoaded(s.projectStorageRoot())
+		if prev, ok := readPublicShare(dir); ok && prev.Token != "" {
+			s.publicShares().clear(prev.Token)
+		}
+		tok, err := randomToken()
+		if err != nil {
+			return nil, huma.Error500InternalServerError("randomToken", err)
+		}
+		rec := publicShareRecord{Token: tok, Created: time.Now().UTC().Format(time.RFC3339)}
+		if err := writePublicShare(dir, rec); err != nil {
+			return nil, huma.Error500InternalServerError("writePublicShare", err)
+		}
+		s.publicShares().set(tok, publicShareTarget{Owner: sanitiseFor(ident.Subject), Project: sanitiseFor(in.Project)})
+		s.events.Publish(eventbus.Event{
+			Source: "server", Component: "publicshare", Verb: "create",
+			Project: in.Project, Fields: map[string]any{"subject": ident.Subject},
+		})
+		out := &publicShareOut{}
+		out.Body.Token = tok
+		out.Body.URL = "/public/" + tok
+		out.Body.Created = rec.Created
+		return out, nil
 	})
-	w.WriteHeader(http.StatusNoContent)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "get-public-share",
+		Method:      "GET",
+		Path:        "/api/projects/{name}/public-share",
+		Summary:     "Read the current public-share token for the project",
+		Description: "Returns the token + shareable URL when one exists ; 404 when the project has no active share.",
+		Tags:        []string{"public-share"},
+	}, func(ctx context.Context, in *publicShareInput) (*publicShareOut, error) {
+		if s == nil {
+			return nil, huma.Error500InternalServerError("server not initialised")
+		}
+		ident, _ := auth.IdentityFrom(ctx)
+		dir, err := s.projectWorkingDir(ident, in.Project)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("resolve project dir", err)
+		}
+		rec, ok := readPublicShare(dir)
+		if !ok || rec.Token == "" {
+			return nil, huma.Error404NotFound("no public share")
+		}
+		out := &publicShareOut{}
+		out.Body.Token = rec.Token
+		out.Body.URL = "/public/" + rec.Token
+		out.Body.Created = rec.Created
+		return out, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "delete-public-share",
+		Method:        "DELETE",
+		Path:          "/api/projects/{name}/public-share",
+		Summary:       "Revoke the public-share token for the project",
+		Description:   "Removes the sidecar + drops the token from the in-memory index. Idempotent — returns 204 even when no share existed.",
+		Tags:          []string{"public-share"},
+		DefaultStatus: http.StatusNoContent,
+	}, func(ctx context.Context, in *publicShareInput) (*publicShareDeleteOut, error) {
+		if s == nil {
+			return nil, huma.Error500InternalServerError("server not initialised")
+		}
+		ident, _ := auth.IdentityFrom(ctx)
+		dir, err := s.projectWorkingDir(ident, in.Project)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("resolve project dir", err)
+		}
+		if prev, ok := readPublicShare(dir); ok && prev.Token != "" {
+			s.publicShares().clear(prev.Token)
+		}
+		if err := removePublicShare(dir); err != nil {
+			return nil, huma.Error500InternalServerError("removePublicShare", err)
+		}
+		s.events.Publish(eventbus.Event{
+			Source: "server", Component: "publicshare", Verb: "revoke",
+			Project: in.Project, Fields: map[string]any{"subject": ident.Subject},
+		})
+		return &publicShareDeleteOut{Status: http.StatusNoContent}, nil
+	})
 }
 
 // publicToken pulls the {token} URL segment.

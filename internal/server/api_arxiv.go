@@ -31,6 +31,7 @@ import (
 	"time"
 )
 
+
 // arxivUpstream is the base URL for the arXiv query endpoint. Tests
 // flip this to an httptest.Server. Production points at the public
 // API.
@@ -78,25 +79,10 @@ type arxivSearchEntry struct {
 	PrimaryCategory string   `json:"primaryCategory"`
 }
 
-func (s *Server) handleArxivSearch(w http.ResponseWriter, r *http.Request) {
-	q := strings.TrimSpace(r.URL.Query().Get("q"))
-	if q == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "arxiv: missing q parameter"})
-		return
-	}
-	maxResults := 10
-	if v := r.URL.Query().Get("max"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 50 {
-			maxResults = n
-		}
-	}
-	res, err := arxivSearch(r.Context(), q, maxResults)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, res)
-}
+// The HTTP entry point (GET /api/arxiv/search) lives in api_bib.go
+// now ; this file carries only the Atom-parsing helpers (arxivSearch
+// + the typed arxivSearchResult shape) the huma handler delegates
+// into.
 
 // arxivSearch hits the upstream query endpoint + parses the Atom
 // response into our JSON shape.

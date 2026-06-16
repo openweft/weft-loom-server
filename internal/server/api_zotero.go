@@ -23,15 +23,12 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
-
-	"github.com/openweft/weft-loom-server/internal/eventbus"
 )
 
 // zoteroUpstream is the base URL for the Zotero REST API. Tests
@@ -39,54 +36,9 @@ import (
 // service.
 var zoteroUpstream = "https://api.zotero.org"
 
-// zoteroSyncRequest is the JSON body the SPA POSTs.
-type zoteroSyncRequest struct {
-	UserID string `json:"user_id"`
-	APIKey string `json:"api_key"`
-}
-
-func (s *Server) handleZoteroSync(w http.ResponseWriter, r *http.Request) {
-	proj := projectName(r)
-
-	var body zoteroSyncRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
-		return
-	}
-	userID := strings.TrimSpace(body.UserID)
-	apiKey := strings.TrimSpace(body.APIKey)
-	if userID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "zotero: missing user_id"})
-		return
-	}
-	if apiKey == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "zotero: missing api_key"})
-		return
-	}
-
-	bibtex, status, err := fetchZoteroBibTeX(r.Context(), userID, apiKey)
-	if err != nil {
-		// Mirror 401 so the SPA can surface "bad API key" specifically.
-		// Everything else collapses to 502 (upstream unreachable /
-		// malformed / quota exceeded).
-		out := http.StatusBadGateway
-		if status == http.StatusUnauthorized || status == http.StatusForbidden {
-			out = status
-		}
-		writeJSON(w, out, map[string]string{"error": err.Error()})
-		return
-	}
-
-	s.events.Publish(eventbus.Event{
-		Source: "server", Component: "zotero", Verb: "sync",
-		Project: proj,
-		Fields:  map[string]any{"user_id": userID, "bytes": len(bibtex)},
-	})
-
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(bibtex)
-}
+// The HTTP entry point (POST /api/projects/{name}/zotero/sync) lives
+// in api_bib.go now ; this file carries only the upstream client
+// (fetchZoteroBibTeX) the huma handler delegates into.
 
 // fetchZoteroBibTeX hits the upstream items endpoint with the user's
 // API key. Returns the raw BibTeX bytes on success, OR the upstream

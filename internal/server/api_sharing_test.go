@@ -2,13 +2,11 @@ package server
 
 // api_sharing_test.go — coverage for the per-project ACL handlers.
 //
-// The sharing routes aren't wired into Server.routes() yet (the
-// integration patch is documented in the V0.1 hand-off). To keep
-// these tests self-contained — and to verify the handlers stand on
-// their own merit before the wiring lands — we mount a tiny mux
-// pointing straight at handleSharingList / handleSharingUpsert /
-// handleSharingDelete. Same project store + same identity injection
-// the real Server.ServeHTTP does, just stripped to the sharing surface.
+// The sharing surface flows through huma (mountSharingAPI). To keep
+// these tests self-contained — independent of the rest of the routes
+// the full Server boots — we mount JUST the sharing operations on a
+// dedicated mux + huma API, wrapped by the same dev-mode identity
+// injection ServeHTTP performs for the real server.
 
 import (
 	"bytes"
@@ -20,6 +18,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
 	"github.com/openweft/weft-loom-server/internal/auth"
 	"github.com/openweft/weft-loom-server/internal/compile"
@@ -43,20 +44,20 @@ func newSharingTestServer(t *testing.T) (*httptest.Server, *project.LocalStore, 
 		t.Fatalf("New: %v", err)
 	}
 	mux := http.NewServeMux()
-	withIdent := func(h http.HandlerFunc) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			ident, ok := s.identify(r)
-			if !ok {
-				ident = auth.Identity{Subject: "dev-user"}
-			}
-			r = r.WithContext(auth.WithIdentity(r.Context(), ident))
-			h(w, r)
+	api := humago.New(mux, huma.DefaultConfig("sharing-test", "v1"))
+	mountSharingAPI(api, s)
+	// Wrap the mux so the dev-mode identity ("dev-user") lives in ctx
+	// before huma dispatches — mirrors what Server.ServeHTTP does in
+	// production.
+	wrapped := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ident, ok := s.identify(r)
+		if !ok {
+			ident = auth.Identity{Subject: "dev-user"}
 		}
-	}
-	mux.HandleFunc("GET /api/projects/{name}/sharing", withIdent(s.handleSharingList))
-	mux.HandleFunc("POST /api/projects/{name}/sharing", withIdent(s.handleSharingUpsert))
-	mux.HandleFunc("DELETE /api/projects/{name}/sharing/{user}", withIdent(s.handleSharingDelete))
-	return httptest.NewServer(mux), store, s
+		r = r.WithContext(auth.WithIdentity(r.Context(), ident))
+		mux.ServeHTTP(w, r)
+	})
+	return httptest.NewServer(wrapped), store, s
 }
 
 // seedSharingProject creates the project directory by writing one

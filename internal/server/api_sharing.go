@@ -24,15 +24,22 @@ package server
 //     SPA, then shared.
 //
 // Out of scope V0.1 : group ACLs, per-file ACLs, invitation tokens.
+//
+// Wire surface flows through huma so the OpenAPI spec + generated TS
+// client stay in sync with the handlers. The helpers below take a
+// context.Context instead of *http.Request so they're reusable across
+// the typed API and any future raw callers.
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
-	"net/http"
 	"strings"
+
+	"github.com/danielgtaylor/huma/v2"
 
 	"github.com/openweft/weft-loom-server/internal/auth"
 	"github.com/openweft/weft-loom-server/internal/eventbus"
@@ -67,8 +74,8 @@ var validRoles = map[string]bool{
 
 // readSharing pulls the sidecar. Missing file = empty doc, not an
 // error : a project with no invitations is the normal case.
-func (s *Server) readSharing(r *http.Request, ident auth.Identity, project string) (shareDoc, error) {
-	rc, err := s.opts.Projects.ReadFile(r.Context(), ident, project, sharingSidecarPath)
+func (s *Server) readSharing(ctx context.Context, ident auth.Identity, project string) (shareDoc, error) {
+	rc, err := s.opts.Projects.ReadFile(ctx, ident, project, sharingSidecarPath)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return shareDoc{Shares: []share{}}, nil
@@ -94,7 +101,7 @@ func (s *Server) readSharing(r *http.Request, ident auth.Identity, project strin
 }
 
 // writeSharing persists the sidecar back through the project store.
-func (s *Server) writeSharing(r *http.Request, ident auth.Identity, project string, doc shareDoc) error {
+func (s *Server) writeSharing(ctx context.Context, ident auth.Identity, project string, doc shareDoc) error {
 	if doc.Shares == nil {
 		doc.Shares = []share{}
 	}
@@ -102,13 +109,13 @@ func (s *Server) writeSharing(r *http.Request, ident auth.Identity, project stri
 	if err != nil {
 		return err
 	}
-	return s.opts.Projects.WriteFile(r.Context(), ident, project, sharingSidecarPath, strings.NewReader(string(body)))
+	return s.opts.Projects.WriteFile(ctx, ident, project, sharingSidecarPath, strings.NewReader(string(body)))
 }
 
 // ownerOf reads <project>/.weft-loom/owner. Returns "" + nil when
 // the file is absent so callers can fall back to "first caller wins".
-func (s *Server) ownerOf(r *http.Request, ident auth.Identity, project string) (string, error) {
-	rc, err := s.opts.Projects.ReadFile(r.Context(), ident, project, sharingOwnerPath)
+func (s *Server) ownerOf(ctx context.Context, ident auth.Identity, project string) (string, error) {
+	rc, err := s.opts.Projects.ReadFile(ctx, ident, project, sharingOwnerPath)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return "", nil
@@ -125,132 +132,199 @@ func (s *Server) ownerOf(r *http.Request, ident auth.Identity, project string) (
 
 // requireOwner enforces "only the owner may mutate". When no owner is
 // recorded yet we pin the caller as owner — see the package comment.
-// Returns false + having written an error response when the check
-// fails ; true means the caller is OK to proceed.
-func (s *Server) requireOwner(w http.ResponseWriter, r *http.Request, ident auth.Identity, project string) bool {
-	owner, err := s.ownerOf(r, ident, project)
+// Returns a huma.StatusError on refusal so the typed API surface can
+// translate it into the right HTTP code automatically.
+func (s *Server) requireOwner(ctx context.Context, ident auth.Identity, project string) error {
+	owner, err := s.ownerOf(ctx, ident, project)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return false
+		return huma.Error500InternalServerError("sharing: owner lookup", err)
 	}
 	if owner == "" {
 		// First mutator wins : pin ident as the owner.
-		if werr := s.opts.Projects.WriteFile(r.Context(), ident, project, sharingOwnerPath, strings.NewReader(ident.Subject+"\n")); werr != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": werr.Error()})
-			return false
+		if werr := s.opts.Projects.WriteFile(ctx, ident, project, sharingOwnerPath, strings.NewReader(ident.Subject+"\n")); werr != nil {
+			return huma.Error500InternalServerError("sharing: pin owner", werr)
 		}
-		return true
+		return nil
 	}
 	if owner != ident.Subject {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "sharing: only the project owner may modify ACL"})
-		return false
+		return huma.Error403Forbidden("sharing: only the project owner may modify ACL")
 	}
-	return true
+	return nil
 }
 
-func (s *Server) handleSharingList(w http.ResponseWriter, r *http.Request) {
-	ident, _ := auth.IdentityFrom(r.Context())
-	proj := projectName(r)
-	doc, err := s.readSharing(r, ident, proj)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, doc)
+// sharingShareOut is the wire shape for one ACL entry, with explicit
+// doc strings so the generated client + interactive docs are
+// self-explanatory.
+type sharingShareOut struct {
+	User string `json:"user" doc:"User subject (dex sub claim)"`
+	Role string `json:"role" doc:"editor | commenter | viewer"`
 }
 
-func (s *Server) handleSharingUpsert(w http.ResponseWriter, r *http.Request) {
-	ident, _ := auth.IdentityFrom(r.Context())
-	proj := projectName(r)
-
-	var in share
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&in); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
-		return
-	}
-	in.User = strings.TrimSpace(in.User)
-	in.Role = strings.TrimSpace(in.Role)
-	if in.User == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sharing: missing user"})
-		return
-	}
-	if !validRoles[in.Role] {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("sharing: unknown role %q (want editor|commenter|viewer)", in.Role)})
-		return
-	}
-
-	if !s.requireOwner(w, r, ident, proj) {
-		return
-	}
-
-	doc, err := s.readSharing(r, ident, proj)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	// Idempotent upsert : overwrite role if user already listed,
-	// otherwise append.
-	found := false
-	for i := range doc.Shares {
-		if strings.EqualFold(doc.Shares[i].User, in.User) {
-			doc.Shares[i].Role = in.Role
-			found = true
-			break
-		}
-	}
-	if !found {
-		doc.Shares = append(doc.Shares, in)
-	}
-	if err := s.writeSharing(r, ident, proj, doc); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	s.events.Publish(eventbus.Event{
-		Source: "server", Component: "sharing", Verb: "upsert",
-		Project: proj,
-		Fields:  map[string]any{"user": in.User, "role": in.Role},
-	})
-	writeJSON(w, http.StatusOK, doc)
+type sharingListInput struct {
+	Project string `path:"name" doc:"Project name"`
 }
 
-func (s *Server) handleSharingDelete(w http.ResponseWriter, r *http.Request) {
-	ident, _ := auth.IdentityFrom(r.Context())
-	proj := projectName(r)
-	user := strings.TrimSpace(r.PathValue("user"))
-	if user == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sharing: missing user in path"})
-		return
+type sharingListOutput struct {
+	Body struct {
+		Shares []sharingShareOut `json:"shares"`
 	}
+}
 
-	if !s.requireOwner(w, r, ident, proj) {
-		return
+type sharingUpsertInput struct {
+	Project string `path:"name" doc:"Project name"`
+	Body    struct {
+		User string `json:"user" doc:"User subject (dex sub claim) to invite or update"`
+		Role string `json:"role" doc:"One of editor | commenter | viewer"`
 	}
+}
 
-	doc, err := s.readSharing(r, ident, proj)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	out := doc.Shares[:0]
-	removed := false
+type sharingDeleteInput struct {
+	Project string `path:"name" doc:"Project name"`
+	User    string `path:"user" doc:"User subject to remove from the ACL"`
+}
+
+// sharingDeleteOutput carries the 204 No Content status. No Body
+// field — huma renders an empty response.
+type sharingDeleteOutput struct {
+	Status int
+}
+
+// shareDocToOut maps the on-disk doc into the typed wire output. The
+// JSON shape is byte-identical to the legacy raw handler (a sharing
+// object with a `shares` array of {user, role}).
+func shareDocToOut(doc shareDoc) []sharingShareOut {
+	out := make([]sharingShareOut, 0, len(doc.Shares))
 	for _, sh := range doc.Shares {
-		if strings.EqualFold(sh.User, user) {
-			removed = true
-			continue
+		out = append(out, sharingShareOut{User: sh.User, Role: sh.Role})
+	}
+	return out
+}
+
+func mountSharingAPI(api huma.API, s *Server) {
+	huma.Register(api, huma.Operation{
+		OperationID: "list-sharing",
+		Method:      "GET",
+		Path:        "/api/projects/{name}/sharing",
+		Summary:     "List the ACL entries for a project",
+		Description: "Returns the per-project share list. Any authed caller can GET — collaborators need to see whom else a project is shared with.",
+		Tags:        []string{"sharing"},
+	}, func(ctx context.Context, in *sharingListInput) (*sharingListOutput, error) {
+		out := &sharingListOutput{}
+		if s == nil {
+			out.Body.Shares = []sharingShareOut{}
+			return out, nil
 		}
-		out = append(out, sh)
-	}
-	doc.Shares = out
-	if err := s.writeSharing(r, ident, proj, doc); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	if removed {
+		ident, _ := auth.IdentityFrom(ctx)
+		doc, err := s.readSharing(ctx, ident, in.Project)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("sharing: read", err)
+		}
+		out.Body.Shares = shareDocToOut(doc)
+		return out, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "upsert-sharing",
+		Method:      "POST",
+		Path:        "/api/projects/{name}/sharing",
+		Summary:     "Invite or update a share entry",
+		Description: "Adds a new ACL entry or replaces the role of an existing one. Only the project owner may mutate the ACL ; the first caller of a mutating endpoint becomes the owner.",
+		Tags:        []string{"sharing"},
+	}, func(ctx context.Context, in *sharingUpsertInput) (*sharingListOutput, error) {
+		out := &sharingListOutput{}
+		if s == nil {
+			return nil, huma.Error500InternalServerError("server not initialised")
+		}
+		ident, _ := auth.IdentityFrom(ctx)
+
+		user := strings.TrimSpace(in.Body.User)
+		role := strings.TrimSpace(in.Body.Role)
+		if user == "" {
+			return nil, huma.Error400BadRequest("sharing: missing user")
+		}
+		if !validRoles[role] {
+			return nil, huma.Error400BadRequest(fmt.Sprintf("sharing: unknown role %q (want editor|commenter|viewer)", role))
+		}
+
+		if err := s.requireOwner(ctx, ident, in.Project); err != nil {
+			return nil, err
+		}
+
+		doc, err := s.readSharing(ctx, ident, in.Project)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("sharing: read", err)
+		}
+		// Idempotent upsert : overwrite role if user already listed,
+		// otherwise append.
+		found := false
+		for i := range doc.Shares {
+			if strings.EqualFold(doc.Shares[i].User, user) {
+				doc.Shares[i].Role = role
+				found = true
+				break
+			}
+		}
+		if !found {
+			doc.Shares = append(doc.Shares, share{User: user, Role: role})
+		}
+		if err := s.writeSharing(ctx, ident, in.Project, doc); err != nil {
+			return nil, huma.Error500InternalServerError("sharing: write", err)
+		}
 		s.events.Publish(eventbus.Event{
-			Source: "server", Component: "sharing", Verb: "delete",
-			Project: proj,
-			Fields:  map[string]any{"user": user},
+			Source: "server", Component: "sharing", Verb: "upsert",
+			Project: in.Project,
+			Fields:  map[string]any{"user": user, "role": role},
 		})
-	}
-	w.WriteHeader(http.StatusNoContent)
+		out.Body.Shares = shareDocToOut(doc)
+		return out, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "delete-sharing",
+		Method:        "DELETE",
+		Path:          "/api/projects/{name}/sharing/{user}",
+		Summary:       "Remove a share entry",
+		Description:   "Idempotent : returns 204 whether or not the user was on the ACL. Only the project owner may mutate.",
+		Tags:          []string{"sharing"},
+		DefaultStatus: 204,
+	}, func(ctx context.Context, in *sharingDeleteInput) (*sharingDeleteOutput, error) {
+		if s == nil {
+			return nil, huma.Error500InternalServerError("server not initialised")
+		}
+		ident, _ := auth.IdentityFrom(ctx)
+		user := strings.TrimSpace(in.User)
+		if user == "" {
+			return nil, huma.Error400BadRequest("sharing: missing user in path")
+		}
+
+		if err := s.requireOwner(ctx, ident, in.Project); err != nil {
+			return nil, err
+		}
+
+		doc, err := s.readSharing(ctx, ident, in.Project)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("sharing: read", err)
+		}
+		out := doc.Shares[:0]
+		removed := false
+		for _, sh := range doc.Shares {
+			if strings.EqualFold(sh.User, user) {
+				removed = true
+				continue
+			}
+			out = append(out, sh)
+		}
+		doc.Shares = out
+		if err := s.writeSharing(ctx, ident, in.Project, doc); err != nil {
+			return nil, huma.Error500InternalServerError("sharing: write", err)
+		}
+		if removed {
+			s.events.Publish(eventbus.Event{
+				Source: "server", Component: "sharing", Verb: "delete",
+				Project: in.Project,
+				Fields:  map[string]any{"user": user},
+			})
+		}
+		return &sharingDeleteOutput{Status: 204}, nil
+	})
 }

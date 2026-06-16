@@ -4,6 +4,26 @@
  */
 
 export interface paths {
+    "/api/arxiv/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Search arXiv.org
+         * @description Server-side proxy for arXiv's Atom-XML query API. Parses the upstream feed + returns a compact JSON envelope so the SPA doesn't pull a full XML parser into the bundle.
+         */
+        get: operations["arxiv-search"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects": {
         parameters: {
             query?: never;
@@ -15,6 +35,26 @@ export interface paths {
         get: operations["list-projects"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{name}/bib/from-doi": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import a BibTeX entry from a DOI
+         * @description Resolves a DOI through doi.org's content-negotiation API + appends the returned BibTeX to the target .bib (refs.bib by default).
+         */
+        post: operations["bib-from-doi"];
         delete?: never;
         options?: never;
         head?: never;
@@ -61,10 +101,240 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{name}/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List a file's snapshot timeline
+         * @description Returns the per-file edit history (newest first). Content is elided ; use the snapshot endpoint to fetch a single revision's text. Refuses .weft-loom/ paths (returns an empty list).
+         */
+        get: operations["list-history"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{name}/history/diff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Diff two snapshots (or one snapshot vs the live file)
+         * @description When `to` is omitted or equal to `live`, the right-hand side is the current on-disk file.
+         */
+        get: operations["diff-history"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{name}/history/label": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Attach / rename / clear a label on a snapshot
+         * @description Empty `label` clears the existing label.
+         */
+        post: operations["set-history-label"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{name}/history/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restore a file to a prior snapshot
+         * @description Writes the snapshot's content back to the live file. Returns 204 on success. Refuses .weft-loom/ paths with 403 — pre-fix snapshots predate the privilege-escalation guard in handleWriteFile.
+         */
+        post: operations["restore-history"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{name}/history/snapshot": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Fetch one snapshot's full content */
+        get: operations["get-history-snapshot"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{name}/public-share": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the current public-share token for the project
+         * @description Returns the token + shareable URL when one exists ; 404 when the project has no active share.
+         */
+        get: operations["get-public-share"];
+        put?: never;
+        /**
+         * Issue (or rotate) a public-share token for the project
+         * @description Generates a fresh 32-hex-char token + persists the sidecar. If a token already existed for this project it is replaced (the prior URL stops working). Returns the new token, its shareable URL, and the RFC3339 issue time.
+         */
+        post: operations["create-public-share"];
+        /**
+         * Revoke the public-share token for the project
+         * @description Removes the sidecar + drops the token from the in-memory index. Idempotent — returns 204 even when no share existed.
+         */
+        delete: operations["delete-public-share"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{name}/sharing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the ACL entries for a project
+         * @description Returns the per-project share list. Any authed caller can GET — collaborators need to see whom else a project is shared with.
+         */
+        get: operations["list-sharing"];
+        put?: never;
+        /**
+         * Invite or update a share entry
+         * @description Adds a new ACL entry or replaces the role of an existing one. Only the project owner may mutate the ACL ; the first caller of a mutating endpoint becomes the owner.
+         */
+        post: operations["upsert-sharing"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{name}/sharing/{user}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove a share entry
+         * @description Idempotent : returns 204 whether or not the user was on the ACL. Only the project owner may mutate.
+         */
+        delete: operations["delete-sharing"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{name}/zotero/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Relay a Zotero library export as BibTeX
+         * @description Hits api.zotero.org/users/<id>/items?format=bibtex with the caller-supplied API key + streams the raw BibTeX bytes back. Response Content-Type is text/plain ; the SPA appends the result to refs.bib via the file API.
+         */
+        post: operations["zotero-sync"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        DiffLine: {
+            kind: string;
+            /** Format: int64 */
+            newLineNum: number;
+            /** Format: int64 */
+            oldLineNum: number;
+            text: string;
+        };
+        DiffSummary: {
+            /** Format: int64 */
+            added: number;
+            /** Format: int64 */
+            removed: number;
+        };
+        DoiToBibInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/DoiToBibInputBody.json
+             */
+            readonly $schema?: string;
+            /** @description DOI in bare form (10.NNNN/suffix) or as a doi.org URL */
+            doi: string;
+            /** @description Optional target .bib file ; defaults to the first .bib in the project or refs.bib */
+            target?: string;
+        };
+        Entry: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/Entry.json
+             */
+            readonly $schema?: string;
+            author: string;
+            content?: string;
+            label?: string;
+            /** Format: int64 */
+            size: number;
+            /** Format: date-time */
+            ts: string;
+        };
         ErrorDetail: {
             /** @description Where the error occurred, e.g. 'body.items[3].tags' or 'path.thing-id' */
             location?: string;
@@ -123,6 +393,80 @@ export interface components {
              */
             size: number;
         };
+        HistoryDiffOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/HistoryDiffOutputBody.json
+             */
+            readonly $schema?: string;
+            from: string;
+            hunks: components["schemas"]["Hunk"][] | null;
+            summary: components["schemas"]["DiffSummary"];
+            to: string;
+        };
+        HistoryEntryOut: {
+            author?: string;
+            label?: string;
+            /** Format: int64 */
+            size: number;
+            /**
+             * Format: date-time
+             * @description RFC3339Nano timestamp
+             */
+            ts: string;
+        };
+        HistoryLabelInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/HistoryLabelInputBody.json
+             */
+            readonly $schema?: string;
+            at: string;
+            file: string;
+            /** @description New label ; empty clears */
+            label: string;
+        };
+        HistoryLabelOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/HistoryLabelOutputBody.json
+             */
+            readonly $schema?: string;
+            /** Format: date-time */
+            at: string;
+            label: string;
+        };
+        HistoryListOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/HistoryListOutputBody.json
+             */
+            readonly $schema?: string;
+            entries: components["schemas"]["HistoryEntryOut"][] | null;
+        };
+        HistoryRestoreInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/HistoryRestoreInputBody.json
+             */
+            readonly $schema?: string;
+            at: string;
+            file: string;
+        } & {
+            [key: string]: unknown;
+        };
+        Hunk: {
+            lines: components["schemas"]["DiffLine"][] | null;
+            /** Format: int64 */
+            newStart: number;
+            /** Format: int64 */
+            oldStart: number;
+        };
         ListFilesOutputBody: {
             /**
              * Format: uri
@@ -151,6 +495,47 @@ export interface components {
             language?: string;
             /** @description Project name (filesystem-safe identifier) */
             name: string;
+        };
+        PublicShareOutBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/PublicShareOutBody.json
+             */
+            readonly $schema?: string;
+            /** @description RFC3339 timestamp the token was issued */
+            created: string;
+            /** @description 32-character hex share token */
+            token: string;
+            /** @description Shareable URL path (/public/<token>) */
+            url: string;
+        };
+        SharingListOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/SharingListOutputBody.json
+             */
+            readonly $schema?: string;
+            shares: components["schemas"]["SharingShareOut"][] | null;
+        };
+        SharingShareOut: {
+            /** @description editor | commenter | viewer */
+            role: string;
+            /** @description User subject (dex sub claim) */
+            user: string;
+        };
+        SharingUpsertInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/SharingUpsertInputBody.json
+             */
+            readonly $schema?: string;
+            /** @description One of editor | commenter | viewer */
+            role: string;
+            /** @description User subject (dex sub claim) to invite or update */
+            user: string;
         };
         StartCompileBody: {
             /**
@@ -182,6 +567,20 @@ export interface components {
             /** @description Job identifier ; tail logs via GET /api/projects/{name}/compile/{id} (SSE). */
             id: string;
         };
+        ZoteroSyncInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/ZoteroSyncInputBody.json
+             */
+            readonly $schema?: string;
+            /** @description Zotero API key with library:read permission */
+            api_key: string;
+            /** @description Reserved for future use ; current API streams the raw BibTeX back to the client */
+            target?: string;
+            /** @description Numeric Zotero user ID (from zotero.org/settings/keys) */
+            user_id: string;
+        };
     };
     responses: never;
     parameters: never;
@@ -191,6 +590,41 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    "arxiv-search": {
+        parameters: {
+            query?: {
+                /** @description Search query (passed to arXiv as all:<q>) */
+                q?: string;
+                /** @description Max results (default 10, capped 50) */
+                max?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    "Content-Type"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": string;
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
     "list-projects": {
         parameters: {
             query?: never;
@@ -207,6 +641,43 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ListProjectsOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "bib-from-doi": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DoiToBibInputBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    "Content-Type"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": string;
                 };
             };
             /** @description Error */
@@ -275,6 +746,418 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ListFilesOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "list-history": {
+        parameters: {
+            query?: {
+                /** @description File path relative to the project root */
+                file?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Project name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HistoryListOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "diff-history": {
+        parameters: {
+            query?: {
+                /** @description File path relative to the project root */
+                file?: string;
+                /** @description RFC3339 / RFC3339Nano timestamp of the older snapshot */
+                from?: string;
+                /** @description RFC3339 timestamp of the newer snapshot, or 'live' (default) for the on-disk file */
+                to?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Project name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HistoryDiffOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "set-history-label": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HistoryLabelInputBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HistoryLabelOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "restore-history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HistoryRestoreInputBody"];
+            };
+        };
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "get-history-snapshot": {
+        parameters: {
+            query?: {
+                /** @description File path relative to the project root */
+                file?: string;
+                /** @description RFC3339 / RFC3339Nano timestamp of the snapshot */
+                at?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Project name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Entry"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "get-public-share": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project name (filesystem-safe identifier) */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicShareOutBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "create-public-share": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project name (filesystem-safe identifier) */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicShareOutBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "delete-public-share": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project name (filesystem-safe identifier) */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "list-sharing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SharingListOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "upsert-sharing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SharingUpsertInputBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SharingListOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "delete-sharing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project name */
+                name: string;
+                /** @description User subject to remove from the ACL */
+                user: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "zotero-sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ZoteroSyncInputBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    "Content-Type"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": string;
                 };
             };
             /** @description Error */

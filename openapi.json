@@ -1,1 +1,1579 @@
-{"components":{"schemas":{"ErrorDetail":{"additionalProperties":false,"properties":{"location":{"description":"Where the error occurred, e.g. 'body.items[3].tags' or 'path.thing-id'","type":"string"},"message":{"description":"Error message text","type":"string"},"value":{"description":"The value at the given location"}},"type":"object"},"ErrorModel":{"additionalProperties":false,"properties":{"$schema":{"description":"A URL to the JSON Schema for this object.","examples":["https://example.com/schemas/ErrorModel.json"],"format":"uri","readOnly":true,"type":"string"},"detail":{"description":"A human-readable explanation specific to this occurrence of the problem.","examples":["Property foo is required but is missing."],"type":"string"},"errors":{"description":"Optional list of individual error details","items":{"$ref":"#/components/schemas/ErrorDetail"},"type":["array","null"]},"instance":{"description":"A URI reference that identifies the specific occurrence of the problem.","examples":["https://example.com/error-log/abc123"],"format":"uri","type":"string"},"status":{"description":"HTTP status code","examples":[400],"format":"int64","type":"integer"},"title":{"description":"A short, human-readable summary of the problem type. This value should not change between occurrences of the error.","examples":["Bad Request"],"type":"string"},"type":{"default":"about:blank","description":"A URI reference to human-readable documentation for the error.","examples":["https://example.com/errors/example"],"format":"uri","type":"string"}},"type":"object"},"FileOut":{"additionalProperties":false,"properties":{"dir":{"description":"True when the entry is a directory","type":"boolean"},"path":{"description":"Path relative to the project root","type":"string"},"size":{"description":"Size in bytes","format":"int64","type":"integer"}},"required":["path","size","dir"],"type":"object"},"ListFilesOutputBody":{"additionalProperties":false,"properties":{"$schema":{"description":"A URL to the JSON Schema for this object.","examples":["https://example.com/schemas/ListFilesOutputBody.json"],"format":"uri","readOnly":true,"type":"string"},"items":{"items":{"$ref":"#/components/schemas/FileOut"},"type":["array","null"]}},"required":["items"],"type":"object"},"ListProjectsOutputBody":{"additionalProperties":false,"properties":{"$schema":{"description":"A URL to the JSON Schema for this object.","examples":["https://example.com/schemas/ListProjectsOutputBody.json"],"format":"uri","readOnly":true,"type":"string"},"items":{"items":{"$ref":"#/components/schemas/ProjectOut"},"type":["array","null"]}},"required":["items"],"type":"object"},"ProjectOut":{"additionalProperties":false,"properties":{"created_at":{"description":"Last modification time of the project directory","format":"date-time","type":"string"},"language":{"description":"Detected language hint (latex / go / cpp / python / rust / javascript / markdown)","type":"string"},"name":{"description":"Project name (filesystem-safe identifier)","type":"string"}},"required":["name","created_at"],"type":"object"},"StartCompileBody":{"additionalProperties":false,"properties":{"$schema":{"description":"A URL to the JSON Schema for this object.","examples":["https://example.com/schemas/StartCompileBody.json"],"format":"uri","readOnly":true,"type":"string"},"bib":{"description":"Bibliography processor : bibtex | biber. Defaults to bibtex.","type":"string"},"command":{"description":"Optional verbatim shell command — overrides the language's default when set. Inside the workspace μVM, the dispatcher runs sh -c \u003ccommand\u003e.","type":"string"},"engine":{"description":"LaTeX engine to invoke for the latex language : pdflatex | lualatex | xelatex. Defaults to pdflatex.","type":"string"},"entry":{"description":"Main source file (e.g. main.tex, main.go). Per-language default applies when empty.","type":"string"},"extra_args":{"description":"Appended to the language's default build command.","items":{"type":"string"},"type":["array","null"]},"language":{"description":"Sandbox image picker (latex / go / cpp / python / rust / javascript). Required.","type":"string"}},"required":["language"],"type":"object"},"StartCompileOutputBody":{"additionalProperties":false,"properties":{"$schema":{"description":"A URL to the JSON Schema for this object.","examples":["https://example.com/schemas/StartCompileOutputBody.json"],"format":"uri","readOnly":true,"type":"string"},"id":{"description":"Job identifier ; tail logs via GET /api/projects/{name}/compile/{id} (SSE).","type":"string"}},"required":["id"],"type":"object"}}},"info":{"title":"weft-loom-server API","version":"v1"},"openapi":"3.1.0","paths":{"/api/projects":{"get":{"operationId":"list-projects","responses":{"200":{"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ListProjectsOutputBody"}}},"description":"OK"},"default":{"content":{"application/problem+json":{"schema":{"$ref":"#/components/schemas/ErrorModel"}}},"description":"Error"}},"summary":"List the caller's projects","tags":["projects"]}},"/api/projects/{name}/compile":{"post":{"description":"Schedules an ephemeral compile in the language's sandbox image. Returns the job ID immediately ; logs + result stream over Server-Sent Events at /api/projects/{name}/compile/{id} (raw, outside the typed API).","operationId":"start-compile","parameters":[{"description":"Project name","in":"path","name":"name","required":true,"schema":{"description":"Project name","type":"string"}}],"requestBody":{"content":{"application/json":{"schema":{"$ref":"#/components/schemas/StartCompileBody"}}},"required":true},"responses":{"202":{"content":{"application/json":{"schema":{"$ref":"#/components/schemas/StartCompileOutputBody"}}},"description":"Accepted"},"default":{"content":{"application/problem+json":{"schema":{"$ref":"#/components/schemas/ErrorModel"}}},"description":"Error"}},"summary":"Start a compile job","tags":["compile"]}},"/api/projects/{name}/files":{"get":{"description":"Returns every file in the project as a flat list with relative paths. Directories appear with dir=true. Binary read/write of one file lands on /api/projects/{name}/files/{path...} (raw, outside the typed API).","operationId":"list-files","parameters":[{"description":"Project name","in":"path","name":"name","required":true,"schema":{"description":"Project name","type":"string"}}],"responses":{"200":{"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ListFilesOutputBody"}}},"description":"OK"},"default":{"content":{"application/problem+json":{"schema":{"$ref":"#/components/schemas/ErrorModel"}}},"description":"Error"}},"summary":"List files in a project","tags":["files"]}}}}
+{
+    "components": {
+        "schemas": {
+            "DiffLine": {
+                "additionalProperties": false,
+                "properties": {
+                    "kind": {
+                        "type": "string"
+                    },
+                    "newLineNum": {
+                        "format": "int64",
+                        "type": "integer"
+                    },
+                    "oldLineNum": {
+                        "format": "int64",
+                        "type": "integer"
+                    },
+                    "text": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "kind",
+                    "text",
+                    "oldLineNum",
+                    "newLineNum"
+                ],
+                "type": "object"
+            },
+            "DiffSummary": {
+                "additionalProperties": false,
+                "properties": {
+                    "added": {
+                        "format": "int64",
+                        "type": "integer"
+                    },
+                    "removed": {
+                        "format": "int64",
+                        "type": "integer"
+                    }
+                },
+                "required": [
+                    "added",
+                    "removed"
+                ],
+                "type": "object"
+            },
+            "DoiToBibInputBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/DoiToBibInputBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "doi": {
+                        "description": "DOI in bare form (10.NNNN/suffix) or as a doi.org URL",
+                        "type": "string"
+                    },
+                    "target": {
+                        "description": "Optional target .bib file ; defaults to the first .bib in the project or refs.bib",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "doi"
+                ],
+                "type": "object"
+            },
+            "Entry": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/Entry.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "author": {
+                        "type": "string"
+                    },
+                    "content": {
+                        "type": "string"
+                    },
+                    "label": {
+                        "type": "string"
+                    },
+                    "size": {
+                        "format": "int64",
+                        "type": "integer"
+                    },
+                    "ts": {
+                        "format": "date-time",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "ts",
+                    "author",
+                    "size"
+                ],
+                "type": "object"
+            },
+            "ErrorDetail": {
+                "additionalProperties": false,
+                "properties": {
+                    "location": {
+                        "description": "Where the error occurred, e.g. 'body.items[3].tags' or 'path.thing-id'",
+                        "type": "string"
+                    },
+                    "message": {
+                        "description": "Error message text",
+                        "type": "string"
+                    },
+                    "value": {
+                        "description": "The value at the given location"
+                    }
+                },
+                "type": "object"
+            },
+            "ErrorModel": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/ErrorModel.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "detail": {
+                        "description": "A human-readable explanation specific to this occurrence of the problem.",
+                        "examples": [
+                            "Property foo is required but is missing."
+                        ],
+                        "type": "string"
+                    },
+                    "errors": {
+                        "description": "Optional list of individual error details",
+                        "items": {
+                            "$ref": "#/components/schemas/ErrorDetail"
+                        },
+                        "type": [
+                            "array",
+                            "null"
+                        ]
+                    },
+                    "instance": {
+                        "description": "A URI reference that identifies the specific occurrence of the problem.",
+                        "examples": [
+                            "https://example.com/error-log/abc123"
+                        ],
+                        "format": "uri",
+                        "type": "string"
+                    },
+                    "status": {
+                        "description": "HTTP status code",
+                        "examples": [
+                            400
+                        ],
+                        "format": "int64",
+                        "type": "integer"
+                    },
+                    "title": {
+                        "description": "A short, human-readable summary of the problem type. This value should not change between occurrences of the error.",
+                        "examples": [
+                            "Bad Request"
+                        ],
+                        "type": "string"
+                    },
+                    "type": {
+                        "default": "about:blank",
+                        "description": "A URI reference to human-readable documentation for the error.",
+                        "examples": [
+                            "https://example.com/errors/example"
+                        ],
+                        "format": "uri",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "FileOut": {
+                "additionalProperties": false,
+                "properties": {
+                    "dir": {
+                        "description": "True when the entry is a directory",
+                        "type": "boolean"
+                    },
+                    "path": {
+                        "description": "Path relative to the project root",
+                        "type": "string"
+                    },
+                    "size": {
+                        "description": "Size in bytes",
+                        "format": "int64",
+                        "type": "integer"
+                    }
+                },
+                "required": [
+                    "path",
+                    "size",
+                    "dir"
+                ],
+                "type": "object"
+            },
+            "HistoryDiffOutputBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/HistoryDiffOutputBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "from": {
+                        "type": "string"
+                    },
+                    "hunks": {
+                        "items": {
+                            "$ref": "#/components/schemas/Hunk"
+                        },
+                        "type": [
+                            "array",
+                            "null"
+                        ]
+                    },
+                    "summary": {
+                        "$ref": "#/components/schemas/DiffSummary"
+                    },
+                    "to": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "from",
+                    "to",
+                    "summary",
+                    "hunks"
+                ],
+                "type": "object"
+            },
+            "HistoryEntryOut": {
+                "additionalProperties": false,
+                "properties": {
+                    "author": {
+                        "type": "string"
+                    },
+                    "label": {
+                        "type": "string"
+                    },
+                    "size": {
+                        "format": "int64",
+                        "type": "integer"
+                    },
+                    "ts": {
+                        "description": "RFC3339Nano timestamp",
+                        "format": "date-time",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "ts",
+                    "size"
+                ],
+                "type": "object"
+            },
+            "HistoryLabelInputBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/HistoryLabelInputBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "at": {
+                        "type": "string"
+                    },
+                    "file": {
+                        "type": "string"
+                    },
+                    "label": {
+                        "description": "New label ; empty clears",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "file",
+                    "at",
+                    "label"
+                ],
+                "type": "object"
+            },
+            "HistoryLabelOutputBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/HistoryLabelOutputBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "at": {
+                        "format": "date-time",
+                        "type": "string"
+                    },
+                    "label": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "at",
+                    "label"
+                ],
+                "type": "object"
+            },
+            "HistoryListOutputBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/HistoryListOutputBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "entries": {
+                        "items": {
+                            "$ref": "#/components/schemas/HistoryEntryOut"
+                        },
+                        "type": [
+                            "array",
+                            "null"
+                        ]
+                    }
+                },
+                "required": [
+                    "entries"
+                ],
+                "type": "object"
+            },
+            "HistoryRestoreInputBody": {
+                "additionalProperties": true,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/HistoryRestoreInputBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "at": {
+                        "type": "string"
+                    },
+                    "file": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "file",
+                    "at"
+                ],
+                "type": "object"
+            },
+            "Hunk": {
+                "additionalProperties": false,
+                "properties": {
+                    "lines": {
+                        "items": {
+                            "$ref": "#/components/schemas/DiffLine"
+                        },
+                        "type": [
+                            "array",
+                            "null"
+                        ]
+                    },
+                    "newStart": {
+                        "format": "int64",
+                        "type": "integer"
+                    },
+                    "oldStart": {
+                        "format": "int64",
+                        "type": "integer"
+                    }
+                },
+                "required": [
+                    "oldStart",
+                    "newStart",
+                    "lines"
+                ],
+                "type": "object"
+            },
+            "ListFilesOutputBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/ListFilesOutputBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "items": {
+                        "items": {
+                            "$ref": "#/components/schemas/FileOut"
+                        },
+                        "type": [
+                            "array",
+                            "null"
+                        ]
+                    }
+                },
+                "required": [
+                    "items"
+                ],
+                "type": "object"
+            },
+            "ListProjectsOutputBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/ListProjectsOutputBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "items": {
+                        "items": {
+                            "$ref": "#/components/schemas/ProjectOut"
+                        },
+                        "type": [
+                            "array",
+                            "null"
+                        ]
+                    }
+                },
+                "required": [
+                    "items"
+                ],
+                "type": "object"
+            },
+            "ProjectOut": {
+                "additionalProperties": false,
+                "properties": {
+                    "created_at": {
+                        "description": "Last modification time of the project directory",
+                        "format": "date-time",
+                        "type": "string"
+                    },
+                    "language": {
+                        "description": "Detected language hint (latex / go / cpp / python / rust / javascript / markdown)",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Project name (filesystem-safe identifier)",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "name",
+                    "created_at"
+                ],
+                "type": "object"
+            },
+            "PublicShareOutBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/PublicShareOutBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "created": {
+                        "description": "RFC3339 timestamp the token was issued",
+                        "type": "string"
+                    },
+                    "token": {
+                        "description": "32-character hex share token",
+                        "type": "string"
+                    },
+                    "url": {
+                        "description": "Shareable URL path (/public/<token>)",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "token",
+                    "url",
+                    "created"
+                ],
+                "type": "object"
+            },
+            "SharingListOutputBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/SharingListOutputBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "shares": {
+                        "items": {
+                            "$ref": "#/components/schemas/SharingShareOut"
+                        },
+                        "type": [
+                            "array",
+                            "null"
+                        ]
+                    }
+                },
+                "required": [
+                    "shares"
+                ],
+                "type": "object"
+            },
+            "SharingShareOut": {
+                "additionalProperties": false,
+                "properties": {
+                    "role": {
+                        "description": "editor | commenter | viewer",
+                        "type": "string"
+                    },
+                    "user": {
+                        "description": "User subject (dex sub claim)",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "user",
+                    "role"
+                ],
+                "type": "object"
+            },
+            "SharingUpsertInputBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/SharingUpsertInputBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "role": {
+                        "description": "One of editor | commenter | viewer",
+                        "type": "string"
+                    },
+                    "user": {
+                        "description": "User subject (dex sub claim) to invite or update",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "user",
+                    "role"
+                ],
+                "type": "object"
+            },
+            "StartCompileBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/StartCompileBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "bib": {
+                        "description": "Bibliography processor : bibtex | biber. Defaults to bibtex.",
+                        "type": "string"
+                    },
+                    "command": {
+                        "description": "Optional verbatim shell command \u2014 overrides the language's default when set. Inside the workspace \u03bcVM, the dispatcher runs sh -c <command>.",
+                        "type": "string"
+                    },
+                    "engine": {
+                        "description": "LaTeX engine to invoke for the latex language : pdflatex | lualatex | xelatex. Defaults to pdflatex.",
+                        "type": "string"
+                    },
+                    "entry": {
+                        "description": "Main source file (e.g. main.tex, main.go). Per-language default applies when empty.",
+                        "type": "string"
+                    },
+                    "extra_args": {
+                        "description": "Appended to the language's default build command.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": [
+                            "array",
+                            "null"
+                        ]
+                    },
+                    "language": {
+                        "description": "Sandbox image picker (latex / go / cpp / python / rust / javascript). Required.",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "language"
+                ],
+                "type": "object"
+            },
+            "StartCompileOutputBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/StartCompileOutputBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "id": {
+                        "description": "Job identifier ; tail logs via GET /api/projects/{name}/compile/{id} (SSE).",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "id"
+                ],
+                "type": "object"
+            },
+            "ZoteroSyncInputBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/ZoteroSyncInputBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "api_key": {
+                        "description": "Zotero API key with library:read permission",
+                        "type": "string"
+                    },
+                    "target": {
+                        "description": "Reserved for future use ; current API streams the raw BibTeX back to the client",
+                        "type": "string"
+                    },
+                    "user_id": {
+                        "description": "Numeric Zotero user ID (from zotero.org/settings/keys)",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "user_id",
+                    "api_key"
+                ],
+                "type": "object"
+            }
+        }
+    },
+    "info": {
+        "title": "weft-loom-server API",
+        "version": "v1"
+    },
+    "openapi": "3.1.0",
+    "paths": {
+        "/api/arxiv/search": {
+            "get": {
+                "description": "Server-side proxy for arXiv's Atom-XML query API. Parses the upstream feed + returns a compact JSON envelope so the SPA doesn't pull a full XML parser into the bundle.",
+                "operationId": "arxiv-search",
+                "parameters": [
+                    {
+                        "description": "Search query (passed to arXiv as all:<q>)",
+                        "explode": false,
+                        "in": "query",
+                        "name": "q",
+                        "schema": {
+                            "description": "Search query (passed to arXiv as all:<q>)",
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Max results (default 10, capped 50)",
+                        "explode": false,
+                        "in": "query",
+                        "name": "max",
+                        "schema": {
+                            "description": "Max results (default 10, capped 50)",
+                            "format": "int64",
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "contentEncoding": "base64",
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "OK",
+                        "headers": {
+                            "Content-Type": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Search arXiv.org",
+                "tags": [
+                    "bibliography"
+                ]
+            }
+        },
+        "/api/projects": {
+            "get": {
+                "operationId": "list-projects",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ListProjectsOutputBody"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "List the caller's projects",
+                "tags": [
+                    "projects"
+                ]
+            }
+        },
+        "/api/projects/{name}/bib/from-doi": {
+            "post": {
+                "description": "Resolves a DOI through doi.org's content-negotiation API + appends the returned BibTeX to the target .bib (refs.bib by default).",
+                "operationId": "bib-from-doi",
+                "parameters": [
+                    {
+                        "description": "Project name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Project name",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/DoiToBibInputBody"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "contentEncoding": "base64",
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "OK",
+                        "headers": {
+                            "Content-Type": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Import a BibTeX entry from a DOI",
+                "tags": [
+                    "bibliography"
+                ]
+            }
+        },
+        "/api/projects/{name}/compile": {
+            "post": {
+                "description": "Schedules an ephemeral compile in the language's sandbox image. Returns the job ID immediately ; logs + result stream over Server-Sent Events at /api/projects/{name}/compile/{id} (raw, outside the typed API).",
+                "operationId": "start-compile",
+                "parameters": [
+                    {
+                        "description": "Project name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Project name",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/StartCompileBody"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "202": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/StartCompileOutputBody"
+                                }
+                            }
+                        },
+                        "description": "Accepted"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Start a compile job",
+                "tags": [
+                    "compile"
+                ]
+            }
+        },
+        "/api/projects/{name}/files": {
+            "get": {
+                "description": "Returns every file in the project as a flat list with relative paths. Directories appear with dir=true. Binary read/write of one file lands on /api/projects/{name}/files/{path...} (raw, outside the typed API).",
+                "operationId": "list-files",
+                "parameters": [
+                    {
+                        "description": "Project name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Project name",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ListFilesOutputBody"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "List files in a project",
+                "tags": [
+                    "files"
+                ]
+            }
+        },
+        "/api/projects/{name}/history": {
+            "get": {
+                "description": "Returns the per-file edit history (newest first). Content is elided ; use the snapshot endpoint to fetch a single revision's text. Refuses .weft-loom/ paths (returns an empty list).",
+                "operationId": "list-history",
+                "parameters": [
+                    {
+                        "description": "Project name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Project name",
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "File path relative to the project root",
+                        "explode": false,
+                        "in": "query",
+                        "name": "file",
+                        "schema": {
+                            "description": "File path relative to the project root",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HistoryListOutputBody"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "List a file's snapshot timeline",
+                "tags": [
+                    "history"
+                ]
+            }
+        },
+        "/api/projects/{name}/history/diff": {
+            "get": {
+                "description": "When `to` is omitted or equal to `live`, the right-hand side is the current on-disk file.",
+                "operationId": "diff-history",
+                "parameters": [
+                    {
+                        "description": "Project name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Project name",
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "File path relative to the project root",
+                        "explode": false,
+                        "in": "query",
+                        "name": "file",
+                        "schema": {
+                            "description": "File path relative to the project root",
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "RFC3339 / RFC3339Nano timestamp of the older snapshot",
+                        "explode": false,
+                        "in": "query",
+                        "name": "from",
+                        "schema": {
+                            "description": "RFC3339 / RFC3339Nano timestamp of the older snapshot",
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "RFC3339 timestamp of the newer snapshot, or 'live' (default) for the on-disk file",
+                        "explode": false,
+                        "in": "query",
+                        "name": "to",
+                        "schema": {
+                            "description": "RFC3339 timestamp of the newer snapshot, or 'live' (default) for the on-disk file",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HistoryDiffOutputBody"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Diff two snapshots (or one snapshot vs the live file)",
+                "tags": [
+                    "history"
+                ]
+            }
+        },
+        "/api/projects/{name}/history/label": {
+            "post": {
+                "description": "Empty `label` clears the existing label.",
+                "operationId": "set-history-label",
+                "parameters": [
+                    {
+                        "description": "Project name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Project name",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/HistoryLabelInputBody"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HistoryLabelOutputBody"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Attach / rename / clear a label on a snapshot",
+                "tags": [
+                    "history"
+                ]
+            }
+        },
+        "/api/projects/{name}/history/restore": {
+            "post": {
+                "description": "Writes the snapshot's content back to the live file. Returns 204 on success. Refuses .weft-loom/ paths with 403 \u2014 pre-fix snapshots predate the privilege-escalation guard in handleWriteFile.",
+                "operationId": "restore-history",
+                "parameters": [
+                    {
+                        "description": "Project name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Project name",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/HistoryRestoreInputBody"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Restore a file to a prior snapshot",
+                "tags": [
+                    "history"
+                ]
+            }
+        },
+        "/api/projects/{name}/history/snapshot": {
+            "get": {
+                "operationId": "get-history-snapshot",
+                "parameters": [
+                    {
+                        "description": "Project name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Project name",
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "File path relative to the project root",
+                        "explode": false,
+                        "in": "query",
+                        "name": "file",
+                        "schema": {
+                            "description": "File path relative to the project root",
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "RFC3339 / RFC3339Nano timestamp of the snapshot",
+                        "explode": false,
+                        "in": "query",
+                        "name": "at",
+                        "schema": {
+                            "description": "RFC3339 / RFC3339Nano timestamp of the snapshot",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Entry"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Fetch one snapshot's full content",
+                "tags": [
+                    "history"
+                ]
+            }
+        },
+        "/api/projects/{name}/public-share": {
+            "delete": {
+                "description": "Removes the sidecar + drops the token from the in-memory index. Idempotent \u2014 returns 204 even when no share existed.",
+                "operationId": "delete-public-share",
+                "parameters": [
+                    {
+                        "description": "Project name (filesystem-safe identifier)",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Project name (filesystem-safe identifier)",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Revoke the public-share token for the project",
+                "tags": [
+                    "public-share"
+                ]
+            },
+            "get": {
+                "description": "Returns the token + shareable URL when one exists ; 404 when the project has no active share.",
+                "operationId": "get-public-share",
+                "parameters": [
+                    {
+                        "description": "Project name (filesystem-safe identifier)",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Project name (filesystem-safe identifier)",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PublicShareOutBody"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Read the current public-share token for the project",
+                "tags": [
+                    "public-share"
+                ]
+            },
+            "post": {
+                "description": "Generates a fresh 32-hex-char token + persists the sidecar. If a token already existed for this project it is replaced (the prior URL stops working). Returns the new token, its shareable URL, and the RFC3339 issue time.",
+                "operationId": "create-public-share",
+                "parameters": [
+                    {
+                        "description": "Project name (filesystem-safe identifier)",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Project name (filesystem-safe identifier)",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PublicShareOutBody"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Issue (or rotate) a public-share token for the project",
+                "tags": [
+                    "public-share"
+                ]
+            }
+        },
+        "/api/projects/{name}/sharing": {
+            "get": {
+                "description": "Returns the per-project share list. Any authed caller can GET \u2014 collaborators need to see whom else a project is shared with.",
+                "operationId": "list-sharing",
+                "parameters": [
+                    {
+                        "description": "Project name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Project name",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SharingListOutputBody"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "List the ACL entries for a project",
+                "tags": [
+                    "sharing"
+                ]
+            },
+            "post": {
+                "description": "Adds a new ACL entry or replaces the role of an existing one. Only the project owner may mutate the ACL ; the first caller of a mutating endpoint becomes the owner.",
+                "operationId": "upsert-sharing",
+                "parameters": [
+                    {
+                        "description": "Project name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Project name",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/SharingUpsertInputBody"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SharingListOutputBody"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Invite or update a share entry",
+                "tags": [
+                    "sharing"
+                ]
+            }
+        },
+        "/api/projects/{name}/sharing/{user}": {
+            "delete": {
+                "description": "Idempotent : returns 204 whether or not the user was on the ACL. Only the project owner may mutate.",
+                "operationId": "delete-sharing",
+                "parameters": [
+                    {
+                        "description": "Project name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Project name",
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "User subject to remove from the ACL",
+                        "in": "path",
+                        "name": "user",
+                        "required": true,
+                        "schema": {
+                            "description": "User subject to remove from the ACL",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Remove a share entry",
+                "tags": [
+                    "sharing"
+                ]
+            }
+        },
+        "/api/projects/{name}/zotero/sync": {
+            "post": {
+                "description": "Hits api.zotero.org/users/<id>/items?format=bibtex with the caller-supplied API key + streams the raw BibTeX bytes back. Response Content-Type is text/plain ; the SPA appends the result to refs.bib via the file API.",
+                "operationId": "zotero-sync",
+                "parameters": [
+                    {
+                        "description": "Project name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Project name",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ZoteroSyncInputBody"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "contentEncoding": "base64",
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "OK",
+                        "headers": {
+                            "Content-Type": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Relay a Zotero library export as BibTeX",
+                "tags": [
+                    "bibliography"
+                ]
+            }
+        }
+    }
+}

@@ -3,24 +3,37 @@ package server
 // api_history.go : REST surface for per-file change history.
 //
 //   GET  /api/projects/{name}/history?file=<path>
-//        → { entries: [{ ts, author, size }, ...] }  newest first
+//        → { entries: [{ ts, author, size, label }, ...] }  newest first
 //
 //   GET  /api/projects/{name}/history/snapshot?file=<path>&at=<rfc3339>
-//        → { ts, author, size, content }
+//        → { ts, author, size, content, label }
+//
+//   GET  /api/projects/{name}/history/diff?file=<path>&from=<rfc3339>&to=<rfc3339|live>
+//        → { from, to, summary: {added, removed}, hunks: [{...}] }
+//
+//   POST /api/projects/{name}/history/label
+//        body : { file, at, label }   empty label clears
+//        → { at, label }
 //
 //   POST /api/projects/{name}/history/restore
-//        body : { file: "...", at: "rfc3339" }
-//        → 204 No Content  (the file on disk now matches the snapshot)
+//        body : { file, at }
+//        → 204 No Content
+//
+// All five operations refuse to operate on .weft-loom/ paths : the
+// internal sidecar namespace (owner, sharing.json, ...) must never
+// be diffable / restorable since pre-fix snapshots predate the
+// privilege-escalation guard in handleWriteFile.
 //
 // The hook is invoked from handleWriteFile after every successful
 // write ; the Store debounces so quick bursts collapse to one entry.
 
 import (
-	"encoding/json"
-	"errors"
-	"net/http"
+	"context"
+	"io"
 	"strings"
 	"time"
+
+	"github.com/danielgtaylor/huma/v2"
 
 	"github.com/openweft/weft-loom-server/internal/auth"
 	"github.com/openweft/weft-loom-server/internal/eventbus"
@@ -56,164 +69,6 @@ func (s *Server) snapshotAfterWrite(ident auth.Identity, project, file string, c
 	}
 }
 
-func (s *Server) handleHistoryList(w http.ResponseWriter, r *http.Request) {
-	if s.history == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"entries": []any{}})
-		return
-	}
-	ident, _ := auth.IdentityFrom(r.Context())
-	file := r.URL.Query().Get("file")
-	if file == "" {
-		http.Error(w, "file query param required", http.StatusBadRequest)
-		return
-	}
-	if isInternalPath(file) {
-		writeJSON(w, http.StatusOK, map[string]any{"entries": []any{}})
-		return
-	}
-	dir, err := s.projectWorkingDir(ident, projectName(r))
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"entries": []any{}})
-		return
-	}
-	entries, err := s.history.List(dir, file)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	if entries == nil {
-		entries = []history.Entry{}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"entries": entries})
-}
-
-func (s *Server) handleHistorySnapshot(w http.ResponseWriter, r *http.Request) {
-	if s.history == nil {
-		http.Error(w, "history disabled", http.StatusNotFound)
-		return
-	}
-	ident, _ := auth.IdentityFrom(r.Context())
-	file := r.URL.Query().Get("file")
-	atStr := r.URL.Query().Get("at")
-	if file == "" || atStr == "" {
-		http.Error(w, "file + at query params required", http.StatusBadRequest)
-		return
-	}
-	if isInternalPath(file) {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
-	at, err := time.Parse(time.RFC3339Nano, atStr)
-	if err != nil {
-		at, err = time.Parse(time.RFC3339, atStr)
-	}
-	if err != nil {
-		http.Error(w, "at must be RFC3339 timestamp", http.StatusBadRequest)
-		return
-	}
-	dir, err := s.projectWorkingDir(ident, projectName(r))
-	if err != nil {
-		http.Error(w, "project lookup failed", http.StatusNotFound)
-		return
-	}
-	entry, err := s.history.Snapshot(dir, file, at)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-	writeJSON(w, http.StatusOK, entry)
-}
-
-// handleHistoryDiff returns a line-based diff between two snapshots,
-// or between one snapshot and the current live file.
-//
-//	GET /api/projects/{p}/history/diff
-//	     ?file=<path>
-//	     &from=<rfc3339>
-//	     [&to=<rfc3339>|live]    (default: live)
-//
-// Response : { from, to, summary: {added, removed}, hunks: [{...}] }
-func (s *Server) handleHistoryDiff(w http.ResponseWriter, r *http.Request) {
-	if s.history == nil {
-		http.Error(w, "history disabled", http.StatusNotFound)
-		return
-	}
-	ident, _ := auth.IdentityFrom(r.Context())
-	file := r.URL.Query().Get("file")
-	fromStr := r.URL.Query().Get("from")
-	toStr := r.URL.Query().Get("to")
-	if toStr == "" {
-		toStr = "live"
-	}
-	if file == "" || fromStr == "" {
-		http.Error(w, "file + from query params required", http.StatusBadRequest)
-		return
-	}
-	if isInternalPath(file) {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
-	fromTs, ferr := parseAtParam(fromStr)
-	if ferr != nil {
-		http.Error(w, "from must be RFC3339 timestamp", http.StatusBadRequest)
-		return
-	}
-	dir, err := s.projectWorkingDir(ident, projectName(r))
-	if err != nil {
-		http.Error(w, "project lookup failed", http.StatusNotFound)
-		return
-	}
-	fromEntry, err := s.history.Snapshot(dir, file, fromTs)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-	var toContent, toLabel string
-	if toStr == "live" {
-		// Compare against the file on disk via the project store.
-		body, lerr := s.opts.Projects.ReadFile(r.Context(), ident, projectName(r), file)
-		if lerr != nil {
-			http.Error(w, "live file unreadable: "+lerr.Error(), http.StatusNotFound)
-			return
-		}
-		buf := make([]byte, 0, 4096)
-		buf2 := make([]byte, 4096)
-		for {
-			n, rerr := body.Read(buf2)
-			if n > 0 {
-				buf = append(buf, buf2[:n]...)
-			}
-			if rerr != nil {
-				break
-			}
-		}
-		_ = body.Close()
-		toContent = string(buf)
-		toLabel = "live"
-	} else {
-		toTs, terr := parseAtParam(toStr)
-		if terr != nil {
-			http.Error(w, "to must be RFC3339 timestamp or 'live'", http.StatusBadRequest)
-			return
-		}
-		toEntry, terr2 := s.history.Snapshot(dir, file, toTs)
-		if terr2 != nil {
-			http.Error(w, terr2.Error(), http.StatusNotFound)
-			return
-		}
-		toContent = toEntry.Content
-		toLabel = toEntry.TS.Format(time.RFC3339Nano)
-	}
-	hunks := history.DiffLines(fromEntry.Content, toContent)
-	summary := history.SummariseDiff(hunks)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"from":    fromEntry.TS.Format(time.RFC3339Nano),
-		"to":      toLabel,
-		"summary": summary,
-		"hunks":   hunks,
-	})
-}
-
 // parseAtParam accepts an RFC3339 / RFC3339Nano timestamp string. The
 // SPA emits ts values verbatim from history.Entry.TS so they're
 // always nanosecond precision in practice.
@@ -224,129 +79,330 @@ func parseAtParam(s string) (time.Time, error) {
 	return time.Parse(time.RFC3339, s)
 }
 
-// handleHistoryLabel attaches / changes / clears a label on a
-// snapshot. Body : { file, at, label }. Empty label clears.
-//
-//	POST /api/projects/{name}/history/label
-//	     { "file":"main.tex", "at":"2026-06-14T12:34:56Z", "label":"v1.0" }
-func (s *Server) handleHistoryLabel(w http.ResponseWriter, r *http.Request) {
-	if s.history == nil {
-		http.Error(w, "history disabled", http.StatusNotFound)
-		return
+// ── huma I/O types ────────────────────────────────────────────────
+
+type historyListInput struct {
+	Project string `path:"name" doc:"Project name"`
+	File    string `query:"file" doc:"File path relative to the project root"`
+}
+
+type historyEntryOut struct {
+	TS     time.Time `json:"ts" doc:"RFC3339Nano timestamp"`
+	Author string    `json:"author,omitempty"`
+	Size   int       `json:"size"`
+	Label  string    `json:"label,omitempty"`
+}
+
+type historyListOutput struct {
+	Body struct {
+		Entries []historyEntryOut `json:"entries"`
 	}
-	ident, _ := auth.IdentityFrom(r.Context())
-	var body struct {
+}
+
+type historySnapshotInput struct {
+	Project string `path:"name" doc:"Project name"`
+	File    string `query:"file" doc:"File path relative to the project root"`
+	At      string `query:"at" doc:"RFC3339 / RFC3339Nano timestamp of the snapshot"`
+}
+
+type historySnapshotOutput struct {
+	Body history.Entry
+}
+
+type historyDiffInput struct {
+	Project string `path:"name" doc:"Project name"`
+	File    string `query:"file" doc:"File path relative to the project root"`
+	From    string `query:"from" doc:"RFC3339 / RFC3339Nano timestamp of the older snapshot"`
+	To      string `query:"to" doc:"RFC3339 timestamp of the newer snapshot, or 'live' (default) for the on-disk file"`
+}
+
+type historyDiffOutput struct {
+	Body struct {
+		From    string              `json:"from"`
+		To      string              `json:"to"`
+		Summary history.DiffSummary `json:"summary"`
+		Hunks   []history.Hunk      `json:"hunks"`
+	}
+}
+
+type historyLabelInput struct {
+	Project string `path:"name" doc:"Project name"`
+	Body    struct {
 		File  string `json:"file"`
 		At    string `json:"at"`
-		Label string `json:"label"`
+		Label string `json:"label" doc:"New label ; empty clears"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid JSON body", http.StatusBadRequest)
-		return
-	}
-	if body.File == "" || body.At == "" {
-		http.Error(w, "file + at required", http.StatusBadRequest)
-		return
-	}
-	if isInternalPath(body.File) {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
-	at, err := parseAtParam(body.At)
-	if err != nil {
-		http.Error(w, "at must be RFC3339 timestamp", http.StatusBadRequest)
-		return
-	}
-	dir, err := s.projectWorkingDir(ident, projectName(r))
-	if err != nil {
-		http.Error(w, "project lookup failed", http.StatusNotFound)
-		return
-	}
-	// Cap label length to prevent silly payloads.
-	const maxLabel = 80
-	label := body.Label
-	if len(label) > maxLabel {
-		label = label[:maxLabel]
-	}
-	resolved, err := s.history.SetLabel(dir, body.File, at, label)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-	s.events.Publish(eventbus.Event{
-		Source: "server", Component: "history", Verb: "label.set",
-		Project: projectName(r),
-		Fields: map[string]any{
-			"file":  body.File,
-			"at":    resolved.Format(time.RFC3339Nano),
-			"label": label,
-		},
-	})
-	writeJSON(w, http.StatusOK, map[string]any{"at": resolved, "label": label})
 }
 
-func (s *Server) handleHistoryRestore(w http.ResponseWriter, r *http.Request) {
-	if s.history == nil {
-		http.Error(w, "history disabled", http.StatusNotFound)
-		return
+type historyLabelOutput struct {
+	Body struct {
+		At    time.Time `json:"at"`
+		Label string    `json:"label"`
 	}
-	ident, _ := auth.IdentityFrom(r.Context())
-	var body struct {
-		File string `json:"file"`
-		At   string `json:"at"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid JSON body", http.StatusBadRequest)
-		return
-	}
-	if body.File == "" || body.At == "" {
-		http.Error(w, "file + at required", http.StatusBadRequest)
-		return
-	}
-	// Refuse restoring into the server-side sidecar namespace —
-	// see api_files / api_project_import for the same gate. A pre-
-	// fix snapshot of .weft-loom/owner must not be replayable.
-	if isInternalPath(body.File) {
-		http.Error(w, "internal path", http.StatusForbidden)
-		return
-	}
-	at, err := time.Parse(time.RFC3339Nano, body.At)
-	if err != nil {
-		at, err = time.Parse(time.RFC3339, body.At)
-	}
-	if err != nil {
-		http.Error(w, "at must be RFC3339 timestamp", http.StatusBadRequest)
-		return
-	}
-	dir, err := s.projectWorkingDir(ident, projectName(r))
-	if err != nil {
-		http.Error(w, "project lookup failed", http.StatusNotFound)
-		return
-	}
-	entry, err := s.history.Snapshot(dir, body.File, at)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-	// Restore = write the snapshot's content back to the live file.
-	if werr := s.opts.Projects.WriteFile(
-		r.Context(), ident, projectName(r), body.File,
-		strings.NewReader(entry.Content),
-	); werr != nil {
-		http.Error(w, werr.Error(), http.StatusInternalServerError)
-		return
-	}
-	s.events.Publish(eventbus.Event{
-		Source: "server", Component: "history", Verb: "restore",
-		Project: projectName(r),
-		Fields: map[string]any{
-			"file":   body.File,
-			"to":    entry.TS.Format(time.RFC3339Nano),
-			"author": ident.Subject,
-		},
-	})
-	w.WriteHeader(http.StatusNoContent)
 }
 
-// ensure the package import isn't reported unused when history is nil.
-var _ = errors.New
+type historyRestoreInput struct {
+	Project string `path:"name" doc:"Project name"`
+	Body    struct {
+		// "_" carries the additionalProperties tag for huma : the
+		// previous raw handler used encoding/json which ignored extra
+		// fields ; preserve that wire tolerance so old clients that
+		// post {file, at, label, ...} keep working.
+		_    struct{} `additionalProperties:"true"`
+		File string   `json:"file"`
+		At   string   `json:"at"`
+	}
+}
+
+type historyRestoreOutput struct {
+	Status int
+}
+
+// mountHistoryAPI registers the five history operations on the huma
+// API. The auth middleware injects ident into ctx upstream — every
+// handler pulls it via auth.IdentityFrom.
+func mountHistoryAPI(api huma.API, s *Server) {
+	huma.Register(api, huma.Operation{
+		OperationID: "list-history",
+		Method:      "GET",
+		Path:        "/api/projects/{name}/history",
+		Summary:     "List a file's snapshot timeline",
+		Description: "Returns the per-file edit history (newest first). Content is elided ; use the snapshot endpoint to fetch a single revision's text. Refuses .weft-loom/ paths (returns an empty list).",
+		Tags:        []string{"history"},
+	}, func(ctx context.Context, in *historyListInput) (*historyListOutput, error) {
+		out := &historyListOutput{}
+		out.Body.Entries = []historyEntryOut{}
+		if s == nil || s.history == nil {
+			return out, nil
+		}
+		if in.File == "" {
+			return nil, huma.Error400BadRequest("file query param required")
+		}
+		// Defensive : return an empty list rather than 4xx so the SPA
+		// HistoryPanel renders cleanly when an internal path slips in.
+		if isInternalPath(in.File) {
+			return out, nil
+		}
+		ident, _ := auth.IdentityFrom(ctx)
+		dir, err := s.projectWorkingDir(ident, in.Project)
+		if err != nil {
+			return out, nil
+		}
+		entries, err := s.history.List(dir, in.File)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("list history", err)
+		}
+		for _, e := range entries {
+			out.Body.Entries = append(out.Body.Entries, historyEntryOut{
+				TS:     e.TS,
+				Author: e.Author,
+				Size:   e.Size,
+				Label:  e.Label,
+			})
+		}
+		return out, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "get-history-snapshot",
+		Method:      "GET",
+		Path:        "/api/projects/{name}/history/snapshot",
+		Summary:     "Fetch one snapshot's full content",
+		Tags:        []string{"history"},
+	}, func(ctx context.Context, in *historySnapshotInput) (*historySnapshotOutput, error) {
+		if s == nil || s.history == nil {
+			return nil, huma.Error404NotFound("history disabled")
+		}
+		if in.File == "" || in.At == "" {
+			return nil, huma.Error400BadRequest("file + at query params required")
+		}
+		if isInternalPath(in.File) {
+			return nil, huma.Error404NotFound("not found")
+		}
+		at, err := parseAtParam(in.At)
+		if err != nil {
+			return nil, huma.Error400BadRequest("at must be RFC3339 timestamp")
+		}
+		ident, _ := auth.IdentityFrom(ctx)
+		dir, err := s.projectWorkingDir(ident, in.Project)
+		if err != nil {
+			return nil, huma.Error404NotFound("project lookup failed")
+		}
+		entry, err := s.history.Snapshot(dir, in.File, at)
+		if err != nil {
+			return nil, huma.Error404NotFound(err.Error())
+		}
+		return &historySnapshotOutput{Body: entry}, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "diff-history",
+		Method:      "GET",
+		Path:        "/api/projects/{name}/history/diff",
+		Summary:     "Diff two snapshots (or one snapshot vs the live file)",
+		Description: "When `to` is omitted or equal to `live`, the right-hand side is the current on-disk file.",
+		Tags:        []string{"history"},
+	}, func(ctx context.Context, in *historyDiffInput) (*historyDiffOutput, error) {
+		if s == nil || s.history == nil {
+			return nil, huma.Error404NotFound("history disabled")
+		}
+		toStr := in.To
+		if toStr == "" {
+			toStr = "live"
+		}
+		if in.File == "" || in.From == "" {
+			return nil, huma.Error400BadRequest("file + from query params required")
+		}
+		if isInternalPath(in.File) {
+			return nil, huma.Error404NotFound("not found")
+		}
+		fromTs, ferr := parseAtParam(in.From)
+		if ferr != nil {
+			return nil, huma.Error400BadRequest("from must be RFC3339 timestamp")
+		}
+		ident, _ := auth.IdentityFrom(ctx)
+		dir, err := s.projectWorkingDir(ident, in.Project)
+		if err != nil {
+			return nil, huma.Error404NotFound("project lookup failed")
+		}
+		fromEntry, err := s.history.Snapshot(dir, in.File, fromTs)
+		if err != nil {
+			return nil, huma.Error404NotFound(err.Error())
+		}
+		var toContent, toLabel string
+		if toStr == "live" {
+			body, lerr := s.opts.Projects.ReadFile(ctx, ident, in.Project, in.File)
+			if lerr != nil {
+				return nil, huma.Error404NotFound("live file unreadable: " + lerr.Error())
+			}
+			buf, rerr := io.ReadAll(body)
+			_ = body.Close()
+			if rerr != nil && rerr != io.EOF {
+				return nil, huma.Error500InternalServerError("read live file", rerr)
+			}
+			toContent = string(buf)
+			toLabel = "live"
+		} else {
+			toTs, terr := parseAtParam(toStr)
+			if terr != nil {
+				return nil, huma.Error400BadRequest("to must be RFC3339 timestamp or 'live'")
+			}
+			toEntry, terr2 := s.history.Snapshot(dir, in.File, toTs)
+			if terr2 != nil {
+				return nil, huma.Error404NotFound(terr2.Error())
+			}
+			toContent = toEntry.Content
+			toLabel = toEntry.TS.Format(time.RFC3339Nano)
+		}
+		hunks := history.DiffLines(fromEntry.Content, toContent)
+		summary := history.SummariseDiff(hunks)
+		out := &historyDiffOutput{}
+		out.Body.From = fromEntry.TS.Format(time.RFC3339Nano)
+		out.Body.To = toLabel
+		out.Body.Summary = summary
+		out.Body.Hunks = hunks
+		return out, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "set-history-label",
+		Method:      "POST",
+		Path:        "/api/projects/{name}/history/label",
+		Summary:     "Attach / rename / clear a label on a snapshot",
+		Description: "Empty `label` clears the existing label.",
+		Tags:        []string{"history"},
+	}, func(ctx context.Context, in *historyLabelInput) (*historyLabelOutput, error) {
+		if s == nil || s.history == nil {
+			return nil, huma.Error404NotFound("history disabled")
+		}
+		if in.Body.File == "" || in.Body.At == "" {
+			return nil, huma.Error400BadRequest("file + at required")
+		}
+		if isInternalPath(in.Body.File) {
+			return nil, huma.Error404NotFound("not found")
+		}
+		at, err := parseAtParam(in.Body.At)
+		if err != nil {
+			return nil, huma.Error400BadRequest("at must be RFC3339 timestamp")
+		}
+		ident, _ := auth.IdentityFrom(ctx)
+		dir, err := s.projectWorkingDir(ident, in.Project)
+		if err != nil {
+			return nil, huma.Error404NotFound("project lookup failed")
+		}
+		const maxLabel = 80
+		label := in.Body.Label
+		if len(label) > maxLabel {
+			label = label[:maxLabel]
+		}
+		resolved, err := s.history.SetLabel(dir, in.Body.File, at, label)
+		if err != nil {
+			return nil, huma.Error404NotFound(err.Error())
+		}
+		s.events.Publish(eventbus.Event{
+			Source: "server", Component: "history", Verb: "label.set",
+			Project: in.Project,
+			Fields: map[string]any{
+				"file":  in.Body.File,
+				"at":    resolved.Format(time.RFC3339Nano),
+				"label": label,
+			},
+		})
+		out := &historyLabelOutput{}
+		out.Body.At = resolved
+		out.Body.Label = label
+		return out, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "restore-history",
+		Method:        "POST",
+		Path:          "/api/projects/{name}/history/restore",
+		Summary:       "Restore a file to a prior snapshot",
+		Description:   "Writes the snapshot's content back to the live file. Returns 204 on success. Refuses .weft-loom/ paths with 403 — pre-fix snapshots predate the privilege-escalation guard in handleWriteFile.",
+		Tags:          []string{"history"},
+		DefaultStatus: 204,
+	}, func(ctx context.Context, in *historyRestoreInput) (*historyRestoreOutput, error) {
+		if s == nil || s.history == nil {
+			return nil, huma.Error404NotFound("history disabled")
+		}
+		if in.Body.File == "" || in.Body.At == "" {
+			return nil, huma.Error400BadRequest("file + at required")
+		}
+		// Refuse restoring into the server-side sidecar namespace —
+		// see api_files / api_project_import for the same gate. A pre-
+		// fix snapshot of .weft-loom/owner must not be replayable.
+		if isInternalPath(in.Body.File) {
+			return nil, huma.Error403Forbidden("internal path")
+		}
+		at, err := parseAtParam(in.Body.At)
+		if err != nil {
+			return nil, huma.Error400BadRequest("at must be RFC3339 timestamp")
+		}
+		ident, _ := auth.IdentityFrom(ctx)
+		dir, err := s.projectWorkingDir(ident, in.Project)
+		if err != nil {
+			return nil, huma.Error404NotFound("project lookup failed")
+		}
+		entry, err := s.history.Snapshot(dir, in.Body.File, at)
+		if err != nil {
+			return nil, huma.Error404NotFound(err.Error())
+		}
+		if werr := s.opts.Projects.WriteFile(
+			ctx, ident, in.Project, in.Body.File,
+			strings.NewReader(entry.Content),
+		); werr != nil {
+			return nil, huma.Error500InternalServerError("write file", werr)
+		}
+		s.events.Publish(eventbus.Event{
+			Source: "server", Component: "history", Verb: "restore",
+			Project: in.Project,
+			Fields: map[string]any{
+				"file":   in.Body.File,
+				"to":     entry.TS.Format(time.RFC3339Nano),
+				"author": ident.Subject,
+			},
+		})
+		return &historyRestoreOutput{Status: 204}, nil
+	})
+}

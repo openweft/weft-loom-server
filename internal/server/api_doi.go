@@ -19,9 +19,7 @@ package server
 // on the public internet.
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -32,7 +30,6 @@ import (
 	"time"
 
 	"github.com/openweft/weft-loom-server/internal/auth"
-	"github.com/openweft/weft-loom-server/internal/eventbus"
 )
 
 // doiPattern : the standard DOI grammar — "10." + a registrant code
@@ -126,66 +123,7 @@ func (s *Server) pickTargetBib(ctx context.Context, ident auth.Identity, project
 	return "refs.bib"
 }
 
-func (s *Server) handleDOIToBib(w http.ResponseWriter, r *http.Request) {
-	ident, _ := auth.IdentityFrom(r.Context())
-	proj := projectName(r)
-
-	var body struct {
-		DOI    string `json:"doi"`
-		Target string `json:"target,omitempty"`
-	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
-		return
-	}
-	doi, ok := extractDOI(body.DOI)
-	if !ok {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "doi: not a valid DOI (expected 10.NNNN/suffix or a doi.org URL)"})
-		return
-	}
-	entry, err := resolveDOIToBibTeX(r.Context(), doi)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
-		return
-	}
-	target := s.pickTargetBib(r.Context(), ident, proj, body.Target)
-	// Defence in depth : never write into the server-side sidecar
-	// namespace from user-supplied target paths. The .bib suffix
-	// check in pickTargetBib bounds the shape, but the path can still
-	// be .weft-loom/x.bib.
-	if isInternalPath(target) {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "target path is reserved"})
-		return
-	}
-
-	// Append to (or create) the target .bib. We don't dedupe — the
-	// user may legitimately have two entries for the same DOI in
-	// different bibliographies, and dedup against an arbitrary
-	// citation key is brittle.
-	var combined []byte
-	existing, err := s.opts.Projects.ReadFile(r.Context(), ident, proj, target)
-	if err == nil {
-		buf, _ := io.ReadAll(existing)
-		_ = existing.Close()
-		combined = buf
-		if len(combined) > 0 && !bytes.HasSuffix(combined, []byte("\n")) {
-			combined = append(combined, '\n')
-		}
-	}
-	combined = append(combined, []byte(entry)...)
-
-	if werr := s.opts.Projects.WriteFile(r.Context(), ident, proj, target, bytes.NewReader(combined)); werr != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "write: " + werr.Error()})
-		return
-	}
-	s.events.Publish(eventbus.Event{
-		Source: "server", Component: "doi", Verb: "import",
-		Project: proj,
-		Fields:  map[string]any{"doi": doi, "target": target, "bytes": len(entry)},
-	})
-	writeJSON(w, http.StatusOK, map[string]any{
-		"entry":    entry,
-		"target":   target,
-		"appended": true,
-	})
-}
+// The HTTP entry point (POST /api/projects/{name}/bib/from-doi) lives
+// in api_bib.go now ; this file only carries the DOI-specific helpers
+// (extractDOI, resolveDOIToBibTeX, Server.pickTargetBib) the huma
+// handler delegates into.

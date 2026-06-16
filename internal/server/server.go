@@ -268,45 +268,28 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/projects/{name}/git/push", s.requireAuth(s.handleGitPush))
 	s.mux.HandleFunc("GET /api/projects/{name}/git/log", s.requireAuth(s.handleGitLog))
 	// V0.5 track-changes history : per-file text-snapshot timeline.
-	// Captures via the writeFile hook ; surfaces via these endpoints
-	// for the SPA HistoryPanel.
-	s.mux.HandleFunc("GET /api/projects/{name}/history", s.requireAuth(s.handleHistoryList))
-	s.mux.HandleFunc("GET /api/projects/{name}/history/snapshot", s.requireAuth(s.handleHistorySnapshot))
-	s.mux.HandleFunc("GET /api/projects/{name}/history/diff", s.requireAuth(s.handleHistoryDiff))
-	s.mux.HandleFunc("POST /api/projects/{name}/history/label", s.requireAuth(s.handleHistoryLabel))
-	s.mux.HandleFunc("POST /api/projects/{name}/history/restore", s.requireAuth(s.handleHistoryRestore))
+	// Captures via the writeFile hook ; surfaces via huma — see
+	// mountHistoryAPI in api_history.go.
 	// V0.9 project export : stream the whole project as a ZIP. Used
 	// by the Navbar "⤓ Download" button for one-click backups +
 	// offline review.
 	s.mux.HandleFunc("GET /api/projects/{name}/export.zip", s.requireAuth(s.handleProjectExport))
-	// V0.11 : DOI → BibTeX import. Pastes a DOI / doi.org URL,
-	// fetches the formatted BibTeX entry from doi.org's content
-	// negotiation API, appends to refs.bib (or the first .bib in the
-	// project). The BibliographyPanel surfaces the "+ DOI" affordance.
-	s.mux.HandleFunc("POST /api/projects/{name}/bib/from-doi", s.requireAuth(s.handleDOIToBib))
-	// V0.12 : arXiv search proxy. arXiv.org's public Atom-XML API
-	// doesn't send CORS headers, so the SPA's ArxivSearchPanel hits
-	// this server-side proxy to query + parse upstream results.
-	s.mux.HandleFunc("GET /api/arxiv/search", s.requireAuth(s.handleArxivSearch))
-	// V0.13 : Zotero library sync. The SPA stores a user-supplied
-	// Zotero userID + API key in settings ; the handler relays a GET
-	// to api.zotero.org/users/<id>/items?format=bibtex and streams the
-	// BibTeX bytes back. The client appends to refs.bib via the file
-	// API. No OAuth dance — simpler than the DOI flow.
-	s.mux.HandleFunc("POST /api/projects/{name}/zotero/sync", s.requireAuth(s.handleZoteroSync))
-	// V0.14 : per-project ACL — invite users with editor/commenter/viewer roles.
-	s.mux.HandleFunc("GET /api/projects/{name}/sharing", s.requireAuth(s.handleSharingList))
-	s.mux.HandleFunc("POST /api/projects/{name}/sharing", s.requireAuth(s.handleSharingUpsert))
-	s.mux.HandleFunc("DELETE /api/projects/{name}/sharing/{user}", s.requireAuth(s.handleSharingDelete))
+	// V0.11–V0.13 : DOI → BibTeX import, arXiv Atom-XML proxy,
+	// Zotero library relay. Wired into the typed huma surface
+	// (mountBibAPI) so the OpenAPI spec + generated TS client
+	// cover them ; raw mux registration not needed.
+	// V0.14 : per-project ACL — invite users with editor/commenter/viewer
+	// roles. Wired into the typed huma surface (mountSharingAPI) so the
+	// OpenAPI spec covers it ; raw mux registration not needed.
 	// V0.14 : import a ZIP into an existing project (mirror of export.zip).
 	s.mux.HandleFunc("POST /api/projects/{name}/import", s.requireAuth(s.handleProjectImport))
 	// V0.14 : email config summary (read-only ; actual SMTP creds live in env vars).
 	s.mux.HandleFunc("GET /api/admin/email/config", s.requireAuth(s.handleAdminEmailConfig))
 	// V0.14 : public read-only project share. Owner-issued token → anyone
-	// with the URL reads files without auth. Public paths SKIP requireAuth.
-	s.mux.HandleFunc("POST /api/projects/{name}/public-share", s.requireAuth(s.handlePublicShareCreate))
-	s.mux.HandleFunc("GET /api/projects/{name}/public-share", s.requireAuth(s.handlePublicShareGet))
-	s.mux.HandleFunc("DELETE /api/projects/{name}/public-share", s.requireAuth(s.handlePublicShareDelete))
+	// with the URL reads files without auth. The 3 admin endpoints
+	// (POST/GET/DELETE /api/projects/{name}/public-share) flow through
+	// huma — see mountPublicShareAdminAPI. The 2 public paths stay raw :
+	// no-auth + binary streaming don't fit huma's typed model.
 	s.mux.HandleFunc("GET /public/{token}/files", s.handlePublicListFiles)
 	s.mux.HandleFunc("GET /public/{token}/files/{path...}", s.handlePublicReadFile)
 	// V0.11 : multi-file project scaffolds. The catalogue is
