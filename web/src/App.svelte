@@ -530,6 +530,25 @@
     return () => window.removeEventListener('weft-loom:open-project-templates', handler);
   });
 
+  // V0.14 insert-line bridge : BibStylePicker (and future palettes)
+  // dispatch this event with {text} ; we forward to the active editor
+  // via the global weftLoomInsertAtCursor helper, or fall back to the
+  // clipboard so the user can paste manually when no editor is mounted.
+  $effect(() => {
+    const handler = (e: Event) => {
+      const ce = e as CustomEvent<{ text?: string }>;
+      const text = ce.detail?.text;
+      if (!text) return;
+      const insert = (window as unknown as {
+        weftLoomInsertAtCursor?: (s: string) => void;
+      }).weftLoomInsertAtCursor;
+      if (insert) { insert(text); return; }
+      navigator.clipboard?.writeText(text).catch(() => {});
+    };
+    window.addEventListener('weft-loom:insert-line', handler);
+    return () => window.removeEventListener('weft-loom:insert-line', handler);
+  });
+
   // PreviewPane loads as soon as the user might want it (any open
   // file or any compile artifact). Cheaper than gating per-extension
   // because most users hit preview eventually.
