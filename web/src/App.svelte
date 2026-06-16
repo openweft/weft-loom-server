@@ -2,7 +2,7 @@
   // Editor restored : the file list works (Navbar/CompileDrawer aren't
   // the blocker we eliminated those). y-websocket now reaches
   // /sync/default so it doesn't saturate the conn pool any more.
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, type Component } from 'svelte';
   import * as Y from 'yjs';
   import type { Awareness } from 'y-protocols/awareness';
   import FileExplorer from './lib/components/FileExplorer.svelte';
@@ -181,7 +181,8 @@
   // stays lean. Each slot starts null + flips to the component class
   // once the dynamic import resolves. The render guards check the
   // slot before mounting. Saved ≈ 1.5 MB off the cold-load.
-  type AnySvelteComponent = typeof FileExplorer;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  type AnySvelteComponent = Component<any, any, any>;
   let LazyWysiwygEditor = $state<AnySvelteComponent | null>(null);
   let LazyLatexWysiwygEditor = $state<AnySvelteComponent | null>(null);
   let LazySpreadsheetEditor = $state<AnySvelteComponent | null>(null);
@@ -1372,7 +1373,7 @@
                     <LazyLatexWysiwygEditor
                       {project}
                       file={currentFile}
-                      onCursorStats={(s) => { cursorLine = s.line; cursorCol = s.col; selectionLen = s.selectionLen; wordCount = s.words; }}
+                      onCursorStats={(s: { line: number; col: number; selectionLen: number; words: number }) => { cursorLine = s.line; cursorCol = s.col; selectionLen = s.selectionLen; wordCount = s.words; }}
                     />
                   {:else}
                     <div class="flex-1 flex items-center justify-center text-base-content/50">Loading LaTeX WYSIWYG editor…</div>
@@ -1398,7 +1399,7 @@
                         onYDoc={(d) => (ydoc = d)}
                         onAwareness={(a) => (awareness = a)}
                         onYTextTick={(n) => (ytextTick = n)}
-                        onCursorStats={(s) => { cursorLine = s.line; cursorCol = s.col; selectionLen = s.selectionLen; wordCount = s.words; }}
+                        onCursorStats={(s: { line: number; col: number; selectionLen: number; words: number }) => { cursorLine = s.line; cursorCol = s.col; selectionLen = s.selectionLen; wordCount = s.words; }}
                       />
                     </div>
                     <div class="flex-1 min-w-0 overflow-hidden">
@@ -1437,8 +1438,8 @@
                 <WordCountPanel
                   {project}
                   file={currentFile}
-                  wordCount={wordCount}
-                  selectionLen={selectionLen}
+                  wordCount={wordCount ?? 0}
+                  selectionLen={selectionLen ?? 0}
                   visible={language === 'latex' || language === 'markdown' || language === 'plaintext'}
                 />
                 <CommentsPanel

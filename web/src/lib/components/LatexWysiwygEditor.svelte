@@ -516,7 +516,7 @@
 
       // Observe ytext for remote updates. Local origin tagging
       // prevents the feedback loop.
-      ytext.observe((event, tr) => {
+      ytext.observe((_event, tr) => {
         if (tr.origin === WYSIWYG_LOCAL) return;
         applyRemoteSource(ytext!.toString());
       });

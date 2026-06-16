@@ -107,8 +107,6 @@ export interface ODSParsed {
   meta: { title?: string; author?: string; date?: string };
 }
 
-const EMPTY_CELL: ODSCell = { display: '', value: '', type: 'string' };
-
 export async function parseODS(data: ArrayBuffer | Uint8Array | Blob): Promise<ODSParsed> {
   const zip = await JSZip.loadAsync(data);
   const contentEntry = zip.file('content.xml');

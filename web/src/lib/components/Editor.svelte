@@ -576,6 +576,7 @@
     // first case ; `matchBefore` the second.
     const word = ctx.matchBefore(/[\w.\\]+/);
     if (!ctx.explicit && (!word || (word.to - word.from === 0 && !ctx.explicit))) return null;
+    if (!ctx.view) return null;
     const pos = posFromOffset(ctx.view, ctx.pos);
     const items = await lspClient.completion('file://' + file, pos.line, pos.character);
     if (!items || items.length === 0) return null;

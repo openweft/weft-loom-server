@@ -76,7 +76,7 @@ function scanHeadings(state: EditorState, isLatex: boolean): Heading[] {
   return out;
 }
 
-function foldFor(state: EditorState, lineFrom: number, lineTo: number, isLatex: boolean) {
+function foldFor(state: EditorState, lineFrom: number, _lineTo: number, isLatex: boolean) {
   const headings = scanHeadings(state, isLatex);
   // Find the heading that starts exactly at lineFrom (CodeMirror
   // calls the service with the line-start offset, expecting a

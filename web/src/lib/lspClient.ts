@@ -8,7 +8,7 @@
 // We track request id → resolver so the editor can issue
 // commands + receive responses without re-implementing JSON-RPC.
 
-import { Diagnostic } from '@codemirror/lint';
+import type { Diagnostic } from '@codemirror/lint';
 import type { EditorView } from '@codemirror/view';
 
 export interface LSPDiagnostic {

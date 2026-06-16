@@ -91,7 +91,7 @@
           onClickPage?.(p, xSp, ySp);
         });
         container.appendChild(canvas);
-        await page.render({ canvasContext: canvas.getContext('2d')!, viewport, canvas }).promise;
+        await page.render({ canvasContext: canvas.getContext('2d')!, viewport }).promise;
         pages.push({ canvas, viewport, pageNum: p });
       }
       status = 'ready';

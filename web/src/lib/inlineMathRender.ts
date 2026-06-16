@@ -16,7 +16,7 @@
 // changed.
 
 import { Decoration, ViewPlugin, EditorView, WidgetType } from '@codemirror/view';
-import type { DecorationSet, ViewUpdate, Range } from '@codemirror/view';
+import type { DecorationSet, ViewUpdate } from '@codemirror/view';
 import { RangeSetBuilder } from '@codemirror/state';
 import katex from 'katex';
 
