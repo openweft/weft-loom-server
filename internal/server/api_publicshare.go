@@ -56,6 +56,30 @@ const (
 	publicShareFile = "public-share.json"
 )
 
+// publicHidePrefixes lists path prefixes never served on the public
+// /public/{token}/files endpoints, regardless of who shared the
+// project. Stricter than exportSkip because anyone with the URL can
+// browse — leaking .git/ would expose commit author emails + the
+// full revision history, which a public share link is NOT meant to
+// carry. Project owners who want history+code shipped together
+// should use the authed `export.zip` endpoint instead.
+var publicHidePrefixes = []string{
+	publicShareDir + "/", // sidecars (including the token itself)
+	publicShareDir,       // exact match on the dir
+	".git/",              // entire git working tree
+	".git",
+}
+
+// publicHidden reports whether path is excluded from public reads.
+func publicHidden(path string) bool {
+	for _, p := range publicHidePrefixes {
+		if path == p || strings.HasPrefix(path, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // publicShareRecord is the on-disk envelope.
 type publicShareRecord struct {
 	Token   string `json:"token"`
@@ -343,12 +367,7 @@ func (s *Server) handlePublicListFiles(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]map[string]any, 0, len(files))
 	for _, f := range files {
-		// Hide our own sidecar from public listings so a casual
-		// visitor doesn't see / fetch the token itself by guessing
-		// the path. Defence in depth — the token is in the URL
-		// they already have, but exposing it via a directory walk
-		// would surprise users.
-		if f.Path == publicShareDir || strings.HasPrefix(f.Path, publicShareDir+"/") {
+		if publicHidden(f.Path) {
 			continue
 		}
 		out = append(out, map[string]any{
@@ -369,7 +388,7 @@ func (s *Server) handlePublicReadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := r.PathValue("path")
-	if path == publicShareDir || strings.HasPrefix(path, publicShareDir+"/") {
+	if publicHidden(path) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}

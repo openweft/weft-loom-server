@@ -262,6 +262,61 @@ func TestPublicShare_PublicListFilesNoAuth(t *testing.T) {
 	}
 }
 
+// TestPublicShare_HidesGitMetadata pins the security fix : a public
+// share must NOT leak the .git/ tree (commit author emails, full
+// revision history). Pre-fix the listing included every .git/objects/*
+// file. We seed the project with a synthetic .git/ subtree and assert
+// that neither the listing nor a direct GET surfaces it.
+func TestPublicShare_HidesGitMetadata(t *testing.T) {
+	srv, store, _ := newPublicShareTestServer(t)
+	defer srv.Close()
+	seedPublicProject(t, store, "leakproj", "paper.tex", "hello")
+	seedPublicProject(t, store, "leakproj", ".git/config", "[user]\n\temail = secret@org\n")
+	seedPublicProject(t, store, "leakproj", ".git/HEAD", "ref: refs/heads/main\n")
+
+	resp, err := http.Post(srv.URL+"/api/projects/leakproj/public-share", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	var created struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	pubResp, err := http.Get(srv.URL + "/public/" + created.Token + "/files")
+	if err != nil {
+		t.Fatalf("public GET: %v", err)
+	}
+	defer pubResp.Body.Close()
+	var listing struct {
+		Items []struct {
+			Path string `json:"path"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(pubResp.Body).Decode(&listing); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, it := range listing.Items {
+		if strings.HasPrefix(it.Path, ".git") {
+			t.Errorf("public listing leaked git path : %q", it.Path)
+		}
+	}
+
+	// Direct GET of a .git path must 404 even though the bytes
+	// physically exist on disk.
+	gitResp, err := http.Get(srv.URL + "/public/" + created.Token + "/files/.git/config")
+	if err != nil {
+		t.Fatalf("git GET: %v", err)
+	}
+	defer gitResp.Body.Close()
+	if gitResp.StatusCode != http.StatusNotFound {
+		t.Errorf(".git/config public GET status = %d ; want 404", gitResp.StatusCode)
+	}
+}
+
 func TestPublicShare_UnknownTokenIs404(t *testing.T) {
 	srv, _, _ := newPublicShareTestServer(t)
 	defer srv.Close()
