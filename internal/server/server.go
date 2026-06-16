@@ -289,6 +289,21 @@ func (s *Server) routes() {
 	// BibTeX bytes back. The client appends to refs.bib via the file
 	// API. No OAuth dance — simpler than the DOI flow.
 	s.mux.HandleFunc("POST /api/projects/{name}/zotero/sync", s.requireAuth(s.handleZoteroSync))
+	// V0.14 : per-project ACL — invite users with editor/commenter/viewer roles.
+	s.mux.HandleFunc("GET /api/projects/{name}/sharing", s.requireAuth(s.handleSharingList))
+	s.mux.HandleFunc("POST /api/projects/{name}/sharing", s.requireAuth(s.handleSharingUpsert))
+	s.mux.HandleFunc("DELETE /api/projects/{name}/sharing/{user}", s.requireAuth(s.handleSharingDelete))
+	// V0.14 : import a ZIP into an existing project (mirror of export.zip).
+	s.mux.HandleFunc("POST /api/projects/{name}/import", s.requireAuth(s.handleProjectImport))
+	// V0.14 : email config summary (read-only ; actual SMTP creds live in env vars).
+	s.mux.HandleFunc("GET /api/admin/email/config", s.requireAuth(s.handleAdminEmailConfig))
+	// V0.14 : public read-only project share. Owner-issued token → anyone
+	// with the URL reads files without auth. Public paths SKIP requireAuth.
+	s.mux.HandleFunc("POST /api/projects/{name}/public-share", s.requireAuth(s.handlePublicShareCreate))
+	s.mux.HandleFunc("GET /api/projects/{name}/public-share", s.requireAuth(s.handlePublicShareGet))
+	s.mux.HandleFunc("DELETE /api/projects/{name}/public-share", s.requireAuth(s.handlePublicShareDelete))
+	s.mux.HandleFunc("GET /public/{token}/files", s.handlePublicListFiles)
+	s.mux.HandleFunc("GET /public/{token}/files/{path...}", s.handlePublicReadFile)
 	// V0.11 : multi-file project scaffolds. The catalogue is
 	// project-agnostic so list is at /api/project-templates ;
 	// applying a scaffold writes into a target project + needs auth.

@@ -11,6 +11,8 @@
   import { bib } from '../bibStore.svelte';
   import { logError } from '../logbus';
   import { settings } from '../settings.svelte';
+  import BibStylePicker from './BibStylePicker.svelte';
+  import { formatBibliographystyleLine } from '../bibStyles';
 
   interface Props {
     visible: boolean;
@@ -36,6 +38,17 @@
   let zoteroBusy = $state(false);
   let zoteroError = $state<string | undefined>();
   let zoteroResult = $state<{ count: number; bytes: number } | undefined>();
+
+  // V0.14 : .bst style picker. Insert via window event the editor
+  // can listen to (or fallback to clipboard).
+  let stylePickerOpen = $state(false);
+  let currentStyle = $state<string | undefined>(undefined);
+  function pickStyle(name: string) {
+    currentStyle = name;
+    stylePickerOpen = false;
+    const line = formatBibliographystyleLine(name);
+    window.dispatchEvent(new CustomEvent('weft-loom:insert-line', { detail: { text: line } }));
+  }
 
   // Rough entry counter : count "@<type>{" occurrences in BibTeX.
   // Good enough for a status banner — the user just needs the order
@@ -263,6 +276,18 @@
               Imported {zoteroResult.count} entr{zoteroResult.count === 1 ? 'y' : 'ies'}
               from Zotero ({zoteroResult.bytes} bytes appended to <code>refs.bib</code>).
             </div>
+          {/if}
+          <div class="flex items-center gap-2 mb-2 text-xs">
+            <span class="opacity-70">Style:</span>
+            <button
+              type="button"
+              class="btn btn-ghost btn-xs font-mono"
+              onclick={() => (stylePickerOpen = !stylePickerOpen)}
+              data-testid="bib-style-open"
+            >{currentStyle ?? 'choose…'}</button>
+          </div>
+          {#if stylePickerOpen}
+            <BibStylePicker value={currentStyle} onPick={pickStyle} onClose={() => (stylePickerOpen = false)} />
           {/if}
           <input
             type="text"

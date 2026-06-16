@@ -15,6 +15,8 @@
   import SearchPanel from './lib/components/SearchPanel.svelte';
   import Breadcrumb from './lib/components/Breadcrumb.svelte';
   import SettingsPanel from './lib/components/SettingsPanel.svelte';
+  import SharingPanel from './lib/components/SharingPanel.svelte';
+  import PublicShareDialog from './lib/components/PublicShareDialog.svelte';
   import QuickOpen from './lib/components/QuickOpen.svelte';
   import AdminPanel from './lib/components/AdminPanel.svelte';
   import CommandPalette, { type Command } from './lib/components/CommandPalette.svelte';
@@ -228,6 +230,8 @@
   let sidebarView = $state<'none' | 'explorer' | 'search' | 'scm' | 'collab'>('explorer');
   let gitConfigOpen = $state<boolean>(false);
   let settingsOpen = $state<boolean>(false);
+  let sharingOpen = $state<boolean>(false);
+  let publicShareOpen = $state<boolean>(false);
   let templatesGalleryOpen = $state<boolean>(false);
   let shortcutHelpOpen = $state<boolean>(false);
   let scaffoldOpen = $state<boolean>(false);
@@ -1163,6 +1167,8 @@
     onScaffold={() => (scaffoldOpen = true)}
     onRevisionMode={() => onRevisionToggle(!revisionMode)}
     onOpenSettings={() => (settingsOpen = true)}
+    onOpenSharing={() => (sharingOpen = true)}
+    onOpenPublicShare={() => (publicShareOpen = true)}
   />
   <!-- Tagline strip — centered, sits directly under the MenuBar.
        i18n-driven so it flips with the 🌐 locale switcher. -->
@@ -1613,6 +1619,12 @@
     onSynced={refreshExplorer}
   />
   <SettingsPanel bind:open={settingsOpen} onClose={() => (settingsOpen = false)} />
+  {#if sharingOpen}
+    <SharingPanel {project} onClose={() => (sharingOpen = false)} />
+  {/if}
+  {#if publicShareOpen}
+    <PublicShareDialog {project} onClose={() => (publicShareOpen = false)} />
+  {/if}
   <ShortcutHelp bind:open={shortcutHelpOpen} onClose={() => (shortcutHelpOpen = false)} />
   <ScaffoldDialog
     bind:open={scaffoldOpen}

@@ -14,6 +14,7 @@
   import { languageForPath, iconForPath } from '../theme';
   import { gitStatus } from '../gitStatusStore.svelte';
   import NewFileDialog from './NewFileDialog.svelte';
+  import ImportZipDialog from './ImportZipDialog.svelte';
   import GitPanel from './GitPanel.svelte';
 
   interface Props {
@@ -28,6 +29,7 @@
   let loadError = $state<string | null>(null);
   let loading = $state(false);
   let newOpen = $state(false);
+  let importOpen = $state(false);
   let gitOpen = $state(false);
   // collapsed: paths of directories the user has explicitly collapsed.
   // Default = ALL dirs collapsed (VSCode parity — opening a project
@@ -367,6 +369,15 @@
       <button
         type="button"
         class="btn btn-ghost btn-xs"
+        title="Import ZIP"
+        aria-label="Import ZIP"
+        onclick={() => (importOpen = true)}
+      >
+        ⤒
+      </button>
+      <button
+        type="button"
+        class="btn btn-ghost btn-xs"
         title="Git sync (GitHub / GitLab / Forgejo)"
         aria-label="Git sync"
         onclick={() => (gitOpen = true)}
@@ -490,4 +501,5 @@
 </aside>
 
 <NewFileDialog bind:open={newOpen} {project} onClose={() => (newOpen = false)} onCreated={onCreated} />
+<ImportZipDialog bind:open={importOpen} {project} onClose={() => (importOpen = false)} onDone={refresh} />
 <GitPanel bind:open={gitOpen} {project} onClose={() => (gitOpen = false)} onSynced={refresh} />
