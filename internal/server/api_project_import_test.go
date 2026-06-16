@@ -277,10 +277,55 @@ func TestProjectImport_SkipExportPaths(t *testing.T) {
 	if err := json.Unmarshal(rec2.Body.Bytes(), &summary2); err != nil {
 		t.Fatalf("decode : %v", err)
 	}
-	if summary2.Imported != 3 {
-		t.Errorf("include=all imported = %d ; want 3", summary2.Imported)
+	// include=all expands the SOFT skip (.git/objects/pack/) but the
+	// .weft-loom/ namespace stays HARD-skipped — see the dedicated
+	// TestProjectImport_NeverWritesInternalPaths test for the rationale.
+	if summary2.Imported != 2 {
+		t.Errorf("include=all imported = %d ; want 2 (.git pack included, .weft-loom still skipped)", summary2.Imported)
 	}
 
 	// Silence the unused-store warning when no further assertions hit.
 	_ = store
+}
+
+// TestProjectImport_NeverWritesInternalPaths pins the second
+// security fix : even with ?include=all a hostile zip MUST NOT
+// be able to write under .weft-loom/. Pre-fix the include=all
+// query knob bypassed every skip, so an attacker could forge
+// .weft-loom/owner = "their-subject" and become project owner
+// via the sharing API afterwards.
+func TestProjectImport_NeverWritesInternalPaths(t *testing.T) {
+	s, store := newImportTestServer(t)
+	zipBytes := buildZip(t, map[string]string{
+		"paper.tex":                        "legit\n",
+		".weft-loom/owner":                 "attacker\n",
+		".weft-loom/sharing.json":          "{}\n",
+		".weft-loom/public-share.json":     "{\"token\":\"forged\"}\n",
+	})
+
+	rec := httptest.NewRecorder()
+	s.handleProjectImport(rec, importRequest(t, "dst", zipBytes, "include=all"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d ; body = %s", rec.Code, rec.Body.String())
+	}
+	var summary struct {
+		Imported int `json:"imported"`
+		Skipped  int `json:"skipped"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &summary); err != nil {
+		t.Fatalf("decode : %v", err)
+	}
+	if summary.Imported != 1 {
+		t.Errorf("imported = %d ; want 1 (only paper.tex)", summary.Imported)
+	}
+	if summary.Skipped != 3 {
+		t.Errorf("skipped = %d ; want 3 (.weft-loom triple)", summary.Skipped)
+	}
+
+	// Sanity : the store should not have a .weft-loom/owner file.
+	ident := auth.Identity{Subject: "dev-user"}
+	_, err := store.ReadFile(context.Background(), ident, "dst", ".weft-loom/owner")
+	if err == nil {
+		t.Errorf(".weft-loom/owner was written despite the import-side guard")
+	}
 }

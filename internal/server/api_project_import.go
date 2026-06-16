@@ -89,6 +89,15 @@ func (s *Server) handleProjectImport(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		// HARD skip : the server-side sidecar namespace is NEVER
+		// writable through this endpoint, regardless of ?include=all.
+		// Otherwise a hostile zip could ship a forged .weft-loom/owner
+		// and elevate the importer to project owner. The dedicated
+		// sharing/public-share APIs are the only legitimate path.
+		if isInternalPath(clean) {
+			skipped++
+			continue
+		}
 		if !includeAll && skipExportPath(clean) {
 			skipped++
 			continue
