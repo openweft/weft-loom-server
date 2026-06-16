@@ -31,6 +31,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/openweft/weft-loom-server/internal/auth"
 	"github.com/openweft/weft-loom-server/internal/compile"
+	"github.com/openweft/weft-loom-server/internal/email"
 	"github.com/openweft/weft-loom-server/internal/eventbus"
 	"github.com/openweft/weft-loom-server/internal/history"
 	"github.com/openweft/weft-loom-server/internal/natsbroker"
@@ -59,6 +60,10 @@ type Options struct {
 	// value = safe production defaults except in dev mode (Auth=nil)
 	// where the missing-config path is permissive on purpose.
 	Config SecurityConfig
+	// Mailer delivers @-mention + new-comment notifications. nil =
+	// noop (no SMTP configured). NewSender returns a NoopSender for
+	// an empty SMTPHost so callers can always set this field.
+	Mailer email.Sender
 }
 
 // SecurityConfig groups runtime security knobs surfaced to the server

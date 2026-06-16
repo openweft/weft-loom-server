@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/openweft/weft-loom-server/internal/compile"
 	"github.com/openweft/weft-loom-server/internal/config"
+	"github.com/openweft/weft-loom-server/internal/email"
 	"github.com/openweft/weft-loom-server/internal/project"
 	"github.com/openweft/weft-loom-server/internal/server"
 	"github.com/openweft/weft-loom-server/internal/web"
@@ -120,11 +122,21 @@ func serve(ctx context.Context, cfg config.Config) error {
 		spa = nil
 	}
 
+	smtpPort, _ := strconv.Atoi(os.Getenv("WEFT_LOOM_SMTP_PORT"))
+	mailer := email.NewSender(email.Options{
+		SMTPHost: os.Getenv("WEFT_LOOM_SMTP_HOST"),
+		SMTPPort: smtpPort,
+		Username: os.Getenv("WEFT_LOOM_SMTP_USER"),
+		Password: os.Getenv("WEFT_LOOM_SMTP_PASS"),
+		From:     os.Getenv("WEFT_LOOM_SMTP_FROM"),
+	}, log)
+
 	srv, err := server.New(server.Options{
 		Logger:   log,
 		Static:   spa,
 		Projects: store,
 		Compiler: compiler,
+		Mailer:   mailer,
 		// Auth nil = dev mode for V0.1 ; V0.2 wires dex.
 	})
 	if err != nil {
