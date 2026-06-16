@@ -68,7 +68,9 @@
   // on save.
   let odtHeader = $state<string>('');
   let odtFooter = $state<string>('');
+  // svelte-ignore non_reactive_update -- bind:this populates these; only read in handlers + save snapshot.
   let headerEl: HTMLDivElement | undefined;
+  // svelte-ignore non_reactive_update -- same as headerEl
   let footerEl: HTMLDivElement | undefined;
   // Debounce timer for save-on-change : ~600 ms after the last
   // keystroke we serialise + PUT. Keeps the keystroke loop tight.

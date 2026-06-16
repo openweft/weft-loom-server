@@ -43,6 +43,7 @@
   }
   let { project, file, onCursorStats }: Props = $props();
 
+  // svelte-ignore non_reactive_update -- bind:this populates this; we only read it in handlers after onMount has fired.
   let editorEl: HTMLDivElement;
   let status = $state<'loading' | 'ready' | 'saving' | 'error'>('loading');
   let errorMessage = $state('');
@@ -99,7 +100,7 @@
   let trackChangesOpen = $state<boolean>(false);
   let presenceDestroy: (() => void) | undefined;
   let spellDestroy: (() => void) | undefined;
-  let changeLog: ChangeLog | undefined;
+  let changeLog = $state<ChangeLog | undefined>(undefined);
   let lastSnapshot = ''; // for change-log before/after diff
   let identityName = $state<string>('me');
   let identityColor = $state<string>('hsl(220, 60%, 50%)');
