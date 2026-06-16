@@ -286,6 +286,49 @@ func TestHumaRawHandlers_StillAuthGuarded(t *testing.T) {
 	}
 }
 
+// TestInternalPathBlocked_History pins that the history endpoints
+// (list / snapshot / diff / restore / label) refuse to operate on
+// .weft-loom/ paths. Pre-fix a pre-fix snapshot of .weft-loom/owner
+// could be restored over the live file → escalation.
+func TestInternalPathBlocked_History(t *testing.T) {
+	srv, _ := newTestServer(t)
+	defer srv.Close()
+	// list ; snapshot ; diff need GET with ?file=.weft-loom/owner
+	for _, ep := range []string{
+		"/api/projects/p1/history/list?file=.weft-loom/owner",
+		"/api/projects/p1/history/snapshot?file=.weft-loom/owner&at=2026-01-01T00:00:00Z",
+		"/api/projects/p1/history/diff?file=.weft-loom/owner&from=2026-01-01T00:00:00Z",
+	} {
+		resp, err := http.Get(srv.URL + ep)
+		if err != nil {
+			t.Fatalf("GET %s : %v", ep, err)
+		}
+		resp.Body.Close()
+		// list returns 200 with empty array (defensive) ;
+		// snapshot/diff return 404 not found ; both refuse to leak.
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
+			t.Errorf("%s : status = %d ; want 200/empty or 404", ep, resp.StatusCode)
+		}
+	}
+	// restore + label : POST with body.File=.weft-loom/owner → 403
+	for _, ep := range []string{
+		"/api/projects/p1/history/restore",
+		"/api/projects/p1/history/label",
+	} {
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+ep,
+			strings.NewReader(`{"file":".weft-loom/owner","at":"2026-01-01T00:00:00Z","label":"x"}`))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST %s : %v", ep, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusNotFound {
+			t.Errorf("%s : status = %d ; want 403 or 404 (internal path)", ep, resp.StatusCode)
+		}
+	}
+}
+
 // TestInternalPathBlocked pins the privilege-escalation fix : an
 // authenticated user must not be able to read/write/list .weft-loom/
 // via the generic /files/ endpoints. Pre-fix, any authed user could

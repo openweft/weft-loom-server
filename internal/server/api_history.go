@@ -67,6 +67,10 @@ func (s *Server) handleHistoryList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "file query param required", http.StatusBadRequest)
 		return
 	}
+	if isInternalPath(file) {
+		writeJSON(w, http.StatusOK, map[string]any{"entries": []any{}})
+		return
+	}
 	dir, err := s.projectWorkingDir(ident, projectName(r))
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"entries": []any{}})
@@ -93,6 +97,10 @@ func (s *Server) handleHistorySnapshot(w http.ResponseWriter, r *http.Request) {
 	atStr := r.URL.Query().Get("at")
 	if file == "" || atStr == "" {
 		http.Error(w, "file + at query params required", http.StatusBadRequest)
+		return
+	}
+	if isInternalPath(file) {
+		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 	at, err := time.Parse(time.RFC3339Nano, atStr)
@@ -139,6 +147,10 @@ func (s *Server) handleHistoryDiff(w http.ResponseWriter, r *http.Request) {
 	}
 	if file == "" || fromStr == "" {
 		http.Error(w, "file + from query params required", http.StatusBadRequest)
+		return
+	}
+	if isInternalPath(file) {
+		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 	fromTs, ferr := parseAtParam(fromStr)
@@ -236,6 +248,10 @@ func (s *Server) handleHistoryLabel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "file + at required", http.StatusBadRequest)
 		return
 	}
+	if isInternalPath(body.File) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
 	at, err := parseAtParam(body.At)
 	if err != nil {
 		http.Error(w, "at must be RFC3339 timestamp", http.StatusBadRequest)
@@ -285,6 +301,13 @@ func (s *Server) handleHistoryRestore(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.File == "" || body.At == "" {
 		http.Error(w, "file + at required", http.StatusBadRequest)
+		return
+	}
+	// Refuse restoring into the server-side sidecar namespace —
+	// see api_files / api_project_import for the same gate. A pre-
+	// fix snapshot of .weft-loom/owner must not be replayable.
+	if isInternalPath(body.File) {
+		http.Error(w, "internal path", http.StatusForbidden)
 		return
 	}
 	at, err := time.Parse(time.RFC3339Nano, body.At)
