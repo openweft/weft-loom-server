@@ -236,16 +236,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) routes() {
-	// Public.
-	s.mux.HandleFunc("GET /api/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	})
-
-	// Typed API surface (list-projects, list-files, start-compile)
-	// flows through huma, which registers operations on s.mux and
-	// publishes the spec at /api/openapi + interactive docs at
-	// /api/docs.
+	// Typed API surface (healthz, list-projects, list-files,
+	// start-compile, admin/email, admin/oci-images, project-templates,
+	// scaffold, …) flows through huma, which registers operations on
+	// s.mux and publishes the spec at /api/openapi + interactive docs
+	// at /api/docs. Healthz is the one unauthenticated huma op ;
+	// every other operation 401s when ServeHTTP didn't inject an
+	// identity into ctx.
 	mountAPI(s.mux, s)
 
 	// Routes that don't fit huma cleanly stay raw :
@@ -254,19 +251,13 @@ func (s *Server) routes() {
 	//   - WebSocket sync bridge
 	// Auth is checked inside via auth.IdentityFrom — ServeHTTP
 	// already injected the identity into ctx by the time we get here.
-	s.mux.HandleFunc("GET /api/admin/oci-images", s.requireAuth(s.handleAdminOCIImages))
 	s.mux.HandleFunc("GET /api/projects/{name}/files/{path...}", s.requireAuth(s.handleReadFile))
 	s.mux.HandleFunc("PUT /api/projects/{name}/files/{path...}", s.requireAuth(s.handleWriteFile))
 	s.mux.HandleFunc("DELETE /api/projects/{name}/files/{path...}", s.requireAuth(s.handleDeleteFile))
-	// V0.3 git surface — UI-complete with stub backends ; go-git
-	// wiring is the next milestone. See internal/server/api_git.go
-	// for the contract the client lib/git.ts mirrors.
-	s.mux.HandleFunc("GET /api/projects/{name}/git/status", s.requireAuth(s.handleGitStatus))
-	s.mux.HandleFunc("POST /api/projects/{name}/git/config", s.requireAuth(s.handleGitConfig))
-	s.mux.HandleFunc("POST /api/projects/{name}/git/clone", s.requireAuth(s.handleGitClone))
-	s.mux.HandleFunc("POST /api/projects/{name}/git/pull", s.requireAuth(s.handleGitPull))
-	s.mux.HandleFunc("POST /api/projects/{name}/git/push", s.requireAuth(s.handleGitPush))
-	s.mux.HandleFunc("GET /api/projects/{name}/git/log", s.requireAuth(s.handleGitLog))
+	// V0.3 git surface — flows through the huma typed API (mountGitAPI
+	// in api_git.go) so the OpenAPI spec + generated TS client stay in
+	// sync. The 6 operations (status, config, clone, pull, push, log)
+	// are registered on s.mux indirectly via mountAPI above.
 	// V0.5 track-changes history : per-file text-snapshot timeline.
 	// Captures via the writeFile hook ; surfaces via huma — see
 	// mountHistoryAPI in api_history.go.
@@ -283,8 +274,9 @@ func (s *Server) routes() {
 	// OpenAPI spec covers it ; raw mux registration not needed.
 	// V0.14 : import a ZIP into an existing project (mirror of export.zip).
 	s.mux.HandleFunc("POST /api/projects/{name}/import", s.requireAuth(s.handleProjectImport))
-	// V0.14 : email config summary (read-only ; actual SMTP creds live in env vars).
-	s.mux.HandleFunc("GET /api/admin/email/config", s.requireAuth(s.handleAdminEmailConfig))
+	// V0.14 : email config summary (read-only ; actual SMTP creds live
+	// in env vars). Flows through the huma typed API — see mountAdminAPI
+	// in api_admin.go.
 	// V0.14 : public read-only project share. Owner-issued token → anyone
 	// with the URL reads files without auth. The 3 admin endpoints
 	// (POST/GET/DELETE /api/projects/{name}/public-share) flow through
@@ -295,12 +287,13 @@ func (s *Server) routes() {
 	// V0.11 : multi-file project scaffolds. The catalogue is
 	// project-agnostic so list is at /api/project-templates ;
 	// applying a scaffold writes into a target project + needs auth.
-	s.mux.HandleFunc("GET /api/project-templates", s.requireAuth(s.handleProjectTemplatesList))
-	s.mux.HandleFunc("POST /api/projects/{name}/scaffold", s.requireAuth(s.handleProjectScaffold))
+	// Both flow through the huma typed API — see mountAdminAPI +
+	// mountScaffoldAPI in api_admin.go.
 	// V0.3 LLM chat surface — stub responses for now ; full wiring
 	// to Ollama / Anthropic / OpenAI lands when the backend config
-	// surface is in place.
-	s.mux.HandleFunc("POST /api/projects/{name}/chat", s.requireAuth(s.handleChat))
+	// surface is in place. The non-streaming /chat endpoint flows
+	// through the huma typed API (mountChatAPI) ; the SSE /ai/chat
+	// stays raw below.
 	// V0.6 streaming SSE companion. Proxies to a real provider
 	// (Ollama local, Anthropic with ANTHROPIC_API_KEY) when one is
 	// reachable ; 503 + stub JSON otherwise so the SPA shows a
@@ -318,13 +311,14 @@ func (s *Server) routes() {
 	// browsers connected within ~50 ms of each other.
 	// {path...} wildcard must terminate the pattern (net/http ServeMux
 	// constraint), so the verb segment ("seed-claim") comes BEFORE
-	// the path wildcard. The handler reads the path via r.PathValue.
-	s.mux.HandleFunc("POST /api/projects/{name}/seed-claim/{path...}", s.requireAuth(s.handleSeedClaim))
+	// the path wildcard. Flows through the huma typed API — see
+	// mountSeedAPI in api_seed.go.
 	// loom-doctor observability surface — SSE stream + client event
-	// fan-in. The DoctorPanel in the SPA mounts the SSE here and the
-	// SPA's logbus client posts to /api/events/client.
+	// fan-in. The DoctorPanel in the SPA mounts the SSE here. The
+	// POST /api/events/client fan-in flows through the huma typed API
+	// (mountEventsAPI in api_events.go) ; the SSE GET stays raw because
+	// streaming responses don't fit huma's typed model.
 	s.mux.HandleFunc("GET /api/events", s.requireAuth(s.handleEventsStream))
-	s.mux.HandleFunc("POST /api/events/client", s.requireAuth(s.handleClientEvent))
 	// Workspace VM bootstrap : the in-guest init fetches this tar
 	// at boot to populate /workspace with the user's project files.
 	// Authenticated like the rest of the API ; the handler ALSO
@@ -337,15 +331,16 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/projects/{name}/compile/{id}/synctex", s.requireAuth(s.handleSyncTeX))
 	// Cancel an in-flight compile : the SPA's red "Cancel" button
 	// posts here so the user can pull the plug on a runaway pdflatex
-	// loop without waiting for the watchdog timeout.
-	s.mux.HandleFunc("POST /api/projects/{name}/compile/{id}/cancel", s.requireAuth(s.handleCancelCompile))
+	// loop without waiting for the watchdog timeout. Flows through
+	// the huma typed API — see mountCompileAPI in api_compile.go.
 	// T8 LSP : per-language WS proxy to a stdio language server.
 	// `/api/lsp/{lang}` routes to internal/lsp ; we keep the path
 	// outside /api/projects/ since the LSP itself opens the project
 	// dir via initialize's rootUri.
 	s.mux.HandleFunc("GET /api/lsp/{lang}", s.requireAuth(s.handleLSP))
 	s.mux.HandleFunc("GET /api/lsp", s.requireAuth(s.handleLSPList))
-	s.mux.HandleFunc("POST /api/projects/{name}/notebook/exec", s.requireAuth(s.handleNotebookExec))
+	// /api/projects/{name}/notebook/exec flows through the huma typed
+	// API — see mountNotebookAPI in api_notebook.go.
 	s.mux.HandleFunc("GET /api/projects/{name}/sync", s.handleSync)
 	// y-websocket appends "/{roomName}" to the configured WS URL, even
 	// when the room name is empty — so the actual URL hitting us is

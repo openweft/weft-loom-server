@@ -1,8 +1,10 @@
 package server
 
-// api_chat.go — POST /api/projects/{name}/chat (legacy JSON stub) +
-// POST /api/projects/{name}/ai/chat (streaming SSE wired to a real
-// provider). The streaming surface picks a provider at request time :
+// api_chat.go — POST /api/projects/{name}/chat (legacy JSON stub, typed
+// via huma) + POST /api/projects/{name}/ai/chat (streaming SSE wired to
+// a real provider, kept raw because SSE doesn't fit huma's typed model).
+//
+// The streaming surface picks a provider at request time :
 //
 //   1. Ollama at http://127.0.0.1:11434 if reachable (local, free).
 //   2. Anthropic Claude when ANTHROPIC_API_KEY is set.
@@ -26,11 +28,13 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/danielgtaylor/huma/v2"
 )
 
 type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string `json:"role" doc:"Speaker role : system | user | assistant"`
+	Content string `json:"content" doc:"Message text"`
 }
 
 type chatRequest struct {
@@ -44,24 +48,43 @@ type chatResponse struct {
 	Model string `json:"model,omitempty"`
 }
 
-func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
-	var req chatRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
-		return
+// chatInput is the typed huma wire shape for the legacy /chat stub.
+// The body fields mirror chatRequest verbatim so the JSON shape is
+// byte-identical to the pre-huma handler.
+type chatInput struct {
+	Project string `path:"name" doc:"Project name"`
+	Body    struct {
+		Messages    []chatMessage `json:"messages" doc:"Conversation history ; the last entry is the user's current question."`
+		File        string        `json:"file,omitempty" doc:"Currently-open file path (relative to the project root). Used to enrich the stub reply."`
+		FileContent string        `json:"file_content,omitempty" doc:"Snapshot of the currently-open file. Used to enrich the stub reply."`
 	}
-	if len(req.Messages) == 0 {
-		writeJSON(w, http.StatusOK, chatResponse{
-			Reply: "I didn't catch a message — try asking again.",
-		})
-		return
+}
+
+type chatOutput struct {
+	Body struct {
+		Reply string `json:"reply" doc:"Stub reply text — the streaming /ai/chat endpoint is what wires to a real provider."`
+		Model string `json:"model,omitempty" doc:"Model identifier echoed back to the SPA (always \"stub-v0\" for this endpoint)."`
 	}
-	last := req.Messages[len(req.Messages)-1].Content
-	reply := stubReply(last, req.File, req.FileContent)
-	writeJSON(w, http.StatusOK, chatResponse{
-		Reply: reply,
-		Model: "stub-v0",
+}
+
+func mountChatAPI(api huma.API, s *Server) {
+	huma.Register(api, huma.Operation{
+		OperationID: "chat-stub",
+		Method:      "POST",
+		Path:        "/api/projects/{name}/chat",
+		Summary:     "Legacy non-streaming chat stub",
+		Description: "Returns a canned reply that demonstrates the assistant has access to the user's file context. The real provider lives behind the SSE /api/projects/{name}/ai/chat endpoint (raw, outside the typed API).",
+		Tags:        []string{"chat"},
+	}, func(ctx context.Context, in *chatInput) (*chatOutput, error) {
+		out := &chatOutput{}
+		if len(in.Body.Messages) == 0 {
+			out.Body.Reply = "I didn't catch a message — try asking again."
+			return out, nil
+		}
+		last := in.Body.Messages[len(in.Body.Messages)-1].Content
+		out.Body.Reply = stubReply(last, in.Body.File, in.Body.FileContent)
+		out.Body.Model = "stub-v0"
+		return out, nil
 	})
 }
 

@@ -4,6 +4,46 @@
  */
 
 export interface paths {
+    "/api/admin/email/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the SMTP sender summary
+         * @description Returns whether SMTP is configured at the process level (host env var present) and the From address operators advertise to end users. Credentials are deliberately never returned.
+         */
+        get: operations["admin-email-config"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/oci-images": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Probe the compile dispatcher's OCI images
+         * @description Returns one entry per language with its resolved image ref, the manifest probe status (ok | missing | unauthorized | unreachable) and the last-checked unix timestamp. Cached for 5 minutes ; pass ?force=1 to bypass the cache.
+         */
+        get: operations["admin-oci-images"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/arxiv/search": {
         parameters: {
             query?: never;
@@ -16,6 +56,66 @@ export interface paths {
          * @description Server-side proxy for arXiv's Atom-XML query API. Parses the upstream feed + returns a compact JSON envelope so the SPA doesn't pull a full XML parser into the bundle.
          */
         get: operations["arxiv-search"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/events/client": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Publish an SPA-side event to the doctor bus
+         * @description Accepts a JSON event from the SPA's logbus client and republishes it onto the in-process event bus, which the SSE stream at GET /api/events fans out to subscribers. The SSE GET endpoint stays raw (streaming doesn't fit huma's typed model).
+         */
+        post: operations["client-event"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/healthz": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Liveness probe
+         * @description Returns { status: "ok" } once the server is accepting requests. Unauthenticated — the operator's probe + the SPA both rely on this.
+         */
+        get: operations["healthz"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/project-templates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the multi-file project scaffolds
+         * @description Returns the curated catalogue of project templates surfaced in the SPA's "New project from template" picker. Each entry lists the files it would write + a size hint so the dialog can preview "5 files, 6.2 KB".
+         */
+        get: operations["list-project-templates"];
         put?: never;
         post?: never;
         delete?: never;
@@ -61,6 +161,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{name}/chat": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Legacy non-streaming chat stub
+         * @description Returns a canned reply that demonstrates the assistant has access to the user's file context. The real provider lives behind the SSE /api/projects/{name}/ai/chat endpoint (raw, outside the typed API).
+         */
+        post: operations["chat-stub"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{name}/compile": {
         parameters: {
             query?: never;
@@ -81,6 +201,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{name}/compile/{id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel an in-flight compile
+         * @description Kills the in-flight job — the run goroutine sees ctx.Done() (host subprocess path) / the NATS exec `x` byte (workspace dispatch path), bails, and the SSE stream emits a "compile cancelled by user" log line followed by a result(success=false) event. Returns 204 on success ; 404 when the jobID is unknown or the job already terminated.
+         */
+        post: operations["cancel-compile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{name}/files": {
         parameters: {
             query?: never;
@@ -93,6 +233,126 @@ export interface paths {
          * @description Returns every file in the project as a flat list with relative paths. Directories appear with dir=true. Binary read/write of one file lands on /api/projects/{name}/files/{path...} (raw, outside the typed API).
          */
         get: operations["list-files"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{name}/git/clone": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Clone the configured remote into the project working tree
+         * @description Wipes any existing working tree and re-clones from the remote at the requested branch. Transient git errors land in the status body rather than as HTTP errors.
+         */
+        post: operations["git-clone"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{name}/git/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Configure the project's git remote
+         * @description Persists remote URL, branch, provider, and (optional) PAT to the project sidecar. Returns the resulting status.
+         */
+        post: operations["git-config"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{name}/git/log": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Commit graph (HEAD-first)
+         * @description Flat commit list with parent SHAs so the SPA can paint the lane graph client-side. Capped at limit (default 200, max 1000).
+         */
+        get: operations["git-log"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{name}/git/pull": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Pull the configured branch
+         * @description Fast-forwards the working tree against origin. Transient errors land in the status body.
+         */
+        post: operations["git-pull"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{name}/git/push": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Auto-commit and push the configured branch
+         * @description Stages every dirty + untracked file, commits with the caller's identity, then pushes to origin. Transient errors land in the status body.
+         */
+        post: operations["git-push"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{name}/git/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Project git sync status
+         * @description Returns the configured remote/branch, the dirty-file list, and the last sync timestamp.
+         */
+        get: operations["git-status"];
         put?: never;
         post?: never;
         delete?: never;
@@ -198,6 +458,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{name}/notebook/exec": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Execute one notebook cell in the workspace μVM
+         * @description Dispatches the cell source as a shell command into the user's pre-spawned workspace μVM ; the wrapper binary is per-language. Returns captured stdout + stderr + exit code. Hard 60 s timeout so runaway loops don't pin the HTTP connection.
+         */
+        post: operations["notebook-exec"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{name}/public-share": {
         parameters: {
             query?: never;
@@ -221,6 +501,46 @@ export interface paths {
          * @description Removes the sidecar + drops the token from the in-memory index. Idempotent — returns 204 even when no share existed.
          */
         delete: operations["delete-public-share"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{name}/scaffold": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Seed a project from a multi-file template
+         * @description Writes every file listed in the catalogue entry under the target project. By default the request 409s if any target path already exists in the project ; pass force=true to overwrite. The response carries the list of written files + an entry-point suggestion (main.tex / slides.md / README.md, in that priority).
+         */
+        post: operations["apply-project-template"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{name}/seed-claim/{path...}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Atomic seeder election for one (project, file)
+         * @description Returns 200 + {elected:true} on the FIRST caller within the staleness window ; 409 + {elected:false} for everyone else. Used by the SPA to break the two-browsers-open-the-same-file race the client-side lowest-clientID heuristic couldn't catch reliably.
+         */
+        post: operations["seed-claim"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -294,6 +614,60 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        ChatInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/ChatInputBody.json
+             */
+            readonly $schema?: string;
+            /** @description Currently-open file path (relative to the project root). Used to enrich the stub reply. */
+            file?: string;
+            /** @description Snapshot of the currently-open file. Used to enrich the stub reply. */
+            file_content?: string;
+            /** @description Conversation history ; the last entry is the user's current question. */
+            messages: components["schemas"]["ChatMessage"][] | null;
+        };
+        ChatMessage: {
+            /** @description Message text */
+            content: string;
+            /** @description Speaker role : system | user | assistant */
+            role: string;
+        };
+        ChatOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/ChatOutputBody.json
+             */
+            readonly $schema?: string;
+            /** @description Model identifier echoed back to the SPA (always "stub-v0" for this endpoint). */
+            model?: string;
+            /** @description Stub reply text — the streaming /ai/chat endpoint is what wires to a real provider. */
+            reply: string;
+        };
+        ClientEventInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/ClientEventInputBody.json
+             */
+            readonly $schema?: string;
+            /** @description Event component (e.g. "editor", "compile"). */
+            component: string;
+            /** @description Arbitrary structured fields ; merged with the bus event payload. */
+            fields?: {
+                [key: string]: unknown;
+            };
+            /** @description Severity hint : info | warn | error. Empty = info. */
+            level?: string;
+            /** @description Free-form message body. */
+            message?: string;
+            /** @description Project name when the event scopes to one. */
+            project?: string;
+            /** @description Event verb (e.g. "opened", "saved"). */
+            verb: string;
+        };
         DiffLine: {
             kind: string;
             /** Format: int64 */
@@ -319,6 +693,16 @@ export interface components {
             doi: string;
             /** @description Optional target .bib file ; defaults to the first .bib in the project or refs.bib */
             target?: string;
+        };
+        EmailConfigResponse: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/EmailConfigResponse.json
+             */
+            readonly $schema?: string;
+            configured: boolean;
+            from?: string;
         };
         Entry: {
             /**
@@ -392,6 +776,73 @@ export interface components {
              * @description Size in bytes
              */
             size: number;
+        };
+        GitChange: {
+            path: string;
+            status: string;
+        };
+        GitConfig: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/GitConfig.json
+             */
+            readonly $schema?: string;
+            branch: string;
+            provider: string;
+            remote_url: string;
+            token?: string;
+        };
+        GitLogEntry: {
+            author: string;
+            email: string;
+            parents: string[] | null;
+            ref_names?: string[] | null;
+            sha: string;
+            subject: string;
+            /** Format: int64 */
+            unix_time: number;
+        };
+        GitLogResponse: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/GitLogResponse.json
+             */
+            readonly $schema?: string;
+            branch: string;
+            entries: components["schemas"]["GitLogEntry"][] | null;
+            head_sha: string;
+        };
+        GitStatus: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/GitStatus.json
+             */
+            readonly $schema?: string;
+            /** Format: int64 */
+            ahead: number;
+            /** Format: int64 */
+            behind: number;
+            branch: string;
+            changes: components["schemas"]["GitChange"][] | null;
+            configured: boolean;
+            last_error?: string;
+            /** Format: int64 */
+            last_sync_unix?: number;
+            provider: string;
+            remote_url: string;
+        };
+        HealthzOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/HealthzOutputBody.json
+             */
+            readonly $schema?: string;
+            /** @description Always "ok" — liveness probe */
+            status: string;
         };
         HistoryDiffOutputBody: {
             /**
@@ -485,6 +936,52 @@ export interface components {
             readonly $schema?: string;
             items: components["schemas"]["ProjectOut"][] | null;
         };
+        NotebookExecInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/NotebookExecInputBody.json
+             */
+            readonly $schema?: string;
+            /** @description Notebook language_info.name (python | go | node | ruby | rust). Defaults to python when unknown. */
+            language: string;
+            /** @description Cell source ; passed verbatim to the chosen interpreter via shell quoting. */
+            source: string;
+        };
+        NotebookExecResponse: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/NotebookExecResponse.json
+             */
+            readonly $schema?: string;
+            /**
+             * Format: int64
+             * @description Process exit code ; 0 = success, 124 = our 60 s timeout.
+             */
+            exit_code: number;
+            /** @description Captured stderr from the cell's interpreter. */
+            stderr: string;
+            /** @description Captured stdout from the cell's interpreter. */
+            stdout: string;
+        };
+        OciImageStatus: {
+            detail?: string;
+            image: string;
+            language: string;
+            /** Format: int64 */
+            last_checked_unix: number;
+            status: string;
+        };
+        OciImagesOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/OciImagesOutputBody.json
+             */
+            readonly $schema?: string;
+            images: components["schemas"]["OciImageStatus"][] | null;
+        };
         ProjectOut: {
             /**
              * Format: date-time
@@ -495,6 +992,22 @@ export interface components {
             language?: string;
             /** @description Project name (filesystem-safe identifier) */
             name: string;
+        };
+        ProjectTemplate: {
+            description: string;
+            files: components["schemas"]["ScaffoldFile"][] | null;
+            id: string;
+            language: string;
+            name: string;
+        };
+        ProjectTemplatesListOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/ProjectTemplatesListOutputBody.json
+             */
+            readonly $schema?: string;
+            items: components["schemas"]["ProjectTemplate"][] | null;
         };
         PublicShareOutBody: {
             /**
@@ -509,6 +1022,49 @@ export interface components {
             token: string;
             /** @description Shareable URL path (/public/<token>) */
             url: string;
+        };
+        ScaffoldFile: {
+            path: string;
+            /** Format: int64 */
+            size: number;
+        };
+        ScaffoldInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/ScaffoldInputBody.json
+             */
+            readonly $schema?: string;
+            /** @description Overwrite existing project files on path clash */
+            force?: boolean;
+            /** @description Catalogue entry id (e.g. latex-phd-thesis) */
+            template_id: string;
+        };
+        ScaffoldOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/ScaffoldOutputBody.json
+             */
+            readonly $schema?: string;
+            /** @description Existing project paths that would be overwritten (409 only) */
+            clashes?: string[] | null;
+            /** @description Suggested file to open in the editor */
+            entry?: string;
+            /** @description Human-readable error message (clash + write failures only) */
+            error?: string;
+            /** @description Files written (relative paths) */
+            written?: string[] | null;
+        };
+        SeedClaimOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/SeedClaimOutputBody.json
+             */
+            readonly $schema?: string;
+            /** @description True when the caller is the elected seeder ; false when another caller already holds the claim. */
+            elected: boolean;
         };
         SharingListOutputBody: {
             /**
@@ -590,6 +1146,67 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    "admin-email-config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EmailConfigResponse"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "admin-oci-images": {
+        parameters: {
+            query?: {
+                /** @description Force a fresh probe (bypass the 5-minute cache) */
+                force?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OciImagesOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
     "arxiv-search": {
         parameters: {
             query?: {
@@ -612,6 +1229,95 @@ export interface operations {
                 };
                 content: {
                     "application/json": string;
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "client-event": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ClientEventInputBody"];
+            };
+        };
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    healthz: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HealthzOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "list-project-templates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectTemplatesListOutputBody"];
                 };
             };
             /** @description Error */
@@ -691,6 +1397,42 @@ export interface operations {
             };
         };
     };
+    "chat-stub": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChatInputBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
     "start-compile": {
         parameters: {
             query?: never;
@@ -727,6 +1469,38 @@ export interface operations {
             };
         };
     };
+    "cancel-compile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project name */
+                name: string;
+                /** @description Job identifier returned by start-compile */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
     "list-files": {
         parameters: {
             query?: never;
@@ -746,6 +1520,209 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ListFilesOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "git-clone": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GitConfig"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitStatus"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "git-config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GitConfig"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitStatus"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "git-log": {
+        parameters: {
+            query?: {
+                /** @description Maximum number of commits to return (1..1000) */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                /** @description Project name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitLogResponse"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "git-pull": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitStatus"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "git-push": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitStatus"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "git-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitStatus"];
                 };
             };
             /** @description Error */
@@ -940,6 +1917,42 @@ export interface operations {
             };
         };
     };
+    "notebook-exec": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NotebookExecInputBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotebookExecResponse"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
     "get-public-share": {
         parameters: {
             query?: never;
@@ -1022,6 +2035,76 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "apply-project-template": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Target project name */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScaffoldInputBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScaffoldOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "seed-claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project name */
+                name: string;
+                /** @description File path relative to the project root ; matches the {path...} suffix wildcard. */
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SeedClaimOutputBody"];
+                };
             };
             /** @description Error */
             default: {

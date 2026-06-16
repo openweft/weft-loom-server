@@ -48,6 +48,18 @@ type startCompileOutput struct {
 	}
 }
 
+// cancelCompileInput carries the (project, jobID) tuple. Both come
+// from path segments so the wire stays GET-friendly.
+type cancelCompileInput struct {
+	Project string `path:"name" doc:"Project name"`
+	ID      string `path:"id" doc:"Job identifier returned by start-compile"`
+}
+
+// cancelCompileOutput renders 204 No Content on success — no body.
+type cancelCompileOutput struct {
+	Status int
+}
+
 func mountCompileAPI(api huma.API, s *Server) {
 	huma.Register(api, huma.Operation{
 		OperationID:   "start-compile",
@@ -77,5 +89,23 @@ func mountCompileAPI(api huma.API, s *Server) {
 		}
 		out.Body.ID = id
 		return out, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "cancel-compile",
+		Method:        "POST",
+		Path:          "/api/projects/{name}/compile/{id}/cancel",
+		Summary:       "Cancel an in-flight compile",
+		Description:   "Kills the in-flight job — the run goroutine sees ctx.Done() (host subprocess path) / the NATS exec `x` byte (workspace dispatch path), bails, and the SSE stream emits a \"compile cancelled by user\" log line followed by a result(success=false) event. Returns 204 on success ; 404 when the jobID is unknown or the job already terminated.",
+		Tags:          []string{"compile"},
+		DefaultStatus: 204,
+	}, func(ctx context.Context, in *cancelCompileInput) (*cancelCompileOutput, error) {
+		if s == nil {
+			return nil, huma.Error500InternalServerError("server not initialised")
+		}
+		if !s.opts.Compiler.Cancel(in.ID) {
+			return nil, huma.Error404NotFound("job not found or already finished")
+		}
+		return &cancelCompileOutput{Status: 204}, nil
 	})
 }

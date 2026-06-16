@@ -23,7 +23,6 @@ package server
 // belongs in the deploy pipeline, not in the admin UI.
 
 import (
-	"net/http"
 	"os"
 )
 
@@ -35,17 +34,20 @@ type emailConfigResponse struct {
 	From       string `json:"from,omitempty"`
 }
 
-// handleAdminEmailConfig surfaces a sanitised view of the active SMTP
-// configuration. Reads from the same env vars that
-// internal/email/NewSender consumes ; never returns the password or
-// username. Any authenticated identity may read this — the same
-// scoping rule the OCI admin endpoint uses for V0.
-func (s *Server) handleAdminEmailConfig(w http.ResponseWriter, _ *http.Request) {
+// emailConfigOutput wraps the response struct for huma. Body shape is
+// byte-identical to the legacy raw handler.
+type emailConfigOutput struct {
+	Body emailConfigResponse
+}
+
+// readEmailConfig is the pure helper the huma operation calls. Same
+// env-var read as internal/email/NewSender consumes ; never returns
+// the password or username.
+func readEmailConfig() emailConfigResponse {
 	host := os.Getenv("WEFT_LOOM_SMTP_HOST")
 	from := os.Getenv("WEFT_LOOM_SMTP_FROM")
-	resp := emailConfigResponse{
+	return emailConfigResponse{
 		Configured: host != "",
 		From:       from,
 	}
-	writeJSON(w, http.StatusOK, resp)
 }

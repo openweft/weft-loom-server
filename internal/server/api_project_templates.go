@@ -12,16 +12,6 @@ package server
 //                                          → 200 { written: ["path", …] }
 //                                            409 if any target exists + force=false
 
-import (
-	"bytes"
-	"encoding/json"
-	"net/http"
-	"strings"
-
-	"github.com/openweft/weft-loom-server/internal/auth"
-	"github.com/openweft/weft-loom-server/internal/eventbus"
-)
-
 // scaffoldFile is one entry in a template's file list.
 type scaffoldFile struct {
 	Path    string `json:"path"`
@@ -273,102 +263,46 @@ Summary + future work.
 	return t
 }()
 
-func (s *Server) handleProjectTemplatesList(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"items": projectTemplates})
+// projectTemplatesListOutput is the wire envelope for GET
+// /api/project-templates — { items: [...] }. The items field carries
+// the same struct + JSON tags as the legacy handler so the SPA's
+// ScaffoldDialog.svelte deserialises unchanged.
+type projectTemplatesListOutput struct {
+	Body struct {
+		Items []projectTemplate `json:"items"`
+	}
 }
 
-func (s *Server) handleProjectScaffold(w http.ResponseWriter, r *http.Request) {
-	ident, _ := auth.IdentityFrom(r.Context())
-	proj := projectName(r)
-	var body struct {
-		TemplateID string `json:"template_id"`
-		Force      bool   `json:"force,omitempty"`
+// scaffoldInput models POST /api/projects/{name}/scaffold's path +
+// body. Field names + JSON tags mirror the original anonymous struct
+// so the wire stays compatible (template_id / force keys).
+type scaffoldInput struct {
+	Project string `path:"name" doc:"Target project name"`
+	Body    struct {
+		TemplateID string `json:"template_id" doc:"Catalogue entry id (e.g. latex-phd-thesis)"`
+		Force      bool   `json:"force,omitempty" doc:"Overwrite existing project files on path clash"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
-		return
-	}
-	var tmpl *projectTemplate
-	for i := range projectTemplates {
-		if projectTemplates[i].ID == body.TemplateID {
-			tmpl = &projectTemplates[i]
-			break
-		}
-	}
-	if tmpl == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown template_id : " + body.TemplateID})
-		return
-	}
+}
 
-	// Conflict pre-flight : refuse if ANY target path already
-	// exists in the project unless force=true. Saves the user from
-	// silently clobbering hand-written content.
-	if !body.Force {
-		files, err := s.opts.Projects.ListFiles(r.Context(), ident, proj)
-		if err == nil {
-			existing := map[string]struct{}{}
-			for _, f := range files {
-				existing[f.Path] = struct{}{}
-			}
-			var clashes []string
-			for _, f := range tmpl.Files {
-				if _, ok := existing[f.Path]; ok {
-					clashes = append(clashes, f.Path)
-				}
-			}
-			if len(clashes) > 0 {
-				writeJSON(w, http.StatusConflict, map[string]any{
-					"error":   "target paths exist (pass force=true to overwrite)",
-					"clashes": clashes,
-				})
-				return
-			}
-		}
+// scaffoldOutput envelopes both the success shape (written + entry)
+// and the 409 clash shape (error + clashes). The Status field lets
+// the handler flip between 200 and 409 while keeping a single output
+// type — matches publicShareDeleteOut's pattern in api_publicshare.go.
+//
+// The wire shape on clash MUST stay
+//
+//	{ "error": "target paths exist (...)", "clashes": ["main.tex", ...] }
+//
+// — the SPA (ScaffoldDialog.svelte) + tests/scaffold-templates.mjs
+// both read `d.clashes` on a 409 response. Using huma.Error409Conflict
+// would emit huma's structured `{ title, status, detail, errors }`
+// envelope and break that contract.
+type scaffoldOutput struct {
+	Status int
+	Body   struct {
+		Written []string `json:"written,omitempty" doc:"Files written (relative paths)"`
+		Entry   string   `json:"entry,omitempty" doc:"Suggested file to open in the editor"`
+		Error   string   `json:"error,omitempty" doc:"Human-readable error message (clash + write failures only)"`
+		Clashes []string `json:"clashes,omitempty" doc:"Existing project paths that would be overwritten (409 only)"`
 	}
-
-	written := make([]string, 0, len(tmpl.Files))
-	for _, f := range tmpl.Files {
-		// .gitkeep files create the directory without an actual
-		// keep-content artefact — most stores honour zero-byte
-		// writes so the directory becomes browsable.
-		body := strings.NewReader(f.Content)
-		if werr := s.opts.Projects.WriteFile(r.Context(), ident, proj, f.Path, body); werr != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{
-				"error":   "write " + f.Path + " : " + werr.Error(),
-				"written": written,
-			})
-			return
-		}
-		written = append(written, f.Path)
-	}
-
-	s.events.Publish(eventbus.Event{
-		Source: "server", Component: "scaffold", Verb: "applied",
-		Project: proj,
-		Fields:  map[string]any{"template": tmpl.ID, "files": len(written)},
-	})
-	// Open the entry-point file in the response so the SPA can
-	// auto-focus it after scaffolding. main.tex / slides.md /
-	// README.md in that priority order.
-	var entry string
-	priority := []string{"main.tex", "slides.md", "README.md"}
-	for _, p := range priority {
-		for _, f := range tmpl.Files {
-			if f.Path == p {
-				entry = p
-				break
-			}
-		}
-		if entry != "" {
-			break
-		}
-	}
-	if entry == "" && len(written) > 0 {
-		entry = written[0]
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"written": written,
-		"entry":   entry,
-	})
-	_ = bytes.NewBuffer(nil) // keep import for future preview bodies
 }

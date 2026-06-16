@@ -1,6 +1,130 @@
 {
     "components": {
         "schemas": {
+            "ChatInputBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/ChatInputBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "file": {
+                        "description": "Currently-open file path (relative to the project root). Used to enrich the stub reply.",
+                        "type": "string"
+                    },
+                    "file_content": {
+                        "description": "Snapshot of the currently-open file. Used to enrich the stub reply.",
+                        "type": "string"
+                    },
+                    "messages": {
+                        "description": "Conversation history ; the last entry is the user's current question.",
+                        "items": {
+                            "$ref": "#/components/schemas/ChatMessage"
+                        },
+                        "type": [
+                            "array",
+                            "null"
+                        ]
+                    }
+                },
+                "required": [
+                    "messages"
+                ],
+                "type": "object"
+            },
+            "ChatMessage": {
+                "additionalProperties": false,
+                "properties": {
+                    "content": {
+                        "description": "Message text",
+                        "type": "string"
+                    },
+                    "role": {
+                        "description": "Speaker role : system | user | assistant",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "role",
+                    "content"
+                ],
+                "type": "object"
+            },
+            "ChatOutputBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/ChatOutputBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "model": {
+                        "description": "Model identifier echoed back to the SPA (always \"stub-v0\" for this endpoint).",
+                        "type": "string"
+                    },
+                    "reply": {
+                        "description": "Stub reply text \u2014 the streaming /ai/chat endpoint is what wires to a real provider.",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "reply"
+                ],
+                "type": "object"
+            },
+            "ClientEventInputBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/ClientEventInputBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "component": {
+                        "description": "Event component (e.g. \"editor\", \"compile\").",
+                        "type": "string"
+                    },
+                    "fields": {
+                        "additionalProperties": {},
+                        "description": "Arbitrary structured fields ; merged with the bus event payload.",
+                        "type": "object"
+                    },
+                    "level": {
+                        "description": "Severity hint : info | warn | error. Empty = info.",
+                        "type": "string"
+                    },
+                    "message": {
+                        "description": "Free-form message body.",
+                        "type": "string"
+                    },
+                    "project": {
+                        "description": "Project name when the event scopes to one.",
+                        "type": "string"
+                    },
+                    "verb": {
+                        "description": "Event verb (e.g. \"opened\", \"saved\").",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "component",
+                    "verb"
+                ],
+                "type": "object"
+            },
             "DiffLine": {
                 "additionalProperties": false,
                 "properties": {
@@ -68,6 +192,30 @@
                 },
                 "required": [
                     "doi"
+                ],
+                "type": "object"
+            },
+            "EmailConfigResponse": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/EmailConfigResponse.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "configured": {
+                        "type": "boolean"
+                    },
+                    "from": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "configured"
                 ],
                 "type": "object"
             },
@@ -210,6 +358,219 @@
                     "path",
                     "size",
                     "dir"
+                ],
+                "type": "object"
+            },
+            "GitChange": {
+                "additionalProperties": false,
+                "properties": {
+                    "path": {
+                        "type": "string"
+                    },
+                    "status": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "path",
+                    "status"
+                ],
+                "type": "object"
+            },
+            "GitConfig": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/GitConfig.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "branch": {
+                        "type": "string"
+                    },
+                    "provider": {
+                        "type": "string"
+                    },
+                    "remote_url": {
+                        "type": "string"
+                    },
+                    "token": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "provider",
+                    "remote_url",
+                    "branch"
+                ],
+                "type": "object"
+            },
+            "GitLogEntry": {
+                "additionalProperties": false,
+                "properties": {
+                    "author": {
+                        "type": "string"
+                    },
+                    "email": {
+                        "type": "string"
+                    },
+                    "parents": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": [
+                            "array",
+                            "null"
+                        ]
+                    },
+                    "ref_names": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": [
+                            "array",
+                            "null"
+                        ]
+                    },
+                    "sha": {
+                        "type": "string"
+                    },
+                    "subject": {
+                        "type": "string"
+                    },
+                    "unix_time": {
+                        "format": "int64",
+                        "type": "integer"
+                    }
+                },
+                "required": [
+                    "sha",
+                    "parents",
+                    "author",
+                    "email",
+                    "subject",
+                    "unix_time"
+                ],
+                "type": "object"
+            },
+            "GitLogResponse": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/GitLogResponse.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "branch": {
+                        "type": "string"
+                    },
+                    "entries": {
+                        "items": {
+                            "$ref": "#/components/schemas/GitLogEntry"
+                        },
+                        "type": [
+                            "array",
+                            "null"
+                        ]
+                    },
+                    "head_sha": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "entries",
+                    "head_sha",
+                    "branch"
+                ],
+                "type": "object"
+            },
+            "GitStatus": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/GitStatus.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "ahead": {
+                        "format": "int64",
+                        "type": "integer"
+                    },
+                    "behind": {
+                        "format": "int64",
+                        "type": "integer"
+                    },
+                    "branch": {
+                        "type": "string"
+                    },
+                    "changes": {
+                        "items": {
+                            "$ref": "#/components/schemas/GitChange"
+                        },
+                        "type": [
+                            "array",
+                            "null"
+                        ]
+                    },
+                    "configured": {
+                        "type": "boolean"
+                    },
+                    "last_error": {
+                        "type": "string"
+                    },
+                    "last_sync_unix": {
+                        "format": "int64",
+                        "type": "integer"
+                    },
+                    "provider": {
+                        "type": "string"
+                    },
+                    "remote_url": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "configured",
+                    "provider",
+                    "remote_url",
+                    "branch",
+                    "ahead",
+                    "behind",
+                    "changes"
+                ],
+                "type": "object"
+            },
+            "HealthzOutputBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/HealthzOutputBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "status": {
+                        "description": "Always \"ok\" \u2014 liveness probe",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "status"
                 ],
                 "type": "object"
             },
@@ -467,6 +828,121 @@
                 ],
                 "type": "object"
             },
+            "NotebookExecInputBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/NotebookExecInputBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "language": {
+                        "description": "Notebook language_info.name (python | go | node | ruby | rust). Defaults to python when unknown.",
+                        "type": "string"
+                    },
+                    "source": {
+                        "description": "Cell source ; passed verbatim to the chosen interpreter via shell quoting.",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "language",
+                    "source"
+                ],
+                "type": "object"
+            },
+            "NotebookExecResponse": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/NotebookExecResponse.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "exit_code": {
+                        "description": "Process exit code ; 0 = success, 124 = our 60 s timeout.",
+                        "format": "int64",
+                        "type": "integer"
+                    },
+                    "stderr": {
+                        "description": "Captured stderr from the cell's interpreter.",
+                        "type": "string"
+                    },
+                    "stdout": {
+                        "description": "Captured stdout from the cell's interpreter.",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "stdout",
+                    "stderr",
+                    "exit_code"
+                ],
+                "type": "object"
+            },
+            "OciImageStatus": {
+                "additionalProperties": false,
+                "properties": {
+                    "detail": {
+                        "type": "string"
+                    },
+                    "image": {
+                        "type": "string"
+                    },
+                    "language": {
+                        "type": "string"
+                    },
+                    "last_checked_unix": {
+                        "format": "int64",
+                        "type": "integer"
+                    },
+                    "status": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "language",
+                    "image",
+                    "status",
+                    "last_checked_unix"
+                ],
+                "type": "object"
+            },
+            "OciImagesOutputBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/OciImagesOutputBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "images": {
+                        "items": {
+                            "$ref": "#/components/schemas/OciImageStatus"
+                        },
+                        "type": [
+                            "array",
+                            "null"
+                        ]
+                    }
+                },
+                "required": [
+                    "images"
+                ],
+                "type": "object"
+            },
             "ProjectOut": {
                 "additionalProperties": false,
                 "properties": {
@@ -487,6 +963,67 @@
                 "required": [
                     "name",
                     "created_at"
+                ],
+                "type": "object"
+            },
+            "ProjectTemplate": {
+                "additionalProperties": false,
+                "properties": {
+                    "description": {
+                        "type": "string"
+                    },
+                    "files": {
+                        "items": {
+                            "$ref": "#/components/schemas/ScaffoldFile"
+                        },
+                        "type": [
+                            "array",
+                            "null"
+                        ]
+                    },
+                    "id": {
+                        "type": "string"
+                    },
+                    "language": {
+                        "type": "string"
+                    },
+                    "name": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "id",
+                    "name",
+                    "description",
+                    "language",
+                    "files"
+                ],
+                "type": "object"
+            },
+            "ProjectTemplatesListOutputBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/ProjectTemplatesListOutputBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "items": {
+                        "items": {
+                            "$ref": "#/components/schemas/ProjectTemplate"
+                        },
+                        "type": [
+                            "array",
+                            "null"
+                        ]
+                    }
+                },
+                "required": [
+                    "items"
                 ],
                 "type": "object"
             },
@@ -519,6 +1056,114 @@
                     "token",
                     "url",
                     "created"
+                ],
+                "type": "object"
+            },
+            "ScaffoldFile": {
+                "additionalProperties": false,
+                "properties": {
+                    "path": {
+                        "type": "string"
+                    },
+                    "size": {
+                        "format": "int64",
+                        "type": "integer"
+                    }
+                },
+                "required": [
+                    "path",
+                    "size"
+                ],
+                "type": "object"
+            },
+            "ScaffoldInputBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/ScaffoldInputBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "force": {
+                        "description": "Overwrite existing project files on path clash",
+                        "type": "boolean"
+                    },
+                    "template_id": {
+                        "description": "Catalogue entry id (e.g. latex-phd-thesis)",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "template_id"
+                ],
+                "type": "object"
+            },
+            "ScaffoldOutputBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/ScaffoldOutputBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "clashes": {
+                        "description": "Existing project paths that would be overwritten (409 only)",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": [
+                            "array",
+                            "null"
+                        ]
+                    },
+                    "entry": {
+                        "description": "Suggested file to open in the editor",
+                        "type": "string"
+                    },
+                    "error": {
+                        "description": "Human-readable error message (clash + write failures only)",
+                        "type": "string"
+                    },
+                    "written": {
+                        "description": "Files written (relative paths)",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": [
+                            "array",
+                            "null"
+                        ]
+                    }
+                },
+                "type": "object"
+            },
+            "SeedClaimOutputBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/SeedClaimOutputBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "elected": {
+                        "description": "True when the caller is the elected seeder ; false when another caller already holds the claim.",
+                        "type": "boolean"
+                    }
+                },
+                "required": [
+                    "elected"
                 ],
                 "type": "object"
             },
@@ -703,6 +1348,82 @@
     },
     "openapi": "3.1.0",
     "paths": {
+        "/api/admin/email/config": {
+            "get": {
+                "description": "Returns whether SMTP is configured at the process level (host env var present) and the From address operators advertise to end users. Credentials are deliberately never returned.",
+                "operationId": "admin-email-config",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EmailConfigResponse"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Read the SMTP sender summary",
+                "tags": [
+                    "admin"
+                ]
+            }
+        },
+        "/api/admin/oci-images": {
+            "get": {
+                "description": "Returns one entry per language with its resolved image ref, the manifest probe status (ok | missing | unauthorized | unreachable) and the last-checked unix timestamp. Cached for 5 minutes ; pass ?force=1 to bypass the cache.",
+                "operationId": "admin-oci-images",
+                "parameters": [
+                    {
+                        "description": "Force a fresh probe (bypass the 5-minute cache)",
+                        "explode": false,
+                        "in": "query",
+                        "name": "force",
+                        "schema": {
+                            "description": "Force a fresh probe (bypass the 5-minute cache)",
+                            "type": "boolean"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/OciImagesOutputBody"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Probe the compile dispatcher's OCI images",
+                "tags": [
+                    "admin"
+                ]
+            }
+        },
         "/api/arxiv/search": {
             "get": {
                 "description": "Server-side proxy for arXiv's Atom-XML query API. Parses the upstream feed + returns a compact JSON envelope so the SPA doesn't pull a full XML parser into the bundle.",
@@ -763,6 +1484,105 @@
                 "summary": "Search arXiv.org",
                 "tags": [
                     "bibliography"
+                ]
+            }
+        },
+        "/api/events/client": {
+            "post": {
+                "description": "Accepts a JSON event from the SPA's logbus client and republishes it onto the in-process event bus, which the SSE stream at GET /api/events fans out to subscribers. The SSE GET endpoint stays raw (streaming doesn't fit huma's typed model).",
+                "operationId": "client-event",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ClientEventInputBody"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Publish an SPA-side event to the doctor bus",
+                "tags": [
+                    "events"
+                ]
+            }
+        },
+        "/api/healthz": {
+            "get": {
+                "description": "Returns { status: \"ok\" } once the server is accepting requests. Unauthenticated \u2014 the operator's probe + the SPA both rely on this.",
+                "operationId": "healthz",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HealthzOutputBody"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Liveness probe",
+                "tags": [
+                    "meta"
+                ]
+            }
+        },
+        "/api/project-templates": {
+            "get": {
+                "description": "Returns the curated catalogue of project templates surfaced in the SPA's \"New project from template\" picker. Each entry lists the files it would write + a size hint so the dialog can preview \"5 files, 6.2 KB\".",
+                "operationId": "list-project-templates",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProjectTemplatesListOutputBody"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "List the multi-file project scaffolds",
+                "tags": [
+                    "meta"
                 ]
             }
         },
@@ -859,6 +1679,60 @@
                 ]
             }
         },
+        "/api/projects/{name}/chat": {
+            "post": {
+                "description": "Returns a canned reply that demonstrates the assistant has access to the user's file context. The real provider lives behind the SSE /api/projects/{name}/ai/chat endpoint (raw, outside the typed API).",
+                "operationId": "chat-stub",
+                "parameters": [
+                    {
+                        "description": "Project name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Project name",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ChatInputBody"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ChatOutputBody"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Legacy non-streaming chat stub",
+                "tags": [
+                    "chat"
+                ]
+            }
+        },
         "/api/projects/{name}/compile": {
             "post": {
                 "description": "Schedules an ephemeral compile in the language's sandbox image. Returns the job ID immediately ; logs + result stream over Server-Sent Events at /api/projects/{name}/compile/{id} (raw, outside the typed API).",
@@ -913,6 +1787,53 @@
                 ]
             }
         },
+        "/api/projects/{name}/compile/{id}/cancel": {
+            "post": {
+                "description": "Kills the in-flight job \u2014 the run goroutine sees ctx.Done() (host subprocess path) / the NATS exec `x` byte (workspace dispatch path), bails, and the SSE stream emits a \"compile cancelled by user\" log line followed by a result(success=false) event. Returns 204 on success ; 404 when the jobID is unknown or the job already terminated.",
+                "operationId": "cancel-compile",
+                "parameters": [
+                    {
+                        "description": "Project name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Project name",
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Job identifier returned by start-compile",
+                        "in": "path",
+                        "name": "id",
+                        "required": true,
+                        "schema": {
+                            "description": "Job identifier returned by start-compile",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Cancel an in-flight compile",
+                "tags": [
+                    "compile"
+                ]
+            }
+        },
         "/api/projects/{name}/files": {
             "get": {
                 "description": "Returns every file in the project as a flat list with relative paths. Directories appear with dir=true. Binary read/write of one file lands on /api/projects/{name}/files/{path...} (raw, outside the typed API).",
@@ -954,6 +1875,301 @@
                 "summary": "List files in a project",
                 "tags": [
                     "files"
+                ]
+            }
+        },
+        "/api/projects/{name}/git/clone": {
+            "post": {
+                "description": "Wipes any existing working tree and re-clones from the remote at the requested branch. Transient git errors land in the status body rather than as HTTP errors.",
+                "operationId": "git-clone",
+                "parameters": [
+                    {
+                        "description": "Project name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Project name",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/GitConfig"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/GitStatus"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Clone the configured remote into the project working tree",
+                "tags": [
+                    "git"
+                ]
+            }
+        },
+        "/api/projects/{name}/git/config": {
+            "post": {
+                "description": "Persists remote URL, branch, provider, and (optional) PAT to the project sidecar. Returns the resulting status.",
+                "operationId": "git-config",
+                "parameters": [
+                    {
+                        "description": "Project name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Project name",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/GitConfig"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/GitStatus"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Configure the project's git remote",
+                "tags": [
+                    "git"
+                ]
+            }
+        },
+        "/api/projects/{name}/git/log": {
+            "get": {
+                "description": "Flat commit list with parent SHAs so the SPA can paint the lane graph client-side. Capped at limit (default 200, max 1000).",
+                "operationId": "git-log",
+                "parameters": [
+                    {
+                        "description": "Project name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Project name",
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Maximum number of commits to return (1..1000)",
+                        "explode": false,
+                        "in": "query",
+                        "name": "limit",
+                        "schema": {
+                            "description": "Maximum number of commits to return (1..1000)",
+                            "format": "int64",
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/GitLogResponse"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Commit graph (HEAD-first)",
+                "tags": [
+                    "git"
+                ]
+            }
+        },
+        "/api/projects/{name}/git/pull": {
+            "post": {
+                "description": "Fast-forwards the working tree against origin. Transient errors land in the status body.",
+                "operationId": "git-pull",
+                "parameters": [
+                    {
+                        "description": "Project name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Project name",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/GitStatus"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Pull the configured branch",
+                "tags": [
+                    "git"
+                ]
+            }
+        },
+        "/api/projects/{name}/git/push": {
+            "post": {
+                "description": "Stages every dirty + untracked file, commits with the caller's identity, then pushes to origin. Transient errors land in the status body.",
+                "operationId": "git-push",
+                "parameters": [
+                    {
+                        "description": "Project name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Project name",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/GitStatus"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Auto-commit and push the configured branch",
+                "tags": [
+                    "git"
+                ]
+            }
+        },
+        "/api/projects/{name}/git/status": {
+            "get": {
+                "description": "Returns the configured remote/branch, the dirty-file list, and the last sync timestamp.",
+                "operationId": "git-status",
+                "parameters": [
+                    {
+                        "description": "Project name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Project name",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/GitStatus"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Project git sync status",
+                "tags": [
+                    "git"
                 ]
             }
         },
@@ -1249,6 +2465,60 @@
                 ]
             }
         },
+        "/api/projects/{name}/notebook/exec": {
+            "post": {
+                "description": "Dispatches the cell source as a shell command into the user's pre-spawned workspace \u03bcVM ; the wrapper binary is per-language. Returns captured stdout + stderr + exit code. Hard 60 s timeout so runaway loops don't pin the HTTP connection.",
+                "operationId": "notebook-exec",
+                "parameters": [
+                    {
+                        "description": "Project name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Project name",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/NotebookExecInputBody"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/NotebookExecResponse"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Execute one notebook cell in the workspace \u03bcVM",
+                "tags": [
+                    "notebook"
+                ]
+            }
+        },
         "/api/projects/{name}/public-share": {
             "delete": {
                 "description": "Removes the sidecar + drops the token from the in-memory index. Idempotent \u2014 returns 204 even when no share existed.",
@@ -1367,6 +2637,114 @@
                 "summary": "Issue (or rotate) a public-share token for the project",
                 "tags": [
                     "public-share"
+                ]
+            }
+        },
+        "/api/projects/{name}/scaffold": {
+            "post": {
+                "description": "Writes every file listed in the catalogue entry under the target project. By default the request 409s if any target path already exists in the project ; pass force=true to overwrite. The response carries the list of written files + an entry-point suggestion (main.tex / slides.md / README.md, in that priority).",
+                "operationId": "apply-project-template",
+                "parameters": [
+                    {
+                        "description": "Target project name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Target project name",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ScaffoldInputBody"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ScaffoldOutputBody"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Seed a project from a multi-file template",
+                "tags": [
+                    "projects"
+                ]
+            }
+        },
+        "/api/projects/{name}/seed-claim/{path...}": {
+            "post": {
+                "description": "Returns 200 + {elected:true} on the FIRST caller within the staleness window ; 409 + {elected:false} for everyone else. Used by the SPA to break the two-browsers-open-the-same-file race the client-side lowest-clientID heuristic couldn't catch reliably.",
+                "operationId": "seed-claim",
+                "parameters": [
+                    {
+                        "description": "Project name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Project name",
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "File path relative to the project root ; matches the {path...} suffix wildcard.",
+                        "in": "path",
+                        "name": "path",
+                        "required": true,
+                        "schema": {
+                            "description": "File path relative to the project root ; matches the {path...} suffix wildcard.",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SeedClaimOutputBody"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Atomic seeder election for one (project, file)",
+                "tags": [
+                    "sync"
                 ]
             }
         },

@@ -19,10 +19,11 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/danielgtaylor/huma/v2"
 
 	"github.com/openweft/weft-loom-server/internal/auth"
 	"github.com/openweft/weft-loom-server/internal/workspace"
@@ -35,50 +36,66 @@ type notebookExecRequest struct {
 }
 
 type notebookExecResponse struct {
-	Stdout   string `json:"stdout"`
-	Stderr   string `json:"stderr"`
-	ExitCode int    `json:"exit_code"`
+	Stdout   string `json:"stdout" doc:"Captured stdout from the cell's interpreter."`
+	Stderr   string `json:"stderr" doc:"Captured stderr from the cell's interpreter."`
+	ExitCode int    `json:"exit_code" doc:"Process exit code ; 0 = success, 124 = our 60 s timeout."`
 }
 
-func (s *Server) handleNotebookExec(w http.ResponseWriter, r *http.Request) {
-	ident, _ := auth.IdentityFrom(r.Context())
-	projectName := r.PathValue("name")
-	// Per-project ACL : matches /sync and /shell. ListFiles fails on
-	// "this user can't see this project" so it doubles as the gate.
-	if _, err := s.opts.Projects.ListFiles(r.Context(), ident, projectName); err != nil {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
+// notebookExecInput is the typed huma wire shape : project name in the
+// path + a JSON body carrying the language picker + the cell source.
+type notebookExecInput struct {
+	Project string `path:"name" doc:"Project name"`
+	Body    struct {
+		Language string `json:"language" doc:"Notebook language_info.name (python | go | node | ruby | rust). Defaults to python when unknown."`
+		Source   string `json:"source" doc:"Cell source ; passed verbatim to the chosen interpreter via shell quoting."`
 	}
+}
 
-	var req notebookExecRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "decode: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	if req.Source == "" {
-		http.Error(w, "source is required", http.StatusBadRequest)
-		return
-	}
+type notebookExecOutput struct {
+	Body notebookExecResponse
+}
 
-	vm := s.lookupWorkspace(ident.Subject)
-	if vm == nil || vm.Conn == nil {
-		http.Error(w, "workspace VM not available", http.StatusServiceUnavailable)
-		return
-	}
+func mountNotebookAPI(api huma.API, s *Server) {
+	huma.Register(api, huma.Operation{
+		OperationID: "notebook-exec",
+		Method:      "POST",
+		Path:        "/api/projects/{name}/notebook/exec",
+		Summary:     "Execute one notebook cell in the workspace μVM",
+		Description: "Dispatches the cell source as a shell command into the user's pre-spawned workspace μVM ; the wrapper binary is per-language. Returns captured stdout + stderr + exit code. Hard 60 s timeout so runaway loops don't pin the HTTP connection.",
+		Tags:        []string{"notebook"},
+	}, func(ctx context.Context, in *notebookExecInput) (*notebookExecOutput, error) {
+		out := &notebookExecOutput{}
+		if s == nil {
+			return nil, huma.Error500InternalServerError("server not initialised")
+		}
+		ident, _ := auth.IdentityFrom(ctx)
+		// Per-project ACL : matches /sync and /shell. ListFiles fails on
+		// "this user can't see this project" so it doubles as the gate.
+		if _, err := s.opts.Projects.ListFiles(ctx, ident, in.Project); err != nil {
+			return nil, huma.Error403Forbidden("forbidden")
+		}
 
-	bin := pickInterpreter(req.Language)
-	if bin == "" {
-		http.Error(w, "no interpreter for language "+req.Language, http.StatusBadRequest)
-		return
-	}
+		if in.Body.Source == "" {
+			return nil, huma.Error400BadRequest("source is required")
+		}
 
-	resp, err := execNotebookCell(r.Context(), vm, bin, req.Source)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+		vm := s.lookupWorkspace(ident.Subject)
+		if vm == nil || vm.Conn == nil {
+			return nil, huma.Error503ServiceUnavailable("workspace VM not available")
+		}
+
+		bin := pickInterpreter(in.Body.Language)
+		if bin == "" {
+			return nil, huma.Error400BadRequest("no interpreter for language " + in.Body.Language)
+		}
+
+		resp, err := execNotebookCell(ctx, vm, bin, in.Body.Source)
+		if err != nil {
+			return nil, huma.Error500InternalServerError(err.Error())
+		}
+		out.Body = resp
+		return out, nil
+	})
 }
 
 // pickInterpreter maps a notebook's `language_info.name` to the

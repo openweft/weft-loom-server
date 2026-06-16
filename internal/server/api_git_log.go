@@ -6,27 +6,26 @@ package server
 // keep the response small ; pagination lands when the user asks for it.
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
-	"strconv"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	gitobject "github.com/go-git/go-git/v5/plumbing/object"
 
+	"github.com/danielgtaylor/huma/v2"
+
 	"github.com/openweft/weft-loom-server/internal/auth"
 )
 
 type gitLogEntry struct {
-	SHA        string   `json:"sha"`
-	Parents    []string `json:"parents"`
-	Author     string   `json:"author"`
-	Email      string   `json:"email"`
-	Subject    string   `json:"subject"`
-	UnixTime   int64    `json:"unix_time"`
-	RefNames   []string `json:"ref_names,omitempty"` // tags + branches pointing here
+	SHA      string   `json:"sha"`
+	Parents  []string `json:"parents"`
+	Author   string   `json:"author"`
+	Email    string   `json:"email"`
+	Subject  string   `json:"subject"`
+	UnixTime int64    `json:"unix_time"`
+	RefNames []string `json:"ref_names,omitempty"` // tags + branches pointing here
 }
 
 type gitLogResponse struct {
@@ -35,40 +34,35 @@ type gitLogResponse struct {
 	Branch  string        `json:"branch"`
 }
 
-func (s *Server) handleGitLog(w http.ResponseWriter, r *http.Request) {
-	ident, _ := auth.IdentityFrom(r.Context())
-	dir, err := s.projectWorkingDir(ident, projectName(r))
+// gitLogFor reads up to `limit` commits from HEAD-first. limit<=0 or
+// limit>1000 collapses to the default cap of 200, matching the legacy
+// query-param parsing. A missing repo / empty repo returns a zero
+// response — the SPA renders that as "no graph yet".
+func (s *Server) gitLogFor(ident auth.Identity, project string, limit int) (gitLogResponse, error) {
+	dir, err := s.projectWorkingDir(ident, project)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		return gitLogResponse{}, huma.Error400BadRequest(err.Error())
 	}
-	limit := 200
-	if q := r.URL.Query().Get("limit"); q != "" {
-		if n, err := strconv.Atoi(q); err == nil && n > 0 && n <= 1000 {
-			limit = n
-		}
+	if limit <= 0 || limit > 1000 {
+		limit = 200
 	}
 
 	repo, err := git.PlainOpen(dir)
 	if err != nil {
 		if errors.Is(err, git.ErrRepositoryNotExists) {
 			// No git repo → empty graph, not an error.
-			_ = json.NewEncoder(w).Encode(gitLogResponse{})
-			return
+			return gitLogResponse{Entries: []gitLogEntry{}}, nil
 		}
-		http.Error(w, "open repo: "+err.Error(), http.StatusInternalServerError)
-		return
+		return gitLogResponse{}, huma.Error500InternalServerError("open repo: " + err.Error())
 	}
 	head, err := repo.Head()
 	if err != nil {
 		// Empty repo (no commits yet) → empty graph.
-		_ = json.NewEncoder(w).Encode(gitLogResponse{})
-		return
+		return gitLogResponse{Entries: []gitLogEntry{}}, nil
 	}
 	iter, err := repo.Log(&git.LogOptions{From: head.Hash()})
 	if err != nil {
-		http.Error(w, "log: "+err.Error(), http.StatusInternalServerError)
-		return
+		return gitLogResponse{}, huma.Error500InternalServerError("log: " + err.Error())
 	}
 	defer iter.Close()
 
@@ -118,12 +112,11 @@ func (s *Server) handleGitLog(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(gitLogResponse{
+	return gitLogResponse{
 		Entries: entries,
 		HeadSHA: head.Hash().String(),
 		Branch:  head.Name().Short(),
-	})
+	}, nil
 }
 
 func firstLine(s string) string {

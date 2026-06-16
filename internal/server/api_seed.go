@@ -8,7 +8,7 @@ package server
 //
 // Protocol :
 //
-//   POST /api/projects/{name}/files/{path...}/seed-claim
+//   POST /api/projects/{name}/seed-claim/{path...}
 //     200 → you are the elected seeder ; do the disk read + insert
 //     409 → someone else already holds the claim ; wait for the WS
 //          sync to deliver the seed
@@ -19,9 +19,11 @@ package server
 // itself naturally keep the on-disk + in-memory state in sync.
 
 import (
-	"net/http"
+	"context"
 	"sync"
 	"time"
+
+	"github.com/danielgtaylor/huma/v2"
 
 	"github.com/openweft/weft-loom-server/internal/auth"
 	"github.com/openweft/weft-loom-server/internal/eventbus"
@@ -83,30 +85,65 @@ func (r *seedClaimRegistry) release(key string) {
 	delete(r.claims, key)
 }
 
-func (s *Server) handleSeedClaim(w http.ResponseWriter, r *http.Request) {
-	ident, ok := s.identify(r)
-	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
+// seedClaimInput captures the (project, file) tuple. The file path is
+// the stdlib mux `{path...}` suffix wildcard — huma's adapter calls
+// r.PathValue("path"), which returns the whole suffix, so the wildcard
+// in Operation.Path stays intact at registration time. The OpenAPI
+// path template carries the literal `{path...}` placeholder ; clients
+// that just substitute via `path-to-regexp`-style helpers still work.
+type seedClaimInput struct {
+	Project string `path:"name" doc:"Project name"`
+	File    string `path:"path" doc:"File path relative to the project root ; matches the {path...} suffix wildcard."`
+}
+
+// seedClaimOutput carries the explicit 200/409 split via the Status
+// field. The wire body matches the legacy raw handler byte-for-byte :
+// { "elected": true } on 200, { "elected": false } on 409.
+type seedClaimOutput struct {
+	Status int
+	Body   struct {
+		Elected bool `json:"elected" doc:"True when the caller is the elected seeder ; false when another caller already holds the claim."`
 	}
-	if _, err := s.opts.Projects.ListFiles(r.Context(), ident, projectName(r)); err != nil {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
-	key := seedKey(ident, projectName(r), filePath(r))
-	if s.seedClaims.claim(key) {
+}
+
+func mountSeedAPI(api huma.API, s *Server) {
+	huma.Register(api, huma.Operation{
+		OperationID: "seed-claim",
+		Method:      "POST",
+		Path:        "/api/projects/{name}/seed-claim/{path...}",
+		Summary:     "Atomic seeder election for one (project, file)",
+		Description: "Returns 200 + {elected:true} on the FIRST caller within the staleness window ; 409 + {elected:false} for everyone else. Used by the SPA to break the two-browsers-open-the-same-file race the client-side lowest-clientID heuristic couldn't catch reliably.",
+		Tags:        []string{"sync"},
+	}, func(ctx context.Context, in *seedClaimInput) (*seedClaimOutput, error) {
+		if s == nil {
+			return nil, huma.Error500InternalServerError("server not initialised")
+		}
+		ident, ok := auth.IdentityFrom(ctx)
+		if !ok {
+			return nil, huma.Error401Unauthorized("unauthorized")
+		}
+		if _, err := s.opts.Projects.ListFiles(ctx, ident, in.Project); err != nil {
+			return nil, huma.Error403Forbidden("forbidden")
+		}
+		key := seedKey(ident, in.Project, in.File)
+		out := &seedClaimOutput{}
+		if s.seedClaims.claim(key) {
+			s.events.Publish(eventbus.Event{
+				Source: "server", Component: "seed", Verb: "claim.elected",
+				Project: in.Project,
+				Fields:  map[string]any{"file": in.File, "subject": ident.Subject},
+			})
+			out.Status = 200
+			out.Body.Elected = true
+			return out, nil
+		}
 		s.events.Publish(eventbus.Event{
-			Source: "server", Component: "seed", Verb: "claim.elected",
-			Project: projectName(r),
-			Fields:  map[string]any{"file": filePath(r), "subject": ident.Subject},
+			Source: "server", Component: "seed", Verb: "claim.rejected",
+			Project: in.Project,
+			Fields:  map[string]any{"file": in.File, "subject": ident.Subject},
 		})
-		writeJSON(w, http.StatusOK, map[string]any{"elected": true})
-		return
-	}
-	s.events.Publish(eventbus.Event{
-		Source: "server", Component: "seed", Verb: "claim.rejected",
-		Project: projectName(r),
-		Fields:  map[string]any{"file": filePath(r), "subject": ident.Subject},
+		out.Status = 409
+		out.Body.Elected = false
+		return out, nil
 	})
-	writeJSON(w, http.StatusConflict, map[string]any{"elected": false})
 }

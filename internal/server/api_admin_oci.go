@@ -30,6 +30,20 @@ import (
 	"time"
 )
 
+// ociImagesInput models the optional ?force=1 query string. huma maps
+// the query into a bool ; "1"/"true" both flip it on.
+type ociImagesInput struct {
+	Force bool `query:"force" doc:"Force a fresh probe (bypass the 5-minute cache)"`
+}
+
+// ociImagesOutput wraps { "images": [...] } so the wire is
+// byte-identical to the legacy raw handler.
+type ociImagesOutput struct {
+	Body struct {
+		Images []ociImageStatus `json:"images"`
+	}
+}
+
 // Languages whose compile path maps to an OCI image. Kept in sync
 // with internal/compile/microvm.go:imageForLanguage().
 var ociLanguages = []string{"latex", "markdown", "golang", "python", "rust", "node", "cpp"}
@@ -226,14 +240,3 @@ func parseImageRef(ref string) (registry, repo, tag string) {
 	return
 }
 
-func (s *Server) handleAdminOCIImages(w http.ResponseWriter, r *http.Request) {
-	ident, ok := s.identify(r)
-	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	_ = ident // admin scoping is V1 ; for now any authed user can read
-	force := r.URL.Query().Get("force") == "1"
-	statuses := s.ociProber.snapshot(r.Context(), force)
-	writeJSON(w, http.StatusOK, map[string]any{"images": statuses})
-}

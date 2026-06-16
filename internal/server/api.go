@@ -40,6 +40,13 @@ func mountAPI(mux *http.ServeMux, s *Server) huma.API {
 	mountPublicShareAdminAPI(api, s)
 	mountHistoryAPI(api, s)
 	mountBibAPI(api, s)
+	mountGitAPI(api, s)
+	mountAdminAPI(api, s)
+	mountScaffoldAPI(api, s)
+	mountChatAPI(api, s)
+	mountNotebookAPI(api, s)
+	mountSeedAPI(api, s)
+	mountEventsAPI(api, s)
 
 	return api
 }

@@ -2,18 +2,22 @@ package server
 
 // api_events.go — the loom-doctor observability surface :
 //
-//   GET  /api/events           SSE stream of Event records
-//   POST /api/events/client    accept SPA-side events to fan into the same stream
+//   GET  /api/events           SSE stream of Event records (raw, SSE doesn't fit huma)
+//   POST /api/events/client    accept SPA-side events to fan into the same stream (typed huma)
 //
 // The bus is auth-gated like the rest of /api/* ; in dev mode every
 // request is "dev-user" so opening the doctor tab Just Works.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
+
+	"github.com/openweft/weft-loom-server/internal/auth"
 	"github.com/openweft/weft-loom-server/internal/eventbus"
 )
 
@@ -74,33 +78,53 @@ func (s *Server) handleEventsStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// clientEventInput is the typed huma wire shape for SPA-side events.
+// The body fields mirror the legacy raw JSON shape verbatim so the
+// SPA's logbus client doesn't need to change.
 type clientEventInput struct {
-	Component string                 `json:"component"`
-	Verb      string                 `json:"verb"`
-	Level     string                 `json:"level,omitempty"`
-	Message   string                 `json:"message,omitempty"`
-	Fields    map[string]any         `json:"fields,omitempty"`
-	Project   string                 `json:"project,omitempty"`
+	Body struct {
+		Component string         `json:"component" doc:"Event component (e.g. \"editor\", \"compile\")."`
+		Verb      string         `json:"verb" doc:"Event verb (e.g. \"opened\", \"saved\")."`
+		Level     string         `json:"level,omitempty" doc:"Severity hint : info | warn | error. Empty = info."`
+		Message   string         `json:"message,omitempty" doc:"Free-form message body."`
+		Fields    map[string]any `json:"fields,omitempty" doc:"Arbitrary structured fields ; merged with the bus event payload."`
+		Project   string         `json:"project,omitempty" doc:"Project name when the event scopes to one."`
+	}
 }
 
-func (s *Server) handleClientEvent(w http.ResponseWriter, r *http.Request) {
-	var in clientEventInput
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		http.Error(w, "bad event payload", http.StatusBadRequest)
-		return
-	}
-	if in.Component == "" || in.Verb == "" {
-		http.Error(w, "component + verb required", http.StatusBadRequest)
-		return
-	}
-	s.events.Publish(eventbus.Event{
-		Source:    "client",
-		Component: in.Component,
-		Verb:      in.Verb,
-		Level:     in.Level,
-		Message:   in.Message,
-		Fields:    in.Fields,
-		Project:   in.Project,
+// clientEventOutput renders 204 No Content on success — no body.
+type clientEventOutput struct {
+	Status int
+}
+
+func mountEventsAPI(api huma.API, s *Server) {
+	huma.Register(api, huma.Operation{
+		OperationID:   "client-event",
+		Method:        "POST",
+		Path:          "/api/events/client",
+		Summary:       "Publish an SPA-side event to the doctor bus",
+		Description:   "Accepts a JSON event from the SPA's logbus client and republishes it onto the in-process event bus, which the SSE stream at GET /api/events fans out to subscribers. The SSE GET endpoint stays raw (streaming doesn't fit huma's typed model).",
+		Tags:          []string{"events"},
+		DefaultStatus: 204,
+	}, func(ctx context.Context, in *clientEventInput) (*clientEventOutput, error) {
+		if s == nil {
+			return nil, huma.Error500InternalServerError("server not initialised")
+		}
+		if _, ok := auth.IdentityFrom(ctx); !ok {
+			return nil, huma.Error401Unauthorized("unauthorized")
+		}
+		if in.Body.Component == "" || in.Body.Verb == "" {
+			return nil, huma.Error400BadRequest("component + verb required")
+		}
+		s.events.Publish(eventbus.Event{
+			Source:    "client",
+			Component: in.Body.Component,
+			Verb:      in.Body.Verb,
+			Level:     in.Body.Level,
+			Message:   in.Body.Message,
+			Fields:    in.Body.Fields,
+			Project:   in.Body.Project,
+		})
+		return &clientEventOutput{Status: 204}, nil
 	})
-	w.WriteHeader(http.StatusNoContent)
 }

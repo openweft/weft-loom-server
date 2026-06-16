@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -406,20 +407,48 @@ func isIPv6ULA(ip net.IP) bool {
 }
 
 // ------------------------------------------------------------------
-// Handlers
+// huma typed surface
+//
+// The six endpoints below flow through huma so the OpenAPI spec + the
+// generated TS client cover them. Helpers (gitStatusFor, gitConfigFor,
+// …) carry the actual go-git wiring and return (gitStatus, error) ;
+// the huma operations are thin adapters that pull the identity from
+// ctx, call the helper, and translate failures into huma.StatusError.
 // ------------------------------------------------------------------
 
-func (s *Server) handleGitStatus(w http.ResponseWriter, r *http.Request) {
-	ident, _ := auth.IdentityFrom(r.Context())
-	dir, err := s.projectWorkingDir(ident, projectName(r))
+type gitStatusOutput struct {
+	Body gitStatus
+}
+
+type gitProjectInput struct {
+	Project string `path:"name" doc:"Project name"`
+}
+
+type gitConfigInput struct {
+	Project string `path:"name" doc:"Project name"`
+	Body    gitConfig
+}
+
+type gitLogInput struct {
+	Project string `path:"name" doc:"Project name"`
+	Limit   int    `query:"limit" doc:"Maximum number of commits to return (1..1000)"`
+}
+
+type gitLogOutput struct {
+	Body gitLogResponse
+}
+
+// gitStatusFor computes the status payload for (ident, project) ; used
+// by both the GET /git/status op and the post-mutation responses on
+// pull / push.
+func (s *Server) gitStatusFor(ident auth.Identity, project string) (gitStatus, error) {
+	dir, err := s.projectWorkingDir(ident, project)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
+		return gitStatus{}, err
 	}
 	cfg, hasCfg := readConfig(dir)
 	if !hasCfg {
-		writeJSON(w, http.StatusOK, gitStatus{Configured: false, Provider: "github", Branch: "main", Changes: []gitChange{}})
-		return
+		return gitStatus{Configured: false, Provider: "github", Branch: "main", Changes: []gitChange{}}, nil
 	}
 	out := gitStatus{
 		Configured: true,
@@ -428,10 +457,8 @@ func (s *Server) handleGitStatus(w http.ResponseWriter, r *http.Request) {
 		Branch:     cfg.Branch,
 		Changes:    []gitChange{},
 	}
-	// last sync timestamp survives via the gitState memo, not the
-	// sidecar (mtime would be fine but explicit field is clearer).
 	s.git.mu.Lock()
-	if last, ok := s.git.last[gitKey(ident, projectName(r))]; ok {
+	if last, ok := s.git.last[gitKey(ident, project)]; ok {
 		out.LastSyncUnix = last.LastSyncUnix
 		out.LastError = last.LastError
 	}
@@ -439,41 +466,32 @@ func (s *Server) handleGitStatus(w http.ResponseWriter, r *http.Request) {
 
 	repo, err := git.PlainOpen(dir)
 	if err != nil {
-		// Configured but not yet cloned : surface that to the UI
-		// as a soft warning instead of an error.
 		out.LastError = "configured but no working tree yet — run clone"
-		writeJSON(w, http.StatusOK, out)
-		return
+		return out, nil
 	}
 	changes, ahead, behind, statErr := computeStatus(repo, cfg.Branch)
 	if statErr != nil {
 		out.LastError = statErr.Error()
-	} else {
-		if changes == nil {
-			changes = []gitChange{}
-		}
-		out.Changes = changes
-		out.Ahead = ahead
-		out.Behind = behind
+		return out, nil
 	}
-	writeJSON(w, http.StatusOK, out)
+	if changes == nil {
+		changes = []gitChange{}
+	}
+	out.Changes = changes
+	out.Ahead = ahead
+	out.Behind = behind
+	return out, nil
 }
 
-func (s *Server) handleGitConfig(w http.ResponseWriter, r *http.Request) {
-	ident, _ := auth.IdentityFrom(r.Context())
-	defer r.Body.Close()
-	var cfg gitConfig
-	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
-		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
-		return
-	}
+// gitConfigSet validates + persists the sidecar. Returns the resulting
+// gitStatus so the typed op can hand it back to the caller without a
+// follow-up read.
+func (s *Server) gitConfigSet(ident auth.Identity, project string, cfg gitConfig) (gitStatus, error) {
 	if cfg.RemoteURL == "" {
-		http.Error(w, "remote_url is required", http.StatusBadRequest)
-		return
+		return gitStatus{}, huma.Error400BadRequest("remote_url is required")
 	}
 	if err := s.validateRemoteURL(cfg.RemoteURL); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		return gitStatus{}, huma.Error400BadRequest(err.Error())
 	}
 	if cfg.Branch == "" {
 		cfg.Branch = "main"
@@ -481,29 +499,23 @@ func (s *Server) handleGitConfig(w http.ResponseWriter, r *http.Request) {
 	if cfg.Provider == "" {
 		cfg.Provider = "generic"
 	}
-	dir, err := s.projectWorkingDir(ident, projectName(r))
+	dir, err := s.projectWorkingDir(ident, project)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
+		return gitStatus{}, huma.Error500InternalServerError("git: project dir", err)
 	}
 	if err := writeConfigSidecar(dir, cfg); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
+		return gitStatus{}, huma.Error500InternalServerError("git: write config", err)
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return s.gitStatusFor(ident, project)
 }
 
-func (s *Server) handleGitClone(w http.ResponseWriter, r *http.Request) {
-	ident, _ := auth.IdentityFrom(r.Context())
-	defer r.Body.Close()
-	var cfg gitConfig
-	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
-		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
-		return
-	}
+// gitClone wipes + clones a fresh working tree from cfg.RemoteURL.
+// Mirrors the legacy handler : returns a gitStatus carrying LastError
+// on clone failure rather than a 500, so the UI can render the error
+// inline.
+func (s *Server) gitClone(ctx context.Context, ident auth.Identity, project string, cfg gitConfig) (gitStatus, error) {
 	if err := s.validateRemoteURL(cfg.RemoteURL); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		return gitStatus{}, huma.Error400BadRequest(err.Error())
 	}
 	if cfg.Branch == "" {
 		cfg.Branch = "main"
@@ -511,29 +523,23 @@ func (s *Server) handleGitClone(w http.ResponseWriter, r *http.Request) {
 	if cfg.Provider == "" {
 		cfg.Provider = "generic"
 	}
-	dir, err := s.projectWorkingDir(ident, projectName(r))
+	dir, err := s.projectWorkingDir(ident, project)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
+		return gitStatus{}, huma.Error500InternalServerError("git: project dir", err)
 	}
-	key := gitKey(ident, projectName(r))
+	key := gitKey(ident, project)
 	s.git.mu.Lock()
 	defer s.git.mu.Unlock()
 
-	// Wipe any existing working tree under this project name so a
-	// fresh clone starts from a known-empty dir. The user already
-	// knows that "Clone" replaces local state.
 	if _, err := os.Stat(dir); err == nil {
 		if err := os.RemoveAll(dir); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "wipe working tree: " + err.Error()})
-			return
+			return gitStatus{}, huma.Error500InternalServerError("wipe working tree: " + err.Error())
 		}
 	}
 	if err := writeConfigSidecar(dir, cfg); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
+		return gitStatus{}, huma.Error500InternalServerError("git: write config", err)
 	}
-	_, err = git.PlainCloneContext(r.Context(), dir, false, &git.CloneOptions{
+	_, cloneErr := git.PlainCloneContext(ctx, dir, false, &git.CloneOptions{
 		URL:           cfg.RemoteURL,
 		ReferenceName: plumbing.NewBranchReferenceName(cfg.Branch),
 		SingleBranch:  false,
@@ -547,58 +553,53 @@ func (s *Server) handleGitClone(w http.ResponseWriter, r *http.Request) {
 		Changes:      []gitChange{},
 		LastSyncUnix: time.Now().Unix(),
 	}
-	if err != nil {
-		out.LastError = err.Error()
+	if cloneErr != nil {
+		out.LastError = cloneErr.Error()
 	}
 	s.git.last[key] = out
-	writeJSON(w, http.StatusOK, out)
+	return out, nil
 }
 
-func (s *Server) handleGitPull(w http.ResponseWriter, r *http.Request) {
-	ident, _ := auth.IdentityFrom(r.Context())
-	dir, err := s.projectWorkingDir(ident, projectName(r))
+// gitPull fetches + fast-forwards the configured branch. Same
+// failure-encoding contract as gitClone : transient git errors land in
+// LastError, not as HTTP errors.
+func (s *Server) gitPull(ctx context.Context, ident auth.Identity, project string) (gitStatus, error) {
+	dir, err := s.projectWorkingDir(ident, project)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
+		return gitStatus{}, huma.Error500InternalServerError("git: project dir", err)
 	}
 	cfg, ok := readConfig(dir)
 	if !ok {
-		http.Error(w, "git not configured", http.StatusBadRequest)
-		return
+		return gitStatus{}, huma.Error400BadRequest("git not configured")
 	}
 	if err := s.validateRemoteURL(cfg.RemoteURL); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		return gitStatus{}, huma.Error400BadRequest(err.Error())
 	}
 	repo, err := git.PlainOpen(dir)
 	if err != nil {
-		http.Error(w, "no working tree (run clone first)", http.StatusBadRequest)
-		return
+		return gitStatus{}, huma.Error400BadRequest("no working tree (run clone first)")
 	}
 	wt, err := repo.Worktree()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
+		return gitStatus{}, huma.Error500InternalServerError("worktree", err)
 	}
-	key := gitKey(ident, projectName(r))
+	key := gitKey(ident, project)
 	s.git.mu.Lock()
 	defer s.git.mu.Unlock()
 
-	pullErr := wt.PullContext(r.Context(), &git.PullOptions{
+	pullErr := wt.PullContext(ctx, &git.PullOptions{
 		RemoteName:    "origin",
 		ReferenceName: plumbing.NewBranchReferenceName(cfg.Branch),
 		Auth:          authMethod(cfg),
 		Force:         false,
 	})
-	// "already up-to-date" isn't a failure for the user.
 	if pullErr != nil && !errors.Is(pullErr, git.NoErrAlreadyUpToDate) {
 		s.git.last[key] = gitStatus{
 			Configured: true, Provider: cfg.Provider, RemoteURL: cfg.RemoteURL, Branch: cfg.Branch,
 			Changes: []gitChange{}, LastSyncUnix: time.Now().Unix(),
 			LastError: "pull: " + pullErr.Error(),
 		}
-		writeJSON(w, http.StatusOK, s.git.last[key])
-		return
+		return s.git.last[key], nil
 	}
 	changes, ahead, behind, _ := computeStatus(repo, cfg.Branch)
 	out := gitStatus{
@@ -607,48 +608,40 @@ func (s *Server) handleGitPull(w http.ResponseWriter, r *http.Request) {
 		LastSyncUnix: time.Now().Unix(),
 	}
 	s.git.last[key] = out
-	writeJSON(w, http.StatusOK, out)
+	return out, nil
 }
 
-func (s *Server) handleGitPush(w http.ResponseWriter, r *http.Request) {
-	ident, _ := auth.IdentityFrom(r.Context())
-	dir, err := s.projectWorkingDir(ident, projectName(r))
+// gitPush auto-commits dirty changes + pushes the configured branch.
+// Same failure-encoding contract as gitClone / gitPull.
+func (s *Server) gitPush(ctx context.Context, ident auth.Identity, project string) (gitStatus, error) {
+	dir, err := s.projectWorkingDir(ident, project)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
+		return gitStatus{}, huma.Error500InternalServerError("git: project dir", err)
 	}
 	cfg, ok := readConfig(dir)
 	if !ok {
-		http.Error(w, "git not configured", http.StatusBadRequest)
-		return
+		return gitStatus{}, huma.Error400BadRequest("git not configured")
 	}
 	if err := s.validateRemoteURL(cfg.RemoteURL); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		return gitStatus{}, huma.Error400BadRequest(err.Error())
 	}
 	repo, err := git.PlainOpen(dir)
 	if err != nil {
-		http.Error(w, "no working tree (run clone first)", http.StatusBadRequest)
-		return
+		return gitStatus{}, huma.Error400BadRequest("no working tree (run clone first)")
 	}
-	key := gitKey(ident, projectName(r))
+	key := gitKey(ident, project)
 	s.git.mu.Lock()
 	defer s.git.mu.Unlock()
 
-	// Auto-commit any pending changes before push — the editor
-	// writes files to disk via /files PUT but never invokes git.
-	// The commit author + email pull from the dex identity ; dev
-	// mode falls back to a synthetic loom-dev address.
 	if err := autoCommit(repo, ident); err != nil {
 		s.git.last[key] = gitStatus{
 			Configured: true, Provider: cfg.Provider, RemoteURL: cfg.RemoteURL, Branch: cfg.Branch,
 			Changes: []gitChange{}, LastSyncUnix: time.Now().Unix(),
 			LastError: "commit: " + err.Error(),
 		}
-		writeJSON(w, http.StatusOK, s.git.last[key])
-		return
+		return s.git.last[key], nil
 	}
-	pushErr := repo.PushContext(r.Context(), &git.PushOptions{
+	pushErr := repo.PushContext(ctx, &git.PushOptions{
 		RemoteName: "origin",
 		RefSpecs:   []config.RefSpec{config.RefSpec(fmt.Sprintf("refs/heads/%s:refs/heads/%s", cfg.Branch, cfg.Branch))},
 		Auth:       authMethod(cfg),
@@ -659,8 +652,7 @@ func (s *Server) handleGitPush(w http.ResponseWriter, r *http.Request) {
 			Changes: []gitChange{}, LastSyncUnix: time.Now().Unix(),
 			LastError: "push: " + pushErr.Error(),
 		}
-		writeJSON(w, http.StatusOK, s.git.last[key])
-		return
+		return s.git.last[key], nil
 	}
 	changes, ahead, behind, _ := computeStatus(repo, cfg.Branch)
 	out := gitStatus{
@@ -669,8 +661,129 @@ func (s *Server) handleGitPush(w http.ResponseWriter, r *http.Request) {
 		LastSyncUnix: time.Now().Unix(),
 	}
 	s.git.last[key] = out
-	writeJSON(w, http.StatusOK, out)
+	return out, nil
 }
+
+// mountGitAPI registers the six huma operations backing the per-project
+// git surface. Helpers carry the real wiring ; these adapters pull
+// auth.Identity from ctx and translate helper returns into huma
+// responses.
+func mountGitAPI(api huma.API, s *Server) {
+	huma.Register(api, huma.Operation{
+		OperationID: "git-status",
+		Method:      "GET",
+		Path:        "/api/projects/{name}/git/status",
+		Summary:     "Project git sync status",
+		Description: "Returns the configured remote/branch, the dirty-file list, and the last sync timestamp.",
+		Tags:        []string{"git"},
+	}, func(ctx context.Context, in *gitProjectInput) (*gitStatusOutput, error) {
+		if s == nil {
+			return &gitStatusOutput{Body: gitStatus{Configured: false, Provider: "github", Branch: "main", Changes: []gitChange{}}}, nil
+		}
+		ident, _ := auth.IdentityFrom(ctx)
+		st, err := s.gitStatusFor(ident, in.Project)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("git: status", err)
+		}
+		return &gitStatusOutput{Body: st}, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "git-config",
+		Method:      "POST",
+		Path:        "/api/projects/{name}/git/config",
+		Summary:     "Configure the project's git remote",
+		Description: "Persists remote URL, branch, provider, and (optional) PAT to the project sidecar. Returns the resulting status.",
+		Tags:        []string{"git"},
+	}, func(ctx context.Context, in *gitConfigInput) (*gitStatusOutput, error) {
+		if s == nil {
+			return nil, huma.Error500InternalServerError("server not initialised")
+		}
+		ident, _ := auth.IdentityFrom(ctx)
+		st, err := s.gitConfigSet(ident, in.Project, in.Body)
+		if err != nil {
+			return nil, err
+		}
+		return &gitStatusOutput{Body: st}, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "git-clone",
+		Method:      "POST",
+		Path:        "/api/projects/{name}/git/clone",
+		Summary:     "Clone the configured remote into the project working tree",
+		Description: "Wipes any existing working tree and re-clones from the remote at the requested branch. Transient git errors land in the status body rather than as HTTP errors.",
+		Tags:        []string{"git"},
+	}, func(ctx context.Context, in *gitConfigInput) (*gitStatusOutput, error) {
+		if s == nil {
+			return nil, huma.Error500InternalServerError("server not initialised")
+		}
+		ident, _ := auth.IdentityFrom(ctx)
+		st, err := s.gitClone(ctx, ident, in.Project, in.Body)
+		if err != nil {
+			return nil, err
+		}
+		return &gitStatusOutput{Body: st}, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "git-pull",
+		Method:      "POST",
+		Path:        "/api/projects/{name}/git/pull",
+		Summary:     "Pull the configured branch",
+		Description: "Fast-forwards the working tree against origin. Transient errors land in the status body.",
+		Tags:        []string{"git"},
+	}, func(ctx context.Context, in *gitProjectInput) (*gitStatusOutput, error) {
+		if s == nil {
+			return nil, huma.Error500InternalServerError("server not initialised")
+		}
+		ident, _ := auth.IdentityFrom(ctx)
+		st, err := s.gitPull(ctx, ident, in.Project)
+		if err != nil {
+			return nil, err
+		}
+		return &gitStatusOutput{Body: st}, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "git-push",
+		Method:      "POST",
+		Path:        "/api/projects/{name}/git/push",
+		Summary:     "Auto-commit and push the configured branch",
+		Description: "Stages every dirty + untracked file, commits with the caller's identity, then pushes to origin. Transient errors land in the status body.",
+		Tags:        []string{"git"},
+	}, func(ctx context.Context, in *gitProjectInput) (*gitStatusOutput, error) {
+		if s == nil {
+			return nil, huma.Error500InternalServerError("server not initialised")
+		}
+		ident, _ := auth.IdentityFrom(ctx)
+		st, err := s.gitPush(ctx, ident, in.Project)
+		if err != nil {
+			return nil, err
+		}
+		return &gitStatusOutput{Body: st}, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "git-log",
+		Method:      "GET",
+		Path:        "/api/projects/{name}/git/log",
+		Summary:     "Commit graph (HEAD-first)",
+		Description: "Flat commit list with parent SHAs so the SPA can paint the lane graph client-side. Capped at limit (default 200, max 1000).",
+		Tags:        []string{"git"},
+	}, func(ctx context.Context, in *gitLogInput) (*gitLogOutput, error) {
+		if s == nil {
+			return &gitLogOutput{Body: gitLogResponse{Entries: []gitLogEntry{}}}, nil
+		}
+		ident, _ := auth.IdentityFrom(ctx)
+		resp, err := s.gitLogFor(ident, in.Project, in.Limit)
+		if err != nil {
+			return nil, err
+		}
+		return &gitLogOutput{Body: resp}, nil
+	})
+}
+
 
 // autoCommit stages every tracked + untracked change and commits if
 // the tree is dirty. No-op when the tree is clean. Used by the push
