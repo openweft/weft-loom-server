@@ -149,6 +149,14 @@ func (s *Server) handleDOIToBib(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	target := s.pickTargetBib(r.Context(), ident, proj, body.Target)
+	// Defence in depth : never write into the server-side sidecar
+	// namespace from user-supplied target paths. The .bib suffix
+	// check in pickTargetBib bounds the shape, but the path can still
+	// be .weft-loom/x.bib.
+	if isInternalPath(target) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "target path is reserved"})
+		return
+	}
 
 	// Append to (or create) the target .bib. We don't dedupe — the
 	// user may legitimately have two entries for the same DOI in
