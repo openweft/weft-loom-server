@@ -18,8 +18,34 @@
 // disconnect+reconnect the MutationObserver around the innerHTML
 // write so the resulting DOM mutations don't echo back as a
 // "local change".
+//
+// SECURITY : the Y.Text content arrives from PEERS through the
+// y-websocket relay. A malicious peer can publish raw HTML like
+// `<img src=x onerror=…>` into the CRDT ; without sanitisation the
+// host's innerHTML= would execute it. We DOMPurify every write to
+// the host AND every Y.Text insert so neither direction smuggles
+// script. The active prod editor (LatexWysiwygEditor) uses a
+// different model (Y.Text = LaTeX source, parsed locally), but this
+// binding stays sanitiser-clean so a future switch can't regress.
 
 import * as Y from 'yjs';
+import DOMPurify from 'dompurify';
+
+// Same allowlist shape as WysiwygEditor.svelte's SANITIZE_OPTS :
+// keep formatting markup (b/i/u/p/h*/ul/ol/li/span/a) + data-*
+// attributes the LaTeX/WYSIWYG round-trip needs, drop everything
+// script-y. KEEP_CONTENT preserves text inside disallowed tags so
+// peers don't lose words when they paste a bad fragment.
+const SANITIZE_OPTS = {
+  KEEP_CONTENT: true,
+  ALLOW_DATA_ATTR: true,
+  FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'link', 'meta', 'base'],
+  FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover', 'onfocus', 'onblur'],
+};
+
+function sanitize(html: string): string {
+  return DOMPurify.sanitize(html, SANITIZE_OPTS) as unknown as string;
+}
 
 export const YORIGIN_LOCAL = 'yb-wysiwyg-local';
 
@@ -41,10 +67,10 @@ export function yjsWysiwygBinding(ytext: Y.Text, ydoc: Y.Doc): YjsWysiwygBinding
     const hostHtml = host.innerHTML;
     if (ytext.length === 0 && hostHtml !== '') {
       ydoc.transact(() => {
-        ytext.insert(0, hostHtml);
+        ytext.insert(0, sanitize(hostHtml));
       }, YORIGIN_LOCAL);
     } else if (ytext.length > 0 && hostHtml !== ytext.toString()) {
-      host.innerHTML = ytext.toString();
+      host.innerHTML = sanitize(ytext.toString());
     }
 
     // ── local → remote ──────────────────────────────────────────
@@ -55,7 +81,7 @@ export function yjsWysiwygBinding(ytext: Y.Text, ydoc: Y.Doc): YjsWysiwygBinding
     let debounceTimer: ReturnType<typeof setTimeout> | undefined;
     const flushLocal = () => {
       debounceTimer = undefined;
-      const newHtml = host.innerHTML;
+      const newHtml = sanitize(host.innerHTML);
       if (newHtml === ytext.toString()) return;
       ydoc.transact(() => {
         if (ytext.length > 0) ytext.delete(0, ytext.length);
@@ -90,7 +116,7 @@ export function yjsWysiwygBinding(ytext: Y.Text, ydoc: Y.Doc): YjsWysiwygBinding
     // state but it'd churn the relay + show as a phantom edit.
     const yObserver = (_event: Y.YTextEvent, tr: Y.Transaction) => {
       if (tr.origin === YORIGIN_LOCAL) return;
-      const next = ytext.toString();
+      const next = sanitize(ytext.toString());
       if (host.innerHTML === next) return;
       mo.disconnect();
       host.innerHTML = next;
