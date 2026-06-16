@@ -2,6 +2,22 @@
 // endpoints are wired in internal/server/api_git.go ; today they're
 // stubs returning canned responses so the UI scaffold can be built
 // against a stable contract. The real go-git wiring lands separately.
+//
+// Wire-level calls go through the openapi-fetch helpers in api.ts ;
+// the locally-defined types below narrow the huma-generated shapes
+// (e.g. `provider: string` → the `GitProvider` union) so callers
+// can switch on a closed set without re-narrowing at every site.
+
+import {
+  gitStatus as apiGitStatus,
+  gitConfig as apiGitConfig,
+  gitClone as apiGitClone,
+  gitPull as apiGitPull,
+  gitPush as apiGitPush,
+  gitLog as apiGitLog,
+  type GitStatus as ApiGitStatus,
+  type GitLogResponse as ApiGitLogResponse,
+} from './api';
 
 export type GitProvider = 'github' | 'gitlab' | 'forgejo' | 'generic';
 
@@ -42,36 +58,29 @@ export interface GitStatus {
   last_error?: string;
 }
 
-async function http<T>(
-  method: 'GET' | 'POST' | 'PUT' | 'DELETE',
-  url: string,
-  body?: unknown,
-): Promise<T> {
-  const resp = await fetch(url, {
-    method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  if (!resp.ok) {
-    let detail = '';
-    try {
-      const j = await resp.json();
-      detail = j.error ?? JSON.stringify(j);
-    } catch {
-      detail = await resp.text();
-    }
-    throw new Error(`${method} ${url} ${resp.status}: ${detail}`);
-  }
-  if (resp.status === 204) return undefined as T;
-  return (await resp.json()) as T;
+// adaptStatus narrows the huma-typed payload (provider:string,
+// changes:FileChange[]|null) into the SPA-facing GitStatus shape
+// (provider:GitProvider union, changes:[]).
+function adaptStatus(s: ApiGitStatus): GitStatus {
+  return {
+    configured: s.configured,
+    provider: s.provider as GitProvider,
+    remote_url: s.remote_url,
+    branch: s.branch,
+    ahead: s.ahead,
+    behind: s.behind,
+    changes: (s.changes ?? []) as FileChange[],
+    last_sync_unix: s.last_sync_unix,
+    last_error: s.last_error,
+  };
 }
 
-export function getStatus(project: string): Promise<GitStatus> {
-  return http('GET', `/api/projects/${encodeURIComponent(project)}/git/status`);
+export async function getStatus(project: string): Promise<GitStatus> {
+  return adaptStatus(await apiGitStatus(project));
 }
 
-export function saveConfig(project: string, config: GitConfig): Promise<void> {
-  return http('POST', `/api/projects/${encodeURIComponent(project)}/git/config`, config);
+export async function saveConfig(project: string, config: GitConfig): Promise<void> {
+  await apiGitConfig(project, config);
 }
 
 export interface LogEntry {
@@ -90,20 +99,33 @@ export interface LogResponse {
   branch: string;
 }
 
-export function getLog(project: string, limit = 200): Promise<LogResponse> {
-  return http('GET', `/api/projects/${encodeURIComponent(project)}/git/log?limit=${limit}`);
+function adaptLog(r: ApiGitLogResponse): LogResponse {
+  const entries = (r.entries ?? []).map((e) => ({
+    sha: e.sha,
+    parents: (e.parents ?? []) as string[],
+    author: e.author,
+    email: e.email,
+    subject: e.subject,
+    unix_time: e.unix_time,
+    ref_names: (e.ref_names ?? undefined) as string[] | undefined,
+  }));
+  return { entries, head_sha: r.head_sha, branch: r.branch };
 }
 
-export function pull(project: string): Promise<GitStatus> {
-  return http('POST', `/api/projects/${encodeURIComponent(project)}/git/pull`);
+export async function getLog(project: string, limit = 200): Promise<LogResponse> {
+  return adaptLog(await apiGitLog(project, limit));
 }
 
-export function push(project: string): Promise<GitStatus> {
-  return http('POST', `/api/projects/${encodeURIComponent(project)}/git/push`);
+export async function pull(project: string): Promise<GitStatus> {
+  return adaptStatus(await apiGitPull(project));
 }
 
-export function cloneFromRemote(project: string, config: GitConfig): Promise<GitStatus> {
-  return http('POST', `/api/projects/${encodeURIComponent(project)}/git/clone`, config);
+export async function push(project: string): Promise<GitStatus> {
+  return adaptStatus(await apiGitPush(project));
+}
+
+export async function cloneFromRemote(project: string, config: GitConfig): Promise<GitStatus> {
+  return adaptStatus(await apiGitClone(project, config));
 }
 
 // providerLabel renders the provider id as a human-friendly name.

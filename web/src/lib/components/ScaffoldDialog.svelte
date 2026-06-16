@@ -4,17 +4,14 @@
   // the established floating-dialog pattern (NewFileDialog +
   // SettingsPanel) — fixed-position modal with a backdrop.
 
-  interface ScaffoldFile {
-    path: string;
-    size: number;
-  }
-  interface Template {
-    id: string;
-    name: string;
-    description: string;
-    language: string;
-    files: ScaffoldFile[];
-  }
+  import {
+    listProjectTemplates,
+    applyScaffold,
+    ScaffoldClashError,
+    type ProjectTemplate,
+  } from '../api';
+
+  type Template = ProjectTemplate;
   interface Props {
     open: boolean;
     project: string;
@@ -34,10 +31,7 @@
   async function refresh() {
     loading = true;
     try {
-      const r = await fetch('/api/project-templates');
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const data = await r.json();
-      items = Array.isArray(data?.items) ? data.items : [];
+      items = await listProjectTemplates();
       if (!selectedId && items.length > 0) selectedId = items[0].id;
     } catch {
       items = [];
@@ -52,26 +46,19 @@
     applyError = undefined;
     clashes = undefined;
     try {
-      const r = await fetch('/api/projects/' + encodeURIComponent(project) + '/scaffold', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ template_id: selectedId, force: forceOverwrite }),
+      const d = await applyScaffold(project, {
+        template_id: selectedId,
+        force: forceOverwrite,
       });
-      if (r.status === 409) {
-        const d = await r.json();
-        clashes = Array.isArray(d?.clashes) ? d.clashes : [];
-        applyError = 'These files already exist : ' + (clashes ?? []).join(', ');
-        return;
-      }
-      if (!r.ok) {
-        const d = await r.json().catch(() => ({}));
-        throw new Error(d.error ?? ('HTTP ' + r.status));
-      }
-      const d = await r.json();
       onApplied?.(d.entry ?? d.written?.[0] ?? '');
       open = false;
     } catch (e) {
-      applyError = e instanceof Error ? e.message : String(e);
+      if (e instanceof ScaffoldClashError) {
+        clashes = e.clashes;
+        applyError = 'These files already exist : ' + e.clashes.join(', ');
+      } else {
+        applyError = e instanceof Error ? e.message : String(e);
+      }
     } finally {
       applyBusy = false;
     }
@@ -133,7 +120,7 @@
                   data-id={t.id}
                 >
                   <div class="font-semibold">{t.name}</div>
-                  <div class="text-xs opacity-70">{t.language} · {t.files.length} files</div>
+                  <div class="text-xs opacity-70">{t.language} · {t.files?.length ?? 0} files</div>
                 </button>
               </li>
             {/each}
@@ -143,7 +130,7 @@
               <div class="text-sm mb-2">{selectedTemplate.description}</div>
               <div class="text-xs opacity-60 mb-1">Files :</div>
               <ul class="scaffold-files">
-                {#each selectedTemplate.files as f (f.path)}
+                {#each selectedTemplate.files ?? [] as f (f.path)}
                   <li><code>{f.path}</code> <span class="opacity-50">({f.size} B)</span></li>
                 {/each}
               </ul>

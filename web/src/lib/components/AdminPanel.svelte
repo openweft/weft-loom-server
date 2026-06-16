@@ -8,13 +8,7 @@
   // job history. For now a single "Images" pane keeps the surface
   // tiny + actionable.
 
-  interface OciStatus {
-    language: string;
-    image: string;
-    status: 'ok' | 'missing' | 'unauthorized' | 'unreachable';
-    last_checked_unix: number;
-    detail?: string;
-  }
+  import { listOCIImages, type OciImageStatus } from '../api';
 
   interface Props {
     open: boolean;
@@ -22,7 +16,7 @@
   }
   let { open = $bindable(), onClose }: Props = $props();
 
-  let images = $state<OciStatus[]>([]);
+  let images = $state<OciImageStatus[]>([]);
   let loading = $state(false);
   let err = $state<string | null>(null);
 
@@ -30,10 +24,7 @@
     loading = true;
     err = null;
     try {
-      const r = await fetch('/api/admin/oci-images' + (force ? '?force=1' : ''));
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const j = await r.json();
-      images = (j.images as OciStatus[]) ?? [];
+      images = await listOCIImages(force);
     } catch (e) {
       err = String(e);
     } finally {
@@ -45,7 +36,7 @@
     if (open) refresh();
   });
 
-  function statusBadge(s: OciStatus['status']): { cls: string; label: string } {
+  function statusBadge(s: OciImageStatus['status']): { cls: string; label: string } {
     switch (s) {
       case 'ok':           return { cls: 'badge-success', label: 'published' };
       case 'missing':      return { cls: 'badge-error',   label: 'not published' };

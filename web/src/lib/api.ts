@@ -384,6 +384,132 @@ export async function arxivSearch(
   return data.entries ?? [];
 }
 
+// --- Project git remote (status / config / clone / pull / push / log) -
+
+export type GitStatus = NonNullable<
+  paths['/api/projects/{name}/git/status']['get']['responses']['200']['content']['application/json']
+>;
+
+export type GitConfig = NonNullable<
+  paths['/api/projects/{name}/git/config']['post']['requestBody']
+>['content']['application/json'];
+
+export type GitLogResponse = NonNullable<
+  paths['/api/projects/{name}/git/log']['get']['responses']['200']['content']['application/json']
+>;
+
+export type GitLogEntry = NonNullable<GitLogResponse['entries']>[number];
+
+export async function gitStatus(project: string): Promise<GitStatus> {
+  const { data, error } = await api.GET('/api/projects/{name}/git/status', {
+    params: { path: { name: project } },
+  });
+  if (error) throw new Error(`git-status: ${JSON.stringify(error)}`);
+  return data;
+}
+
+export async function gitConfig(project: string, cfg: GitConfig): Promise<GitStatus> {
+  const { data, error } = await api.POST('/api/projects/{name}/git/config', {
+    params: { path: { name: project } },
+    body: cfg,
+  });
+  if (error) throw new Error(`git-config: ${JSON.stringify(error)}`);
+  return data;
+}
+
+export async function gitClone(project: string, cfg: GitConfig): Promise<GitStatus> {
+  const { data, error } = await api.POST('/api/projects/{name}/git/clone', {
+    params: { path: { name: project } },
+    body: cfg,
+  });
+  if (error) throw new Error(`git-clone: ${JSON.stringify(error)}`);
+  return data;
+}
+
+export async function gitPull(project: string): Promise<GitStatus> {
+  const { data, error } = await api.POST('/api/projects/{name}/git/pull', {
+    params: { path: { name: project } },
+  });
+  if (error) throw new Error(`git-pull: ${JSON.stringify(error)}`);
+  return data;
+}
+
+export async function gitPush(project: string): Promise<GitStatus> {
+  const { data, error } = await api.POST('/api/projects/{name}/git/push', {
+    params: { path: { name: project } },
+  });
+  if (error) throw new Error(`git-push: ${JSON.stringify(error)}`);
+  return data;
+}
+
+export async function gitLog(project: string, limit = 200): Promise<GitLogResponse> {
+  const { data, error } = await api.GET('/api/projects/{name}/git/log', {
+    params: { path: { name: project }, query: { limit } },
+  });
+  if (error) throw new Error(`git-log: ${JSON.stringify(error)}`);
+  return data;
+}
+
+// --- Project templates + scaffold -------------------------------------
+
+export type ProjectTemplate = NonNullable<
+  NonNullable<
+    paths['/api/project-templates']['get']['responses']['200']['content']['application/json']['items']
+  >
+>[number];
+
+export type ScaffoldInput = NonNullable<
+  paths['/api/projects/{name}/scaffold']['post']['requestBody']
+>['content']['application/json'];
+
+export type ScaffoldResult = NonNullable<
+  paths['/api/projects/{name}/scaffold']['post']['responses']['200']['content']['application/json']
+>;
+
+// ScaffoldClashError surfaces the 409 path distinctly so the caller
+// can render the clash list without re-parsing the error envelope.
+export class ScaffoldClashError extends Error {
+  clashes: string[];
+  constructor(clashes: string[], message: string) {
+    super(message);
+    this.name = 'ScaffoldClashError';
+    this.clashes = clashes;
+  }
+}
+
+export async function listProjectTemplates(): Promise<ProjectTemplate[]> {
+  const { data, error } = await api.GET('/api/project-templates');
+  if (error) throw new Error(`list-project-templates: ${JSON.stringify(error)}`);
+  return data.items ?? [];
+}
+
+export async function applyScaffold(
+  project: string,
+  opts: ScaffoldInput,
+): Promise<ScaffoldResult> {
+  const { data, error, response } = await api.POST('/api/projects/{name}/scaffold', {
+    params: { path: { name: project } },
+    body: opts,
+  });
+  if (error) {
+    // The server emits 409 + JSON {clashes:[...], error:"..."} on path
+    // collisions. openapi-fetch routes that into `error` (typed as the
+    // problem+json ErrorModel), but the wire payload still carries our
+    // huma-typed `clashes` field — read it via a tolerant cast.
+    const body = error as { clashes?: unknown; error?: string; detail?: string };
+    if (response.status === 409 && Array.isArray(body?.clashes)) {
+      const clashes = body.clashes as string[];
+      throw new ScaffoldClashError(
+        clashes,
+        body.error ?? `apply-scaffold: ${clashes.length} clashes`,
+      );
+    }
+    const msg = body?.error ?? body?.detail ?? JSON.stringify(error);
+    throw new Error(msg);
+  }
+  return data;
+}
+
 // --- Admin email config -----------------------------------------------
 
 export interface EmailConfig {
@@ -395,4 +521,100 @@ export async function getEmailConfig(): Promise<EmailConfig> {
   const { data, error } = await api.GET('/api/admin/email/config');
   if (error) throw new Error(`admin-email-config: ${JSON.stringify(error)}`);
   return { configured: data.configured, from: data.from ?? '' };
+}
+
+// --- Admin OCI images -------------------------------------------------
+//
+// Per-language compile image health. AdminPanel polls this on open
+// and on the explicit Refresh button (force=true bypasses the
+// 5-minute server-side cache).
+
+export type OciImageStatusKind = 'ok' | 'missing' | 'unauthorized' | 'unreachable';
+
+export interface OciImageStatus {
+  language: string;
+  image: string;
+  status: OciImageStatusKind;
+  last_checked_unix: number;
+  detail?: string;
+}
+
+export async function listOCIImages(force = false): Promise<OciImageStatus[]> {
+  const { data, error } = await api.GET('/api/admin/oci-images', {
+    params: { query: force ? { force: true } : {} },
+  });
+  if (error) throw new Error(`admin-oci-images: ${JSON.stringify(error)}`);
+  // The wire schema types `status` as plain string ; narrow to the
+  // four documented states so the AdminPanel switch stays exhaustive.
+  return (data.images ?? []) as OciImageStatus[];
+}
+
+// --- Notebook execution -----------------------------------------------
+//
+// One-shot exec of a code cell via the workspace μVM. The server
+// dispatches via NATS to the per-project workspace and replies with
+// stdout/stderr + exit code. NotebookEditor wires this to the Run
+// button on each code cell.
+
+export interface NotebookExecBody {
+  language: string;
+  source: string;
+}
+
+export interface NotebookExecResult {
+  stdout: string;
+  stderr: string;
+  exit_code: number;
+}
+
+export async function execNotebook(
+  project: string,
+  body: NotebookExecBody,
+): Promise<NotebookExecResult> {
+  const { data, error } = await api.POST('/api/projects/{name}/notebook/exec', {
+    params: { path: { name: project } },
+    body,
+  });
+  if (error) throw new Error(`notebook-exec: ${JSON.stringify(error)}`);
+  return {
+    stdout: data.stdout,
+    stderr: data.stderr,
+    exit_code: data.exit_code,
+  };
+}
+
+// --- Chat (legacy stub) -----------------------------------------------
+//
+// Non-streaming chat stub. The real provider path is the SSE
+// /api/projects/{name}/ai/chat endpoint (raw fetch — streams can't be
+// typified through openapi-fetch). This helper only covers the
+// non-streaming stub variant — keep here for completeness so the
+// typed surface is exhaustive.
+
+export interface ChatStubMessage {
+  role: string;
+  content: string;
+}
+
+export interface ChatStubBody {
+  messages: ChatStubMessage[];
+  file?: string;
+  file_content?: string;
+}
+
+export interface ChatStubReply {
+  reply: string;
+  model?: string;
+}
+
+export async function chatStub(
+  project: string,
+  body: ChatStubBody,
+): Promise<ChatStubReply> {
+  const { data, error } = await api.POST('/api/projects/{name}/chat', {
+    params: { path: { name: project } },
+    body,
+  });
+  if (error) throw new Error(`chat-stub: ${JSON.stringify(error)}`);
+  return { reply: data.reply, model: data.model };
 }

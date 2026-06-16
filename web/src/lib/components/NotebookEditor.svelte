@@ -32,6 +32,7 @@
     type Notebook,
     type Cell,
   } from '../notebook';
+  import { readFile, writeFile, execNotebook } from '../api';
 
   marked.use(markedKatex({ throwOnError: false, output: 'html' }));
 
@@ -65,12 +66,7 @@
     nb = null;
     loadErr = null;
     try {
-      const r = await fetch(
-        '/api/projects/' + encodeURIComponent(project) + '/files/' + encodeURIComponent(file),
-      );
-      if (seq !== loadSeq) return;
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const raw = await r.text();
+      const raw = await readFile(project, file);
       if (seq !== loadSeq) return;
       nb = parseNotebook(raw);
       dirty = false;
@@ -86,15 +82,7 @@
     saveErr = null;
     try {
       const body = serialiseNotebook(nb);
-      const r = await fetch(
-        '/api/projects/' + encodeURIComponent(project) + '/files/' + encodeURIComponent(file),
-        {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body,
-        },
-      );
-      if (!r.ok) throw new Error('HTTP ' + r.status);
+      await writeFile(project, file, body, 'application/json');
       dirty = false;
       // Notify any NotebookPreview rendering the same file so it can
       // re-fetch immediately without 1.5 s polling (M4). Filtered by
@@ -177,42 +165,22 @@
     if (cell.cell_type !== 'code') return;
     busyCell = idx;
     try {
-      const r = await fetch(
-        '/api/projects/' + encodeURIComponent(project) + '/notebook/exec',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            language: notebookLanguage(nb),
-            source: cell.source,
-          }),
-        },
-      );
-      if (!r.ok) {
-        const text = await r.text();
-        nb.cells[idx].outputs = [
-          {
-            output_type: 'error',
-            ename: 'HTTPError',
-            evalue: 'HTTP ' + r.status,
-            traceback: [text],
-          },
-        ];
-      } else {
-        const { stdout, stderr, exit_code } = await r.json();
-        const outs: Cell['outputs'] = [];
-        if (stdout) outs!.push({ output_type: 'stream', name: 'stdout', text: stdout });
-        if (stderr) outs!.push({ output_type: 'stream', name: 'stderr', text: stderr });
-        nb.cells[idx].outputs = outs;
-        nb.cells[idx].execution_count = (nb.cells[idx].execution_count ?? 0) + 1;
-        if (exit_code !== 0 && !stderr) {
-          nb.cells[idx].outputs!.push({
-            output_type: 'error',
-            ename: 'ExitCode',
-            evalue: 'exit ' + exit_code,
-            traceback: [],
-          });
-        }
+      const { stdout, stderr, exit_code } = await execNotebook(project, {
+        language: notebookLanguage(nb),
+        source: cell.source,
+      });
+      const outs: Cell['outputs'] = [];
+      if (stdout) outs!.push({ output_type: 'stream', name: 'stdout', text: stdout });
+      if (stderr) outs!.push({ output_type: 'stream', name: 'stderr', text: stderr });
+      nb.cells[idx].outputs = outs;
+      nb.cells[idx].execution_count = (nb.cells[idx].execution_count ?? 0) + 1;
+      if (exit_code !== 0 && !stderr) {
+        nb.cells[idx].outputs!.push({
+          output_type: 'error',
+          ename: 'ExitCode',
+          evalue: 'exit ' + exit_code,
+          traceback: [],
+        });
       }
       // Force reactivity by reassigning the cells array.
       nb.cells = [...nb.cells];
