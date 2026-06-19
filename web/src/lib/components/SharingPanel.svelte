@@ -11,6 +11,7 @@
   // editor conventions so they're self-documenting in the UI.
 
   import { listSharing, upsertShare, deleteShare, type Share, type ShareRole } from '../api';
+  import { i18n } from '../i18n.svelte';
 
   interface Props {
     project: string;
@@ -98,7 +99,7 @@
     <div class="card-body p-4">
       <div class="flex items-center justify-between mb-3">
         <div class="text-sm font-semibold">
-          Share <span class="opacity-70">{project}</span>
+          {i18n.t('sharing.title')} <span class="opacity-70">{project}</span>
         </div>
         <button
           class="btn btn-ghost btn-xs"
@@ -133,16 +134,16 @@
             disabled={busy}
             data-testid="sharing-invite-role"
           >
-            <option value="editor">editor</option>
-            <option value="commenter">commenter</option>
-            <option value="viewer">viewer</option>
+            <option value="editor">{i18n.t('sharing.role.editor')}</option>
+            <option value="commenter">{i18n.t('sharing.role.commenter')}</option>
+            <option value="viewer">{i18n.t('sharing.role.viewer')}</option>
           </select>
           <button
             class="btn btn-primary btn-sm"
             onclick={() => void addShare()}
             disabled={!inviteUser.trim() || busy}
             data-testid="sharing-invite-add"
-          >Add</button>
+          >{i18n.t('sharing.add')}</button>
         </div>
       </div>
 
@@ -158,7 +159,7 @@
           <div class="opacity-50 text-xs p-2 text-center">Loading…</div>
         {:else if shares.length === 0}
           <div class="opacity-50 text-xs p-2 text-center">
-            Not shared with anyone yet. Invite a collaborator above.
+            {i18n.t('sharing.empty')}
           </div>
         {:else}
           {#each shares as s (s.user)}
@@ -169,9 +170,9 @@
                 class="btn btn-ghost btn-xs text-error ml-auto"
                 onclick={() => void removeShare(s.user)}
                 disabled={busy}
-                aria-label={`Remove ${s.user}`}
+                aria-label={i18n.t('sharing.removeTooltip').replace('{user}', s.user)}
                 data-testid="sharing-remove"
-              >Remove</button>
+              >{i18n.t('sharing.remove')}</button>
             </div>
           {/each}
         {/if}

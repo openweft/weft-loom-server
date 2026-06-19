@@ -10,6 +10,8 @@
   // component is project-agnostic and just narrates the most-recent
   // write across whichever editor instance owns the active file.
 
+  import { i18n } from '../i18n.svelte';
+
   // Time formatter is locale-aware via Intl.DateTimeFormat — the
   // user's chosen language picks 24h vs 12h + the right separator
   // (e.g. ":" vs "." in some locales). Cached at module scope so
@@ -37,7 +39,7 @@
       const ce = ev as CustomEvent<{ project?: string; file?: string; language?: string }>;
       const file = ce.detail?.file ?? '';
       label = fmt.format(new Date());
-      tooltip = file ? 'Saved : ' + file : 'Saved';
+      tooltip = file ? i18n.t('save.tooltipPrefix') + ' ' + file : i18n.t('save.tooltipNoFile');
       mounted = true;
       // Force the transition to replay even if we were mid-fade :
       // flip visible off then on in the next microtask so the
@@ -68,6 +70,6 @@
     title={tooltip}
     aria-live="polite"
   >
-    Saved at {label}
+    {i18n.t('save.at')} {label}
   </span>
 {/if}

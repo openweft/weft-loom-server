@@ -21,6 +21,7 @@
     deletePublicShare,
     type PublicShareRecord,
   } from '../api';
+  import { i18n } from '../i18n.svelte';
 
   interface Props {
     project: string;
@@ -102,7 +103,7 @@
     <div class="card-body p-4">
       <div class="flex items-center justify-between mb-2">
         <h3 class="text-sm font-semibold">
-          Public read-only link
+          {i18n.t('publicShare.title')}
           <span class="opacity-50 text-xs">({project})</span>
         </h3>
         <button
@@ -138,7 +139,7 @@
               onclick={copyURL}
               disabled={busy}
               data-testid="public-share-copy"
-            >{copied ? 'Copied!' : 'Copy'}</button>
+            >{copied ? i18n.t('publicShare.copied') : 'Copy'}</button>
           </div>
           <div class="text-[10px] opacity-50 mt-1">
             Created {share.created}
@@ -153,7 +154,7 @@
             data-testid="public-share-revoke"
           >
             {#if busy}<span class="loading loading-spinner loading-xs"></span>{/if}
-            Revoke link
+            {i18n.t('publicShare.revoke')}
           </button>
           <button class="btn btn-sm" onclick={onClose}>Close</button>
         </div>
@@ -169,7 +170,7 @@
             data-testid="public-share-generate"
           >
             {#if busy}<span class="loading loading-spinner loading-xs"></span>{/if}
-            Generate public link
+            {i18n.t('publicShare.generate')}
           </button>
           <button class="btn btn-sm" onclick={onClose}>Cancel</button>
         </div>

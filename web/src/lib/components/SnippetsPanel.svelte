@@ -21,6 +21,7 @@
   import { listSnippets, upsertSnippet, deleteSnippet, type UserSnippet } from '../api';
   import { logError } from '../logbus';
   import { shippedSnippets, type SnippetDef } from '../snippets';
+  import { i18n } from '../i18n.svelte';
 
   interface Props {
     visible: boolean;
@@ -178,7 +179,7 @@
         <div class="card-body p-3">
           <div class="flex items-center justify-between mb-2">
             <div class="text-sm font-semibold">
-              Snippets
+              {i18n.t('snippets.title')}
               <span class="opacity-50 text-xs">({userSnippets.length} user · {shippedSnippets().length} built-in)</span>
             </div>
             <div class="flex items-center gap-1">
@@ -189,7 +190,7 @@
                 title="Define a new snippet"
                 aria-label="New snippet"
                 data-testid="snippets-new"
-              >+ New</button>
+              >{i18n.t('snippets.new')}</button>
               <button class="btn btn-ghost btn-xs" onclick={() => (open = false)} aria-label="Close">×</button>
             </div>
           </div>
@@ -204,14 +205,14 @@
               </div>
               <input
                 type="text"
-                placeholder="Label (e.g. My preamble)"
+                placeholder={i18n.t('snippets.labelPlaceholder')}
                 class="input input-bordered input-xs w-full mb-1"
                 bind:value={formLabel}
                 disabled={busy}
                 data-testid="snippets-form-label"
               />
               <textarea
-                placeholder="Body — verbatim text inserted at the cursor"
+                placeholder={i18n.t('snippets.bodyPlaceholder')}
                 class="textarea textarea-bordered textarea-xs w-full mb-1 font-mono"
                 rows="4"
                 bind:value={formBody}
@@ -221,7 +222,7 @@
               <div class="flex gap-1 mb-1">
                 <input
                   type="text"
-                  placeholder="Hotkey hint (display-only)"
+                  placeholder={i18n.t('snippets.hotkeyPlaceholder')}
                   class="input input-bordered input-xs flex-1"
                   bind:value={formHotkey}
                   disabled={busy}
@@ -287,7 +288,7 @@
                       class="btn btn-ghost btn-xs"
                       onclick={() => openEditForm(u)}
                       disabled={busy}
-                      aria-label="Edit snippet"
+                      aria-label={i18n.t('snippets.edit')}
                       data-testid="snippets-edit"
                     >✎</button>
                     <button
@@ -295,7 +296,7 @@
                       class="btn btn-ghost btn-xs text-error"
                       onclick={() => void removeSnippet(u)}
                       disabled={busy}
-                      aria-label="Delete snippet"
+                      aria-label={i18n.t('snippets.delete')}
                       data-testid="snippets-delete"
                     >🗑</button>
                   </div>
@@ -304,7 +305,7 @@
               {#if filteredUser().length === 0}
                 <div class="opacity-50 text-xs p-2" data-testid="snippets-user-empty">
                   {#if userSnippets.length === 0}
-                    No user snippets yet. Click <span class="kbd kbd-xs">+ New</span> to save a reusable piece of text.
+                    {i18n.t('snippets.empty')}
                   {:else}
                     No user snippets match "{filter}".
                   {/if}

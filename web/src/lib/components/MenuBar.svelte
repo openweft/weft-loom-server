@@ -75,8 +75,8 @@
           { kind: 'item', labelKey: 'menu.file.switchProject', shortcut: 'Cmd+P', action: onSwitchProject },
           { kind: 'divider' },
           { kind: 'item', labelKey: 'menu.file.exportZip', action: onExportProjectZip },
-          { kind: 'item', label: 'Share with users…', action: onOpenSharing },
-          { kind: 'item', label: 'Public read-only link…', action: onOpenPublicShare },
+          { kind: 'item', labelKey: 'menu.file.share', action: onOpenSharing },
+          { kind: 'item', labelKey: 'menu.file.publicShare', action: onOpenPublicShare },
           { kind: 'divider' },
           { kind: 'item', labelKey: 'menu.file.settings', shortcut: 'Cmd+,', action: onOpenSettings },
         ] as Item[],
@@ -137,8 +137,7 @@
   );
 
   type Item =
-    | { kind: 'item'; labelKey: string; label?: never; shortcut?: string; action: () => void }
-    | { kind: 'item'; label: string; labelKey?: never; shortcut?: string; action: () => void }
+    | { kind: 'item'; labelKey: string; shortcut?: string; action: () => void }
     | { kind: 'divider' };
 </script>
 
@@ -181,7 +180,7 @@
                   (document.activeElement as HTMLElement | null)?.blur();
                 }}
               >
-                <span>{item.labelKey ? i18n.t(item.labelKey) : item.label}</span>
+                <span>{i18n.t(item.labelKey)}</span>
                 {#if item.shortcut}
                   <span class="text-xs opacity-60 font-mono">{item.shortcut}</span>
                 {/if}

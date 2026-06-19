@@ -3,6 +3,7 @@
   import { listProjects, renameProject, type Project } from '../api';
   import CloneProjectDialog from './CloneProjectDialog.svelte';
   import { clickOutside } from '../actions';
+  import { i18n } from '../i18n.svelte';
 
   interface Props {
     current: string;
@@ -44,14 +45,18 @@
   }
 
   async function promptRename(p: Project) {
-    const newName = window.prompt(`Rename project "${p.name}" to :`, p.name);
+    const newName = window.prompt(
+      i18n.t('project.rename.prompt').replace('{name}', p.name),
+      p.name,
+    );
     if (!newName || newName === p.name) return;
     try {
       const renamed = await renameProject(p.name, newName.trim());
       await refresh();
       if (p.name === current) onSwitch(renamed.name, renamed.language ?? 'markdown');
     } catch (e) {
-      window.alert(`Rename failed : ${e instanceof Error ? e.message : String(e)}`);
+      const msg = e instanceof Error ? e.message : String(e);
+      window.alert(i18n.t('project.rename.failed').replace('{msg}', msg));
     }
   }
 
@@ -116,8 +121,8 @@
               <button
                 type="button"
                 class="btn btn-ghost btn-xs opacity-50 hover:opacity-100"
-                title={`Rename ${p.name}`}
-                aria-label={`Rename ${p.name}`}
+                title={`${i18n.t('project.rename.tooltip')} ${p.name}`}
+                aria-label={`${i18n.t('project.rename.tooltip')} ${p.name}`}
                 onclick={(e) => { e.stopPropagation(); promptRename(p); }}
               >✎</button>
             </div>

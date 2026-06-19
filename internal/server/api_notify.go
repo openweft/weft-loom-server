@@ -58,6 +58,13 @@ type notifyMentionOutput struct {
 }
 
 func mountNotifyAPI(api huma.API, s *Server) {
+	// Anti-spam : cap notify-mention to a small number of requests
+	// per identity per minute. notify-mention is the only endpoint
+	// that can spend SMTP money so it gets the strictest rate.
+	var notifyMiddlewares huma.Middlewares
+	if s != nil && s.notifyLimiter.enabled() {
+		notifyMiddlewares = huma.Middlewares{s.humaRateLimit(s.notifyLimiter)}
+	}
 	huma.Register(api, huma.Operation{
 		OperationID:   "notify-mention",
 		Method:        "POST",
@@ -66,6 +73,7 @@ func mountNotifyAPI(api huma.API, s *Server) {
 		Description:   "Fire-and-forget : enqueues an email to every recipient who is also on the project's sharing.json. Returns 202 immediately ; SMTP runs in a background goroutine. Recipients NOT on the ACL refuse the whole request with 403 (anti-spam guard).",
 		Tags:          []string{"notify"},
 		DefaultStatus: 202,
+		Middlewares:   notifyMiddlewares,
 	}, func(ctx context.Context, in *notifyMentionInput) (*notifyMentionOutput, error) {
 		out := &notifyMentionOutput{Status: 202}
 		if s == nil {

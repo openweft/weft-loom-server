@@ -99,6 +99,14 @@ type arxivSearchInput struct {
 // API. Each handler reproduces the legacy raw-mux behaviour byte
 // for byte ; see api_bib.go header for the contract.
 func mountBibAPI(api huma.API, s *Server) {
+	// Cap DOI / arXiv / Zotero at the shared externalProxyLimiter so
+	// a runaway client can't fan us out into a DDoS against doi.org
+	// / arxiv.org / api.zotero.org. The bucket is keyed per identity
+	// so one user's spam doesn't starve another.
+	var proxyMiddlewares huma.Middlewares
+	if s != nil && s.externalProxyLimiter.enabled() {
+		proxyMiddlewares = huma.Middlewares{s.humaRateLimit(s.externalProxyLimiter)}
+	}
 	huma.Register(api, huma.Operation{
 		OperationID: "bib-from-doi",
 		Method:      "POST",
@@ -106,6 +114,7 @@ func mountBibAPI(api huma.API, s *Server) {
 		Summary:     "Import a BibTeX entry from a DOI",
 		Description: "Resolves a DOI through doi.org's content-negotiation API + appends the returned BibTeX to the target .bib (refs.bib by default).",
 		Tags:        []string{"bibliography"},
+		Middlewares: proxyMiddlewares,
 	}, func(ctx context.Context, in *doiToBibInput) (*bibRawOutput, error) {
 		if s == nil {
 			return bibErr(500, "server not initialised"), nil
@@ -167,6 +176,7 @@ func mountBibAPI(api huma.API, s *Server) {
 		Summary:     "Relay a Zotero library export as BibTeX",
 		Description: "Hits api.zotero.org/users/<id>/items?format=bibtex with the caller-supplied API key + streams the raw BibTeX bytes back. Response Content-Type is text/plain ; the SPA appends the result to refs.bib via the file API.",
 		Tags:        []string{"bibliography"},
+		Middlewares: proxyMiddlewares,
 	}, func(ctx context.Context, in *zoteroSyncInput) (*bibRawOutput, error) {
 		userID := strings.TrimSpace(in.Body.UserID)
 		apiKey := strings.TrimSpace(in.Body.APIKey)
@@ -210,6 +220,7 @@ func mountBibAPI(api huma.API, s *Server) {
 		Summary:     "Search arXiv.org",
 		Description: "Server-side proxy for arXiv's Atom-XML query API. Parses the upstream feed + returns a compact JSON envelope so the SPA doesn't pull a full XML parser into the bundle.",
 		Tags:        []string{"bibliography"},
+		Middlewares: proxyMiddlewares,
 	}, func(ctx context.Context, in *arxivSearchInput) (*bibRawOutput, error) {
 		q := strings.TrimSpace(in.Q)
 		if q == "" {

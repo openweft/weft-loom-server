@@ -149,6 +149,52 @@ export async function cancelCompile(project: string, jobID: string): Promise<voi
   }
 }
 
+// --- chktex strict LaTeX linter ---------------------------------------
+
+// ChktexDiagnostic mirrors the server-side wire shape (line/col are
+// 1-based, severity is the LSP-flavoured bucket). The editor's lint
+// extension converts the 1-based positions to 0-based document
+// offsets the same way it does for LSP diagnostics.
+export interface ChktexDiagnostic {
+  line: number;
+  col: number;
+  code: number;
+  message: string;
+  severity: 'error' | 'warning' | 'info';
+}
+
+export interface ChktexResult {
+  diagnostics: ChktexDiagnostic[];
+  // available : false when the loom-server host doesn't have the
+  // chktex binary installed. SPA shows a one-time "strict linting
+  // unavailable" tooltip in that case ; diagnostics will always be
+  // empty when this is false.
+  available: boolean;
+}
+
+// runChktex pipes the current editor buffer at the strict LaTeX
+// linter (chktex) on the loom-server host. Returns { diagnostics,
+// available } — when the host has no chktex binary the call still
+// succeeds (200) with `available: false` + an empty array, so the
+// caller can treat "unavailable" as a quiet no-op rather than an
+// error path. Errors are limited to network failures + 5xx.
+export async function runChktex(
+  project: string,
+  content: string,
+  opts?: { signal?: AbortSignal },
+): Promise<ChktexResult> {
+  const { data, error } = await api.POST('/api/projects/{name}/lint/chktex', {
+    params: { path: { name: project } },
+    body: { content },
+    signal: opts?.signal,
+  });
+  if (error) throw new Error(`chktex: ${JSON.stringify(error)}`);
+  return {
+    diagnostics: (data.diagnostics ?? []) as ChktexDiagnostic[],
+    available: Boolean(data.available),
+  };
+}
+
 // --- Sharing (per-project ACL editor) ---------------------------------
 
 export type ShareRole = 'editor' | 'commenter' | 'viewer';

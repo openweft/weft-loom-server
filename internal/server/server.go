@@ -26,6 +26,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"sync"
 
 	"github.com/coder/websocket"
 	"github.com/nats-io/nats.go"
@@ -113,6 +114,15 @@ type Server struct {
 	toolshare  *toolshare.Manager
 	shares     *shares.Publisher
 	history    *history.Store
+
+	// Rate limiters for the public + abuse-prone endpoints. Built
+	// lazily by ensureRateLimiters() on first route registration so
+	// the env-var config snapshot is read once at boot. See
+	// ratelimit.go for the per-policy semantics + env knobs.
+	ratelimitOnce        sync.Once
+	publicLimiter        *rateLimiter
+	notifyLimiter        *rateLimiter
+	externalProxyLimiter *rateLimiter
 }
 
 // New wires the routes ; returns an http.Handler ready to mount on
@@ -236,6 +246,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) routes() {
+	// Rate limiters for the public + external-proxy + notify endpoints.
+	// Built once from env vars ; the huma operations + raw mux wrappers
+	// below reference the resulting *rateLimiter handles.
+	s.ensureRateLimiters()
+
 	// Typed API surface (healthz, list-projects, list-files,
 	// start-compile, admin/email, admin/oci-images, project-templates,
 	// scaffold, …) flows through huma, which registers operations on
@@ -282,8 +297,8 @@ func (s *Server) routes() {
 	// (POST/GET/DELETE /api/projects/{name}/public-share) flow through
 	// huma — see mountPublicShareAdminAPI. The 2 public paths stay raw :
 	// no-auth + binary streaming don't fit huma's typed model.
-	s.mux.HandleFunc("GET /public/{token}/files", s.handlePublicListFiles)
-	s.mux.HandleFunc("GET /public/{token}/files/{path...}", s.handlePublicReadFile)
+	s.mux.HandleFunc("GET /public/{token}/files", s.rateLimit(s.publicLimiter, s.handlePublicListFiles))
+	s.mux.HandleFunc("GET /public/{token}/files/{path...}", s.rateLimit(s.publicLimiter, s.handlePublicReadFile))
 	// V0.11 : multi-file project scaffolds. The catalogue is
 	// project-agnostic so list is at /api/project-templates ;
 	// applying a scaffold writes into a target project + needs auth.

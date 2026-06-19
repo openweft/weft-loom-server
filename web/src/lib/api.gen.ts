@@ -478,6 +478,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{name}/lint/chktex": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run strict LaTeX linter (chktex) over the supplied content
+         * @description Pipes the request body into the chktex binary on the host and returns the parsed diagnostics. The endpoint sits beside the LSP bridge — texlab covers semantic / parser-level issues, chktex layers stylistic checks (sentence-end spacing, missing braces around super/sub-scripts, etc.) on top. Returns an empty `diagnostics` array with `available: false` when the binary isn't installed.
+         */
+        post: operations["lint-chktex"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{name}/notebook/exec": {
         parameters: {
             query?: never;
@@ -749,6 +769,48 @@ export interface components {
             model?: string;
             /** @description Stub reply text — the streaming /ai/chat endpoint is what wires to a real provider. */
             reply: string;
+        };
+        ChktexDiagOut: {
+            /**
+             * Format: int64
+             * @description chktex warning code (numeric, see chktex docs)
+             */
+            code: number;
+            /**
+             * Format: int64
+             * @description 1-based column
+             */
+            col: number;
+            /**
+             * Format: int64
+             * @description 1-based line number
+             */
+            line: number;
+            /** @description Human-readable description */
+            message: string;
+            /** @description LSP severity bucket : error | warning | info */
+            severity: string;
+        };
+        ChktexInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/ChktexInputBody.json
+             */
+            readonly $schema?: string;
+            /** @description Raw .tex source to lint. Typically the user's current editor buffer. */
+            content: string;
+        };
+        ChktexOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/ChktexOutputBody.json
+             */
+            readonly $schema?: string;
+            /** @description True when the chktex binary is installed on the host */
+            available: boolean;
+            diagnostics: components["schemas"]["ChktexDiagOut"][] | null;
         };
         ClientEventInputBody: {
             /**
@@ -2139,6 +2201,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Entry"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "lint-chktex": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Project name (audit-only — content is taken from the body) */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChktexInputBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChktexOutputBody"];
                 };
             };
             /** @description Error */

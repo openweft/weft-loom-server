@@ -298,7 +298,7 @@
     void compileDiagnostics.version;
     if (!view) return;
     view.dispatch({
-      effects: lintCompartment.reconfigure(lintExtension(language, file)),
+      effects: lintCompartment.reconfigure(lintExtension(language, file, project)),
     });
   });
 
@@ -852,7 +852,7 @@
         wordWrapCompartment.of(wordWrapExt()),
         minimapCompartment.of(minimapExt()),
         vscodeThemeCompartment.of(vscodeThemeExt()),
-        lintCompartment.of(lintExtension(language, file)),
+        lintCompartment.of(lintExtension(language, file, project)),
         // Vim / Emacs keymap layer. Starts empty ; the $effect below
         // dynamic-imports the matching @replit/codemirror-* pack and
         // dispatches a reconfigure once the chunk arrives.

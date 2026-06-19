@@ -1,3 +1,5 @@
+<p align="center"><img src="https://raw.githubusercontent.com/openweft/brand/main/social/weft-loom-server.png" alt="weft-loom-server" width="720"></p>
+
 # weft-loom-server
 
 Collaborative editor + sandboxed compile, openweft-native. One server
@@ -8,21 +10,56 @@ compile jobs to ephemeral microVMs via weft-agent. Auth via dex.
 Conceptually : **Overleaf, but generic + microVM-native instead of
 Docker, + openweft SSO**.
 
-## Status (v0.2.0)
+## Features
+
+### Editing
+- WYSIWYG, source, and split modes ; toggle live
+- vim / emacs keymaps (CodeMirror 6 keymap packs)
+- Track changes : per-author insert/delete decorations, accept/reject
+- Inline comments anchored on selection ranges (Yjs-backed)
+- `@-mentions` in comments — server fans out an email if SMTP is wired
+- Format painter : copy character/paragraph attributes, paint elsewhere
+- LaTeX symbol palette (search Unicode + LaTeX names)
+- Bibliography style picker (.bst file from refs/ ; live preview)
+- Snippets : per-project user-defined LaTeX abbreviations
+- Outline panel : section/subsection tree, click-to-jump
+- Save indicator : pending / saving / saved / error states
+
+### Collaboration
+- Yjs CRDT realtime sync over a y-websocket relay
+- Presence cursors with per-user colour + name
+- Project sharing with roles : `editor`, `commenter`, `viewer`
+- Public read-only links (revocable token URL, no login required)
+- Email notifications on `@-mention` in comments (SMTP, async)
+
+### Bibliography
+- Zotero sync : userID + API key in Settings, one-click pull to refs.bib
+- DOI import : paste a DOI in BibPanel, server resolves and appends
+- arXiv search : query, pick, append BibTeX entry
+- `.bst` style picker influences the live PDF preview
+
+### Project lifecycle
+- Templates gallery (LaTeX article, Beamer, Markdown book, Go module, …)
+- Clone via git : HTTPS URL → working copy with weft-loom sidecars
+- Rename project (✎ button in ProjectSwitcher ; sidecars travel)
+- Export / import `.zip` (round-trips a project including `.weft-loom/`)
+
+### Build
+- Compile cancel : SSE-aware kill switch on the running job
+- Compiler selection : per-project engine (pdflatex / xelatex / lualatex / …)
+- Live PDF preview pane with page thumbnails
+- SyncTeX forward (source → PDF) and inverse (PDF click → source line)
+
+## Status (v0.14+)
 
 - ✅ y-websocket relay (in-memory rooms, broadcast fan-out, slow-peer drop)
-- ✅ Project file store (local filesystem ; traversal-safe ; per-user isolation)
-- ✅ Compile orchestration STUB (returns canned result ; V0.3 wires gRPC to weft-agent)
-- ✅ HTTP/WebSocket server (cobra CLI, slog→NATS via weft-slognats)
-- ✅ Auth abstraction (StaticVerifier for dev ; OIDC/dex stub for V0.3)
-- ✅ **huma-typed API** : `/api/projects`, `/api/projects/{name}/files`, `/api/projects/{name}/compile` ; OpenAPI 3.1 spec at `/api/openapi`, interactive docs at `/api/docs`
-- ✅ **Svelte 5 + daisyUI 5 + Tailwind 4 frontend** : navbar with connection status badge, modal compile drawer with SSE log tail, CodeMirror 6 editor with Yjs collab
-- ✅ **Typed TS client** : openapi-typescript + openapi-fetch ; `task gen-api` regenerates from huma spec
-- ⏳ Real microVM dispatch (V0.3)
-- ⏳ Project persistence on weft-block volume (V0.3)
-- ⏳ OIDC verifier + dex integration (V0.3)
-- ⏳ PDF preview pane (V0.3)
-- ⏳ Project file tree + multi-project switcher (V0.3)
+- ✅ Project file store (LocalStore *or* Postgres metadata + shared block volume)
+- ✅ Compile orchestration via ephemeral microVMs (weft-agent dispatch ; QEMU dev backend)
+- ✅ HTTP / WebSocket / SSE server (cobra CLI, slog→NATS via weft-slognats)
+- ✅ Auth abstraction (StaticVerifier for dev ; dex / OIDC for prod)
+- ✅ **huma-typed API** — OpenAPI 3.1 spec at `/api/openapi`, interactive docs at `/api/docs` (auto-generated from Go handler annotations)
+- ✅ **Svelte 5 + daisyUI 5 + Tailwind 4 frontend** — full editor : tree, tabs, PDF preview, terminals, LSP, git, history, sharing dialogs
+- ✅ **Typed TS client** — `task gen-api` regenerates from huma spec
 
 ## Architecture
 
@@ -35,14 +72,13 @@ Browser
         ▼
 weft-loom-server (Go, CGO=0, pure-Go)
   ├─ ywebsocket.Hub : in-memory rooms, broadcast relay
-  │   (no server-side CRDT decoding — clients converge among themselves)
-  ├─ project.Store : project file IO
-  │   (V0.1 = local FS ; V0.2 = weft-block volume)
-  ├─ compile.Service : compile orchestration
-  │   (V0.1 = stub ; V0.2 = gRPC to weft-agent → ephemeral microVM)
-  ├─ auth.Verifier : OIDC bearer verification
-  │   (V0.1 = static dev token ; V0.2 = JWKS via dex)
-  └─ http.ServeMux : routes
+  ├─ project.Store : LocalStore (FS) or Postgres+block volume
+  ├─ compile.Service : gRPC/NATS → weft-agent → ephemeral microVM
+  ├─ workspace.Backend : QEMU (dev) / microVM via weft-agent (prod)
+  ├─ auth.Verifier : OIDC bearer verification (dex JWKS)
+  ├─ history.Store : per-project edit timeline + restore
+  ├─ email.Sender : SMTP, fires on @-mention notifications
+  └─ http.ServeMux : huma-typed routes + SPA + y-websocket
 ```
 
 ### Why a relay (and not a server-side CRDT)
@@ -58,39 +94,97 @@ weft-loom-server (Go, CGO=0, pure-Go)
 - per-language images (`weft-loom-texlive`, `weft-loom-golang`, `weft-loom-cpp`, …) pulled by `weft-agent` like any other openweft driver/HA image
 - compile job = mount project files RO + scratch overlay, run command, stream stdout/stderr, ship artifact
 
-## Routes
+## API documentation
 
-```
-GET  /                                            SPA (embedded via //go:embed)
-GET  /api/healthz                                 liveness
-GET  /api/projects                                list visible projects
-GET  /api/projects/{name}/files                   list files
-GET  /api/projects/{name}/files/{path...}         read file
-PUT  /api/projects/{name}/files/{path...}         write file
-POST /api/projects/{name}/compile                 start compile job
-GET  /api/projects/{name}/compile/{id}            SSE log + result stream
-WS   /api/projects/{name}/sync                    y-websocket bridge
-```
+The server exposes its full surface as an OpenAPI 3.1 document, auto-
+generated by [huma](https://huma.rocks/) from the Go handler
+annotations — there is no separate spec file to keep in sync.
 
-## Quick start (dev)
+- `GET /api/openapi` — raw JSON spec
+- `GET /api/docs`    — interactive viewer (Stoplight Elements)
+
+Use the docs page to discover and try every endpoint (projects, files,
+sharing, public-share, snippets, history, bib, git, compile, admin).
+The TS client (`web/src/lib/api.gen.ts`) is regenerated from this same
+spec via `task gen-api`.
+
+## Quick start
+
+### Dev (single binary, embedded NATS)
 
 ```sh
-# Backend
 cat > config.dev.hcl <<EOF
 listen       = ":8080"
 storage_root = "./tmp-projects"
 EOF
 go run ./cmd/weft-loom serve --config ./config.dev.hcl
-
-# Frontend (in another terminal)
-cd web && npm install && npm run dev
-# open http://localhost:5173 — Vite proxies /api and WS to :8080
 ```
 
-Two browser tabs on the same project = collab editing. Open a third
-in incognito to test the "Compile" stub.
+Open <http://localhost:8080>. Two browser tabs on the same project =
+collab editing. The SPA is embedded via `//go:embed` ; no Vite proxy
+needed when using the prod-built binary.
+
+For frontend hot-reload :
+
+```sh
+cd web && npm install && npm run dev   # Vite on :5173, proxies to :8080
+```
+
+### Docker Compose
+
+```yaml
+services:
+  loom:
+    image: ghcr.io/openweft/weft-loom-server:latest
+    ports: ["8080:8080"]
+    environment:
+      WEFT_LOOM_STORAGE_ROOT: /var/lib/weft-loom
+      WEFT_NATS_URL:          nats://nats:4222
+      WEFT_LOOM_SMTP_HOST:    smtp.example.org
+      WEFT_LOOM_SMTP_PORT:    "587"
+      WEFT_LOOM_SMTP_USER:    notify@example.org
+      WEFT_LOOM_SMTP_PASS:    ${SMTP_PASS}
+      WEFT_LOOM_SMTP_FROM:    "weft-loom <notify@example.org>"
+    volumes:
+      - loom-data:/var/lib/weft-loom
+    depends_on: [nats]
+
+  nats:
+    image: ghcr.io/openweft/weft-nats:latest
+    command: ["-js"]
+
+volumes:
+  loom-data:
+```
+
+### systemd
+
+```ini
+[Unit]
+Description=weft-loom-server
+After=network-online.target nats.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/weft-loom serve --config /etc/weft-loom/config.hcl
+Environment=WEFT_LOOM_STORAGE_ROOT=/var/lib/weft-loom
+Environment=WEFT_NATS_URL=nats://127.0.0.1:4222
+EnvironmentFile=-/etc/weft-loom/smtp.env
+Restart=on-failure
+User=weft-loom
+
+[Install]
+WantedBy=multi-user.target
+```
+
+See [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) and
+[`docs/ADMIN_GUIDE.md`](docs/ADMIN_GUIDE.md) for feature-by-feature
+walkthroughs and the full env var reference.
 
 ## Configuration
+
+Minimal HCL (see `config.example.hcl` for the annotated full sample) :
 
 ```hcl
 listen       = ":8080"
@@ -108,6 +202,9 @@ compile {
 # Optional : path to weft-agent's socket. Empty = compile stub.
 weft_agent_socket = "/run/weft-agent.sock"
 ```
+
+Most runtime knobs (SMTP, NATS, workspace backend, LSP overrides) are
+env vars — see [`docs/ADMIN_GUIDE.md`](docs/ADMIN_GUIDE.md).
 
 ## License
 

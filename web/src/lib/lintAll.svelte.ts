@@ -24,6 +24,7 @@ import { type Extension, Compartment } from '@codemirror/state';
 import type { EditorView } from '@codemirror/view';
 import { compileDiagnostics } from './compileDiagnostics.svelte';
 import { bib } from './bibStore.svelte';
+import { runChktex, type ChktexDiagnostic } from './api';
 
 // JSON — `JSON.parse` carries enough info (message + position) for
 // useful diagnostics. The `at position N` suffix in the error
@@ -362,6 +363,75 @@ function lintFor(language: string) {
   }
 }
 
+// --- chktex strict linter (LaTeX only) --------------------------------
+//
+// Server-side strict-lint pass that complements texlab. We expose a
+// project-aware factory because the API endpoint is per-project and
+// we want the lint source disabled when there is no project context
+// (e.g. transient editors that open a buffer without a backing file).
+//
+// `available` is sticky : after the first request returns
+// `available: false` we stop talking to the server entirely so the
+// SPA stops paying the round-trip on every keystroke on a host that
+// doesn't have chktex installed. The 5-minute fallback window lets
+// us pick up a freshly-installed binary without forcing a reload.
+const chktexState = $state({
+  unavailableUntil: 0, // epoch ms ; non-zero while we're skipping calls
+});
+
+function chktexLinter(project: string) {
+  return async (view: EditorView): Promise<Diagnostic[]> => {
+    if (!project) return [];
+    if (chktexState.unavailableUntil > Date.now()) return [];
+    const content = view.state.doc.toString();
+    if (!content) return [];
+    try {
+      const r = await runChktex(project, content);
+      if (!r.available) {
+        // Cache "unavailable" for 5 minutes to dodge the round-trip
+        // on every debounce tick. Cheap freshness check on revisit.
+        chktexState.unavailableUntil = Date.now() + 5 * 60_000;
+        return [];
+      }
+      return r.diagnostics.map((d) => chktexToCM(view, d));
+    } catch {
+      // Quietly swallow — strict linting is best-effort, the LSP
+      // pane already shows what matters.
+      return [];
+    }
+  };
+}
+
+// chktexToCM translates a server-side chktex Diagnostic (1-based
+// line/col) into the CodeMirror Diagnostic shape (0-based document
+// offsets). Mirror of the LSP translation in lspClient.diagnosticsFor.
+function chktexToCM(view: EditorView, d: ChktexDiagnostic): Diagnostic {
+  const doc = view.state.doc;
+  const ln = Math.max(1, Math.min(doc.lines, d.line));
+  const line = doc.line(ln);
+  const col = Math.max(0, Math.min(line.length, (d.col ?? 1) - 1));
+  const from = line.from + col;
+  // Underline one token's worth — chktex doesn't give us a length,
+  // so we extend to the next whitespace / end-of-line.
+  const text = view.state.doc.sliceString(from, line.to);
+  const tokenEnd = (() => {
+    for (let i = 0; i < text.length; i++) {
+      const ch = text.charCodeAt(i);
+      // space / tab / newline → stop
+      if (ch === 32 || ch === 9 || ch === 10 || ch === 13) return i;
+    }
+    return text.length;
+  })();
+  const to = Math.max(from + 1, from + tokenEnd);
+  return {
+    from,
+    to,
+    severity: d.severity === 'error' ? 'error' : d.severity === 'warning' ? 'warning' : 'info',
+    message: `${d.message} [chktex ${d.code}]`,
+    source: 'chktex',
+  };
+}
+
 export const lintCompartment = new Compartment();
 
 // Wraps a per-language syntax check (if any) WITH a global compile-
@@ -388,15 +458,23 @@ function compileLintFor(file: string) {
   };
 }
 
-export function lintExtension(language: string, file = ''): Extension {
+export function lintExtension(language: string, file = '', project = ''): Extension {
   const fn = lintFor(language);
   // ALWAYS wire the compile-diagnostics linter so the editor surfaces
   // build errors as red squiggles even when the syntactic linter has
-  // nothing to say about the language. LaTeX gets an extra cite/ref
-  // resolver that pulls from bibStore + the doc's own labels.
+  // nothing to say about the language. LaTeX gets two extra layers :
+  // a cite/ref resolver that pulls from bibStore + the doc's own
+  // labels, and a debounced chktex pass against the server's strict-
+  // lint endpoint (texlab catches semantics ; chktex catches style).
+  // The 1 000 ms `delay` on the chktex linter is what gives us the
+  // "1s after typing stops" debounce the brief asks for — CodeMirror
+  // serialises the async call behind that timer.
   return [
     fn ? linter(fn) : [],
     linter(compileLintFor(file)),
     language === 'latex' ? linter(lintLatexRefs) : [],
+    language === 'latex' && project
+      ? linter(chktexLinter(project), { delay: 1000 })
+      : [],
   ];
 }

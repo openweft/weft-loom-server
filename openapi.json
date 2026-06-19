@@ -81,6 +81,96 @@
                 ],
                 "type": "object"
             },
+            "ChktexDiagOut": {
+                "additionalProperties": false,
+                "properties": {
+                    "code": {
+                        "description": "chktex warning code (numeric, see chktex docs)",
+                        "format": "int64",
+                        "type": "integer"
+                    },
+                    "col": {
+                        "description": "1-based column",
+                        "format": "int64",
+                        "type": "integer"
+                    },
+                    "line": {
+                        "description": "1-based line number",
+                        "format": "int64",
+                        "type": "integer"
+                    },
+                    "message": {
+                        "description": "Human-readable description",
+                        "type": "string"
+                    },
+                    "severity": {
+                        "description": "LSP severity bucket : error | warning | info",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "line",
+                    "col",
+                    "code",
+                    "message",
+                    "severity"
+                ],
+                "type": "object"
+            },
+            "ChktexInputBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/ChktexInputBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "content": {
+                        "description": "Raw .tex source to lint. Typically the user's current editor buffer.",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "content"
+                ],
+                "type": "object"
+            },
+            "ChktexOutputBody": {
+                "additionalProperties": false,
+                "properties": {
+                    "$schema": {
+                        "description": "A URL to the JSON Schema for this object.",
+                        "examples": [
+                            "https://example.com/schemas/ChktexOutputBody.json"
+                        ],
+                        "format": "uri",
+                        "readOnly": true,
+                        "type": "string"
+                    },
+                    "available": {
+                        "description": "True when the chktex binary is installed on the host",
+                        "type": "boolean"
+                    },
+                    "diagnostics": {
+                        "items": {
+                            "$ref": "#/components/schemas/ChktexDiagOut"
+                        },
+                        "type": [
+                            "array",
+                            "null"
+                        ]
+                    }
+                },
+                "required": [
+                    "diagnostics",
+                    "available"
+                ],
+                "type": "object"
+            },
             "ClientEventInputBody": {
                 "additionalProperties": false,
                 "properties": {
@@ -2737,6 +2827,60 @@
                 "summary": "Fetch one snapshot's full content",
                 "tags": [
                     "history"
+                ]
+            }
+        },
+        "/api/projects/{name}/lint/chktex": {
+            "post": {
+                "description": "Pipes the request body into the chktex binary on the host and returns the parsed diagnostics. The endpoint sits beside the LSP bridge \u2014 texlab covers semantic / parser-level issues, chktex layers stylistic checks (sentence-end spacing, missing braces around super/sub-scripts, etc.) on top. Returns an empty `diagnostics` array with `available: false` when the binary isn't installed.",
+                "operationId": "lint-chktex",
+                "parameters": [
+                    {
+                        "description": "Project name (audit-only \u2014 content is taken from the body)",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "description": "Project name (audit-only \u2014 content is taken from the body)",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ChktexInputBody"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ChktexOutputBody"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "default": {
+                        "content": {
+                            "application/problem+json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorModel"
+                                }
+                            }
+                        },
+                        "description": "Error"
+                    }
+                },
+                "summary": "Run strict LaTeX linter (chktex) over the supplied content",
+                "tags": [
+                    "lint"
                 ]
             }
         },
