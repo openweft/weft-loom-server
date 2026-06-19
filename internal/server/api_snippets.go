@@ -247,6 +247,12 @@ func mountSnippetsAPI(api huma.API, s *Server) {
 			return nil, huma.Error400BadRequest("snippets: id must match ^[a-zA-Z0-9_-]{1,64}$")
 		}
 
+		// Serialise read-modify-write against this project's snippets
+		// sidecar — same lost-update concern as the sharing endpoint.
+		lk := s.sidecarLocks.lockFor(in.Project, snippetsSidecarPath)
+		lk.Lock()
+		defer lk.Unlock()
+
 		doc, err := s.readSnippets(ctx, ident, in.Project)
 		if err != nil {
 			return nil, huma.Error500InternalServerError("snippets: read", err)
@@ -331,6 +337,10 @@ func mountSnippetsAPI(api huma.API, s *Server) {
 		if !snippetIDRe.MatchString(id) {
 			return nil, huma.Error400BadRequest("snippets: id must match ^[a-zA-Z0-9_-]{1,64}$")
 		}
+
+		lk := s.sidecarLocks.lockFor(in.Project, snippetsSidecarPath)
+		lk.Lock()
+		defer lk.Unlock()
 
 		doc, err := s.readSnippets(ctx, ident, in.Project)
 		if err != nil {

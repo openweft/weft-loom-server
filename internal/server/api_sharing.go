@@ -135,6 +135,14 @@ func (s *Server) ownerOf(ctx context.Context, ident auth.Identity, project strin
 // Returns a huma.StatusError on refusal so the typed API surface can
 // translate it into the right HTTP code automatically.
 func (s *Server) requireOwner(ctx context.Context, ident auth.Identity, project string) error {
+	// Serialise the read-then-write : two concurrent first-mutators
+	// would otherwise both see owner="" + both WriteFile their own
+	// subject, last write wins (silently re-pinning ownership). Lock
+	// is per-project + scoped to the owner sidecar so it doesn't
+	// contend with sharing.json mutations.
+	lk := s.sidecarLocks.lockFor(project, sharingOwnerPath)
+	lk.Lock()
+	defer lk.Unlock()
 	owner, err := s.ownerOf(ctx, ident, project)
 	if err != nil {
 		return huma.Error500InternalServerError("sharing: owner lookup", err)
@@ -250,6 +258,14 @@ func mountSharingAPI(api huma.API, s *Server) {
 			return nil, err
 		}
 
+		// Serialise read-modify-write against this project's sharing
+		// sidecar : without the lock two concurrent upserts each read
+		// state S, append their entry, both write back — the second
+		// silently drops the first one's entry.
+		lk := s.sidecarLocks.lockFor(in.Project, sharingSidecarPath)
+		lk.Lock()
+		defer lk.Unlock()
+
 		doc, err := s.readSharing(ctx, ident, in.Project)
 		if err != nil {
 			return nil, huma.Error500InternalServerError("sharing: read", err)
@@ -300,6 +316,10 @@ func mountSharingAPI(api huma.API, s *Server) {
 		if err := s.requireOwner(ctx, ident, in.Project); err != nil {
 			return nil, err
 		}
+
+		lk := s.sidecarLocks.lockFor(in.Project, sharingSidecarPath)
+		lk.Lock()
+		defer lk.Unlock()
 
 		doc, err := s.readSharing(ctx, ident, in.Project)
 		if err != nil {

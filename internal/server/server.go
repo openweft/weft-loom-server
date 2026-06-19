@@ -123,6 +123,13 @@ type Server struct {
 	publicLimiter        *rateLimiter
 	notifyLimiter        *rateLimiter
 	externalProxyLimiter *rateLimiter
+
+	// sidecarLocks serialises read-modify-write blocks on the
+	// .weft-loom/*.json sidecars (sharing, snippets, public-share,
+	// owner). The atomic-write at the project store layer prevents
+	// torn reads ; this pool prevents lost-update under concurrent
+	// upserts. See sidecar_lock.go.
+	sidecarLocks *sidecarLockPool
 }
 
 // New wires the routes ; returns an http.Handler ready to mount on
@@ -138,16 +145,17 @@ func New(opts Options) (*Server, error) {
 		return nil, fmt.Errorf("server: Compiler required")
 	}
 	s := &Server{
-		opts:       opts,
-		hub:        ywebsocket.NewHub(),
-		mux:        http.NewServeMux(),
-		git:        newGitState(),
-		seedClaims: newSeedClaimRegistry(),
-		ociProber:  newOCIProber(),
-		events:     eventbus.New(),
-		warmups:    newWarmupState(),
-		toolshare:  toolshareFromEnv(),
-		history:    history.New(),
+		opts:         opts,
+		hub:          ywebsocket.NewHub(),
+		mux:          http.NewServeMux(),
+		git:          newGitState(),
+		seedClaims:   newSeedClaimRegistry(),
+		ociProber:    newOCIProber(),
+		events:       eventbus.New(),
+		warmups:      newWarmupState(),
+		toolshare:    toolshareFromEnv(),
+		history:      history.New(),
+		sidecarLocks: newSidecarLockPool(),
 	}
 	if opts.Auth != nil && opts.Config.AllowHostPty {
 		opts.Logger.Warn("security: AllowHostPty=true in a non-dev config — workspace shell fallback escapes the VM sandbox")
