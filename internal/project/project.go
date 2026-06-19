@@ -173,19 +173,42 @@ func (s *LocalStore) WriteFile(_ context.Context, ident auth.Identity, project, 
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(full, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	// Atomic write : land the bytes in a sibling tmpfile + os.Rename
+	// into place. Without this, a concurrent reader can see the
+	// O_TRUNC'd path at zero length OR partially written. Surfaced by
+	// stress test : 6.6k 5xx out of 22k concurrent requests, all
+	// "invalid character 's' after top-level value" — readers seeing
+	// sharing.json half-flushed.
+	tmp, err := os.CreateTemp(filepath.Dir(full), ".tmp-"+filepath.Base(full)+"-*")
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if cerr := f.Close(); cerr != nil && err == nil {
-			err = cerr
+	tmpName := tmp.Name()
+	cleanup := func() {
+		if tmpName != "" {
+			_ = os.Remove(tmpName)
 		}
-	}()
-	if _, err = io.Copy(f, body); err != nil {
+	}
+	defer cleanup()
+	if _, err = io.Copy(tmp, body); err != nil {
+		_ = tmp.Close()
 		return err
 	}
-	return f.Sync()
+	if err = tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	if err = os.Chmod(tmpName, 0o644); err != nil {
+		return err
+	}
+	if err = os.Rename(tmpName, full); err != nil {
+		return err
+	}
+	tmpName = "" // rename consumed it ; skip cleanup
+	return nil
 }
 
 // DeleteFile removes <user>/<project>/<path>. Idempotent on missing
