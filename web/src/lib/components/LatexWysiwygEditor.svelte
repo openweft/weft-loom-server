@@ -29,7 +29,13 @@
   import { wireWysiwygPresence, type PresenceWiring } from '../wysiwygPresence';
   import { wireSpellFilter } from '../wysiwygSpellFilter';
   import { attachChangeLog, type ChangeLog } from '../wysiwygAuthorship';
-  import { snapshotFormatting, applyFormatting, type FormatSnapshot } from '../formatPainter';
+  import {
+    snapshotFormatting,
+    applyFormatting,
+    publishPainterAwareness,
+    wirePeerFormatPainters,
+    type FormatSnapshot,
+  } from '../formatPainter';
   import { loadMathLive, type MathFieldElement } from '../mathlive-wrapper';
 
   // Y.js bridge origin sentinel — local edits tagged with this so
@@ -107,16 +113,21 @@
 
   // ─── format painter ────────────────────────────────────────────
   // Word-style : click the brush → next selection inherits the
-  // formatting captured at click time.
+  // formatting captured at click time. The armed snapshot is also
+  // broadcast on awareness.formatPainter so peers see the brush
+  // light up — wirePeerFormatPainters reads that field below.
   let painterSnap = $state<FormatSnapshot | null>(null);
+  let painterPresenceDestroy: (() => void) | undefined;
   function toggleFormatPainter() {
     if (painterSnap) {
       painterSnap = null; // cancel
+      publishPainterAwareness(provider?.awareness, null);
       return;
     }
     const snap = snapshotFormatting(window.getSelection());
     if (snap) {
       painterSnap = snap;
+      publishPainterAwareness(provider?.awareness, snap);
     }
   }
   function onSurfaceMouseUp() {
@@ -126,6 +137,7 @@
     if (sel && !sel.isCollapsed) {
       const changed = applyFormatting(sel, painterSnap);
       painterSnap = null;
+      publishPainterAwareness(provider?.awareness, null);
       if (changed) onInput();
     }
   }
@@ -531,6 +543,14 @@
         localClientID,
       );
       presenceDestroy = presenceWiring.destroy;
+      // Peer format-painter badges. Same overlay shape as presence
+      // carets ; separate destroy so each can be unmounted on its
+      // own (defensive — we tear them down together in onDestroy).
+      painterPresenceDestroy = wirePeerFormatPainters(
+        editorEl,
+        provider.awareness,
+        localClientID,
+      ).destroy;
       spellDestroy = wireSpellFilter(editorEl);
       changeLog = attachChangeLog(ydoc, file ?? '');
       lastSnapshot = ytext.toString();
@@ -855,6 +875,7 @@
     window.removeEventListener('weft-loom:rollback-change', onRollbackChange);
     dropDestroy?.();
     presenceDestroy?.();
+    painterPresenceDestroy?.();
     spellDestroy?.();
     try { changeLog?.destroy(); } catch { /* ignore */ }
     try { provider?.destroy(); } catch { /* ignore */ }

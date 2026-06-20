@@ -694,13 +694,36 @@ export async function execNotebook(
   };
 }
 
-// --- Chat (legacy stub) -----------------------------------------------
+// --- Chat -------------------------------------------------------------
 //
-// Non-streaming chat stub. The real provider path is the SSE
-// /api/projects/{name}/ai/chat endpoint (raw fetch — streams can't be
-// typified through openapi-fetch). This helper only covers the
-// non-streaming stub variant — keep here for completeness so the
-// typed surface is exhaustive.
+// Two surfaces :
+//
+//   chatStub()     — non-streaming, hits /api/projects/{name}/chat
+//                    (huma-typed). The server-side handler is
+//                    intentionally a canned reply that demonstrates the
+//                    assistant has access to the user's file context.
+//                    Useful for tests + offline demos. Kept exported so
+//                    consumers that want a deterministic answer (e.g.
+//                    snapshot tests) can opt in.
+//
+//   chatComplete() — non-streaming wrapper around the *real* provider
+//                    path. Internally POSTs to the SSE
+//                    /api/projects/{name}/ai/chat endpoint, accumulates
+//                    the streamed tokens, and resolves with the
+//                    concatenated reply. 503 from the server (no
+//                    provider configured) surfaces as a typed
+//                    ChatProviderUnavailableError so callers can render
+//                    the "set OLLAMA_URL / ANTHROPIC_API_KEY" hint
+//                    instead of a generic failure.
+//
+//   chatStream()   — same upstream endpoint, but invokes onToken for
+//                    each chunk so the AIChatPanel-style live-typing
+//                    UX can be implemented without re-deriving the SSE
+//                    framing each time. Resolves with the final
+//                    concatenated text.
+//
+// The streaming endpoint is raw (NOT in api.gen.ts) because SSE doesn't
+// fit openapi-fetch's typed envelope ; we hand-roll the fetch + reader.
 
 export interface ChatStubMessage {
   role: string;
@@ -728,6 +751,133 @@ export async function chatStub(
   });
   if (error) throw new Error(`chat-stub: ${JSON.stringify(error)}`);
   return { reply: data.reply, model: data.model };
+}
+
+// ChatProviderUnavailableError : surfaced when /ai/chat returns 503.
+// `hint` carries the operator-actionable message from the server
+// (install Ollama / set ANTHROPIC_API_KEY) ; `stubReply` is the canned
+// answer the server fell back to so the UI can still show something.
+export class ChatProviderUnavailableError extends Error {
+  hint: string;
+  stubReply: string;
+  constructor(hint: string, stubReply: string) {
+    super(stubReply || hint || 'AI provider not configured');
+    this.name = 'ChatProviderUnavailableError';
+    this.hint = hint;
+    this.stubReply = stubReply;
+  }
+}
+
+interface SsePayload {
+  type: 'data' | 'done' | 'error';
+  text: string;
+}
+
+// parseSseStream : pulls SSE events off `body` and yields one
+// SsePayload per event. Handles both `data: <json-string>\n\n` and
+// `event: error\ndata: <json-string>\n\n` framing (the shape
+// internal/server/api_chat.go emits). Lifted out of AIChatPanel so
+// chatComplete + chatStream share one parser.
+async function* parseSseStream(body: ReadableStream<Uint8Array>): AsyncGenerator<SsePayload> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) return;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf('\n\n')) !== -1) {
+      const block = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      let eventName = 'message';
+      let dataLine = '';
+      for (const line of block.split('\n')) {
+        if (line.startsWith('event:')) eventName = line.slice(6).trim();
+        else if (line.startsWith('data:')) dataLine += line.slice(5).trim();
+      }
+      let payloadText = dataLine;
+      try { payloadText = JSON.parse(dataLine); } catch { /* keep raw */ }
+      if (eventName === 'done') {
+        yield { type: 'done', text: '' };
+        return;
+      }
+      if (eventName === 'error') {
+        yield { type: 'error', text: String(payloadText) };
+        return;
+      }
+      if (dataLine) yield { type: 'data', text: String(payloadText) };
+    }
+  }
+}
+
+export interface ChatBody {
+  messages: ChatStubMessage[];
+  file?: string;
+  file_content?: string;
+}
+
+export interface ChatStreamOptions {
+  signal?: AbortSignal;
+  // onToken : invoked for each streamed chunk in arrival order.
+  // Concatenating every chunk yields the same string chatComplete
+  // resolves with. Errors thrown from onToken abort the stream.
+  onToken?: (token: string) => void;
+}
+
+// chatStream POSTs to the SSE /ai/chat endpoint and invokes onToken
+// for each streamed chunk. Resolves with the full concatenated reply.
+// Throws ChatProviderUnavailableError on 503 ; Error on any other
+// non-OK status. The AbortSignal cancels the in-flight fetch.
+export async function chatStream(
+  project: string,
+  body: ChatBody,
+  opts: ChatStreamOptions = {},
+): Promise<string> {
+  const resp = await fetch(
+    `/api/projects/${encodeURIComponent(project)}/ai/chat`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: opts.signal,
+    },
+  );
+  if (resp.status === 503) {
+    // 503 body is JSON, not SSE — see internal/server/api_chat.go
+    // streamProviderStub branch.
+    const j = (await resp.json().catch(() => ({}))) as {
+      hint?: string;
+      reply?: string;
+      error?: string;
+    };
+    throw new ChatProviderUnavailableError(
+      j.hint ?? j.error ?? 'AI provider not configured',
+      j.reply ?? '',
+    );
+  }
+  if (!resp.ok || !resp.body) {
+    throw new Error(`ai-chat ${resp.status}: ${await resp.text()}`);
+  }
+  let full = '';
+  for await (const ev of parseSseStream(resp.body)) {
+    if (ev.type === 'error') throw new Error(ev.text);
+    if (ev.type === 'done') break;
+    full += ev.text;
+    opts.onToken?.(ev.text);
+  }
+  return full;
+}
+
+// chatComplete : non-streaming convenience over chatStream. Same
+// error semantics ; resolves with the accumulated reply once the
+// upstream provider signals `done`.
+export async function chatComplete(
+  project: string,
+  body: ChatBody,
+  opts?: { signal?: AbortSignal },
+): Promise<string> {
+  return chatStream(project, body, { signal: opts?.signal });
 }
 
 // notifyMention enqueues an email to every @-mentioned recipient

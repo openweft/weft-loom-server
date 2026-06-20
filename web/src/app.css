@@ -166,6 +166,51 @@
   pointer-events: none;
 }
 
+/* Format painter overlay : same sibling pattern as
+   .wysiwyg-presence-layer. One badge per remote peer whose
+   awareness.formatPainter is non-null. We anchor at their caret
+   (read off awareness.wysiwygSelection.endOffset, computed by
+   formatPainter.ts -> resolveCaretRect) ; the ::after pseudo-element
+   renders the "name : H1+B" tooltip from data-label. */
+.wysiwyg-painter-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 6; /* one above .wysiwyg-presence-layer (5) */
+}
+.wysiwyg-peer-painter {
+  position: absolute;
+  font-size: 12px;
+  line-height: 1;
+  padding: 1px 3px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--peer-color, hsl(0, 0%, 60%)) 25%, transparent);
+  border: 1px solid var(--peer-color, hsl(0, 0%, 60%));
+  pointer-events: none;
+  /* Don't stretch the badge — let intrinsic content size it. */
+  width: max-content;
+}
+.wysiwyg-peer-painter::after {
+  content: attr(data-label);
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  padding: 1px 5px;
+  margin-bottom: 2px;
+  border-radius: 3px;
+  background-color: var(--peer-color, hsl(0, 0%, 60%));
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 9px;
+  font-weight: 600;
+  color: white;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.wysiwyg-peer-painter:hover::after {
+  opacity: 1;
+}
+
 /* Mobile responsive sweep — the SPA is desktop-first ; below md
    (< 768 px) we treat the viewport as a phone : iOS notch + Android
    gesture-bar are the two common hostile areas, so we honour the
