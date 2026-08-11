@@ -19,6 +19,7 @@ func TestResolveLatexEngine(t *testing.T) {
 		{"pdflatex", "pdflatex", false},
 		{"lualatex", "lualatex", false},
 		{"xelatex", "xelatex", false},
+		{"gotex", "gotex", false}, // pure-Go engine
 		{"latex-2049", "pdflatex", true},
 		{"PDFLATEX", "pdflatex", true}, // case-sensitive
 	}
@@ -37,6 +38,92 @@ func TestResolveLatexEngine(t *testing.T) {
 			t.Errorf("resolveLatexEngine(%q) warned = %v ; want %v", tc.in, warned, tc.warning)
 		}
 	}
+}
+
+// TestLatexCommand : gotex gets its own single-pass CLI (absolute /gotex in a
+// container, bare gotex on the host), every other engine the pdflatex flag set.
+func TestLatexCommand(t *testing.T) {
+	// gotex, containerised → absolute binary + -outdir.
+	got := latexCommand("gotex", "/w/main.tex", "/w/.build", nil, true)
+	want := []string{"/gotex", "-pdf", "-outdir=/w/.build", "/w/main.tex"}
+	if !equalArgs(got, want) {
+		t.Errorf("gotex container cmd = %v ; want %v", got, want)
+	}
+	// gotex, host → bare binary on PATH.
+	if got := latexCommand("gotex", "/w/main.tex", "/w/.build", nil, false); got[0] != "gotex" {
+		t.Errorf("gotex host binary = %q ; want gotex", got[0])
+	}
+	// extra args are appended.
+	got = latexCommand("gotex", "/w/main.tex", "/w/.build", []string{"-size=12"}, true)
+	if got[len(got)-1] != "-size=12" {
+		t.Errorf("extra arg not appended : %v", got)
+	}
+	// pdflatex keeps the TeX Live flags + output-directory.
+	got = latexCommand("pdflatex", "/w/main.tex", "/w/.build", nil, true)
+	if got[0] != "pdflatex" || !containsArg(got, "-output-directory=/w/.build") || !containsArg(got, "-synctex=1") {
+		t.Errorf("pdflatex cmd missing expected flags : %v", got)
+	}
+}
+
+// TestImageForLanguage : the latex language resolves to the gotex image only
+// when engine=="gotex" ; everything else stays on TeX Live. Markdown ignores
+// the engine entirely.
+func TestImageForLanguage(t *testing.T) {
+	if img := imageForLanguage("latex", "gotex", false); img != "ghcr.io/openweft/weft-loom-gotex:latest" {
+		t.Errorf("latex+gotex image = %q ; want weft-loom-gotex", img)
+	}
+	if img := imageForLanguage("latex", "pdflatex", false); img != "ghcr.io/openweft/weft-loom-texlive:latest" {
+		t.Errorf("latex+pdflatex image = %q ; want weft-loom-texlive", img)
+	}
+	if img := imageForLanguage("latex", "", false); img != "ghcr.io/openweft/weft-loom-texlive:latest" {
+		t.Errorf("latex+default image = %q ; want weft-loom-texlive", img)
+	}
+	if img := imageForLanguage("markdown", "gotex", false); img != "ghcr.io/openweft/weft-loom-markdown:latest" {
+		t.Errorf("markdown image = %q ; want weft-loom-markdown (engine ignored)", img)
+	}
+}
+
+// TestContainerNameForLanguage : gotex uses a distinct warm container.
+func TestContainerNameForLanguage(t *testing.T) {
+	if n := containerNameForLanguage("latex", "gotex"); n != "gotex" {
+		t.Errorf("latex+gotex container = %q ; want gotex", n)
+	}
+	if n := containerNameForLanguage("latex", "pdflatex"); n != "texlive" {
+		t.Errorf("latex+pdflatex container = %q ; want texlive", n)
+	}
+}
+
+// TestPickOutputDirGotex : the artifact locator honours gotex's -outdir flag.
+func TestPickOutputDirGotex(t *testing.T) {
+	cmd := []string{"/gotex", "-pdf", "-outdir=/w/.build", "/w/main.tex"}
+	if d := pickOutputDir(cmd, "/w"); d != "/w/.build" {
+		t.Errorf("pickOutputDir(-outdir) = %q ; want /w/.build", d)
+	}
+	cmd = []string{"pdflatex", "-output-directory=/w/.build", "/w/main.tex"}
+	if d := pickOutputDir(cmd, "/w"); d != "/w/.build" {
+		t.Errorf("pickOutputDir(-output-directory) = %q ; want /w/.build", d)
+	}
+}
+
+func equalArgs(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func containsArg(args []string, want string) bool {
+	for _, a := range args {
+		if a == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestResolveBibEngine(t *testing.T) {

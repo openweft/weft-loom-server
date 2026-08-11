@@ -67,9 +67,14 @@ func (s *Service) resolveVMForCompile(spec JobSpec) *WorkspaceVM {
 // name the workspace VM keeps running. Same names the
 // tool-wrappers in weft-loom-workspace shell out to via
 // `crun exec <name>`.
-func containerNameForLanguage(language string) string {
+func containerNameForLanguage(language, engine string) string {
 	switch language {
 	case "latex":
+		if engine == "gotex" {
+			// Separate warm container : the gotex image is distinct from
+			// the TeX Live one, so it gets its own reconciled workload.
+			return "gotex"
+		}
 		return "texlive"
 	case "markdown":
 		return "markdown"
@@ -110,13 +115,14 @@ func (s *Service) compileInWorkspace(
 	vm *WorkspaceVM,
 	workDir string,
 	language string,
+	engine string,
 	command []string,
 	emit func(Event),
 ) (string, error) {
 	if vm == nil || vm.Conn == nil {
 		return "", fmt.Errorf("workspace not connected")
 	}
-	container := containerNameForLanguage(language)
+	container := containerNameForLanguage(language, engine)
 	if container == "" {
 		return "", fmt.Errorf("no container name for language %q", language)
 	}
@@ -135,7 +141,7 @@ func (s *Service) compileInWorkspace(
 	// this one container running" for now ; multi-container worksets
 	// (texlive + markdown both warm, picked per file) land when the
 	// compile router learns to introspect open files.
-	image := imageForLanguage(language, false)
+	image := imageForLanguage(language, engine, false)
 	setMsg, err := json.Marshal(pod.ContainerSet{
 		Version: pod.ContainerSetVersion,
 		Containers: []pod.WorkloadContainer{{
@@ -350,15 +356,21 @@ func (s *Service) compileInWorkspace(
 	return artifactPath, nil
 }
 
-// pickOutputDir scans for `-output-directory=<path>` (pdflatex /
-// latexmk convention) and returns the absolute host path. Empty
-// when not present (the compile wrote to workDir directly).
+// pickOutputDir scans for the output-directory flag and returns the
+// absolute host path. Recognises both `-output-directory=<path>`
+// (pdflatex / latexmk convention) and `-outdir=<path>` (gotex). Empty
+// when neither is present (the compile wrote to workDir directly).
 func pickOutputDir(command []string, workDir string) string {
 	for _, arg := range command {
-		if !strings.HasPrefix(arg, "-output-directory=") {
+		var v string
+		switch {
+		case strings.HasPrefix(arg, "-output-directory="):
+			v = strings.TrimPrefix(arg, "-output-directory=")
+		case strings.HasPrefix(arg, "-outdir="):
+			v = strings.TrimPrefix(arg, "-outdir=")
+		default:
 			continue
 		}
-		v := strings.TrimPrefix(arg, "-output-directory=")
 		if filepath.IsAbs(v) {
 			return v
 		}

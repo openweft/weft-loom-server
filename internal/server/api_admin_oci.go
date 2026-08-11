@@ -46,7 +46,7 @@ type ociImagesOutput struct {
 
 // Languages whose compile path maps to an OCI image. Kept in sync
 // with internal/compile/microvm.go:imageForLanguage().
-var ociLanguages = []string{"latex", "markdown", "golang", "python", "rust", "node", "cpp"}
+var ociLanguages = []string{"latex", "gotex", "markdown", "golang", "python", "rust", "node", "cpp"}
 
 func imageRefForOCI(language string) string {
 	envOverride := func(key, def string) string {
@@ -58,6 +58,8 @@ func imageRefForOCI(language string) string {
 	switch language {
 	case "latex":
 		return envOverride("WEFT_LOOM_IMAGE_LATEX", "ghcr.io/openweft/weft-loom-texlive:latest")
+	case "gotex":
+		return envOverride("WEFT_LOOM_IMAGE_LATEX_GOTEX", "ghcr.io/openweft/weft-loom-gotex:latest")
 	case "markdown":
 		return envOverride("WEFT_LOOM_IMAGE_MARKDOWN", "ghcr.io/openweft/weft-loom-markdown:latest")
 	case "golang":
