@@ -482,6 +482,18 @@ func (s *Service) compileLatex(ctx context.Context, workDir, scratchDir string, 
 
 	emit(Event{Kind: "log", Line: fmt.Sprintf("engine=%s bib=%s", engine, bibEngine)})
 
+	// In-process wasm dispatch : engine=gotex + WEFT_LOOM_BACKEND=wazero runs
+	// gotex.wasm under the pure-Go wazero runtime — no subprocess, no TeX
+	// Live, no external `gotex` binary. Single pass, no bibliography
+	// processor, same as the other gotex paths. Explicitly selected, so it
+	// takes precedence over the workspace / microVM dispatch when set ; the
+	// default (unset backend) path below is left untouched.
+	if gotex && useWazero() {
+		cmd := latexCommand(engine, entryAbs, scratchDir, spec.ExtraArgs, true)
+		emit(Event{Kind: "log", Line: "--- wazero gotex ---"})
+		return compileInWazero(ctx, workDir, scratchDir, spec, cmd, emit)
+	}
+
 	// V0.4 unified path : when the user has a workspace VM with a
 	// NATS conn, dispatch via the Containers + ExecSession pattern
 	// instead of the legacy `weft microvm run` CLI. Same wire shape
