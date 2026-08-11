@@ -46,10 +46,10 @@ type JobSpec struct {
 	// Empty string preserves the existing behaviour.
 	CommandOverride string `json:"command,omitempty"`
 	// Engine : LaTeX engine binary the compiler invokes for the
-	// `latex` language. One of `pdflatex` / `lualatex` / `xelatex`.
-	// Empty defaults to `pdflatex`. Unknown values are normalised
-	// back to `pdflatex` with a log line. Ignored for non-LaTeX
-	// languages.
+	// `latex` language. One of `pdflatex` / `lualatex` / `xelatex` /
+	// `gotex` (pure-Go, weft-loom-gotex image). Empty defaults to
+	// `pdflatex`. Unknown values are normalised back to `pdflatex`
+	// with a log line. Ignored for non-LaTeX languages.
 	Engine string `json:"engine,omitempty"`
 	// BibEngine : bibliography processor — `bibtex` or `biber`.
 	// Empty defaults to `bibtex`. Only invoked when the LaTeX
@@ -366,6 +366,7 @@ func (s *Service) run(ctx context.Context, ident auth.Identity, id string, spec 
 //   - "pdflatex" / "" → pdflatex (default ; broadest TeX Live coverage)
 //   - "lualatex"      → lualatex (Lua scripting, modern font handling)
 //   - "xelatex"       → xelatex  (Unicode + system fonts)
+//   - "gotex"         → gotex    (pure-Go, FROM-scratch image, WASM-capable)
 // Anything else is normalised to pdflatex.
 func resolveLatexEngine(choice string, emit func(Event)) string {
 	switch choice {
@@ -375,6 +376,8 @@ func resolveLatexEngine(choice string, emit func(Event)) string {
 		return "lualatex"
 	case "xelatex":
 		return "xelatex"
+	case "gotex":
+		return "gotex"
 	}
 	emit(Event{Kind: "log", Line: fmt.Sprintf(
 		"WARN : unknown engine %q ; falling back to pdflatex", choice,
@@ -437,6 +440,10 @@ func bibTrigger(scratchDir, base, engine string) string {
 func (s *Service) compileLatex(ctx context.Context, workDir, scratchDir string, spec JobSpec, emit func(Event)) (string, error) {
 	engine := resolveLatexEngine(spec.Engine, emit)
 	bibEngine := resolveBibEngine(spec.BibEngine, emit)
+	// gotex is single-pass (it resolves cross-references internally) and has no
+	// separate bibliography processor, so its dispatch skips the pass-2 + bib
+	// machinery the TeX Live engines need.
+	gotex := engine == "gotex"
 	entry := spec.Entry
 	if entry == "" {
 		entry = "main.tex"
@@ -484,11 +491,20 @@ func (s *Service) compileLatex(ctx context.Context, workDir, scratchDir string, 
 	vm := s.resolveVMForCompile(spec)
 	emit(Event{Kind: "log", Line: fmt.Sprintf("⏱  resolveVMForCompile  %6dms  vm=%v", time.Since(resolveStart).Milliseconds(), vm != nil)})
 	if vm != nil {
+		if gotex {
+			cmd := latexCommand(engine, entryAbs, scratchDir, spec.ExtraArgs, true)
+			emit(Event{Kind: "log", Line: "--- workspace gotex ---"})
+			out, err := s.compileInWorkspace(ctx, vm, workDir, "latex", engine, cmd, emit)
+			if err != nil {
+				return "", err
+			}
+			return out, nil
+		}
 		cmd := append([]string{engine}, args...)
 		// Pass 1 — produces .aux / .bcf so the bib engine has input.
 		passStart := time.Now()
 		emit(Event{Kind: "log", Line: "--- workspace pass 1 ---"})
-		if _, err := s.compileInWorkspace(ctx, vm, workDir, "latex", cmd, emit); err != nil {
+		if _, err := s.compileInWorkspace(ctx, vm, workDir, "latex", engine, cmd, emit); err != nil {
 			return "", err
 		}
 		emit(Event{Kind: "log", Line: fmt.Sprintf("⏱  pass.1.end           %6dms", time.Since(passStart).Milliseconds())})
@@ -496,14 +512,14 @@ func (s *Service) compileLatex(ctx context.Context, workDir, scratchDir string, 
 		if bibBase := bibTrigger(scratchDir, base, bibEngine); bibBase != "" {
 			emit(Event{Kind: "log", Line: fmt.Sprintf("--- workspace %s ---", bibEngine)})
 			bibCmd := bibCommand(bibEngine, scratchDir, bibBase)
-			if _, err := s.compileInWorkspace(ctx, vm, workDir, "latex", bibCmd, emit); err != nil {
+			if _, err := s.compileInWorkspace(ctx, vm, workDir, "latex", engine, bibCmd, emit); err != nil {
 				return "", err
 			}
 		}
 		// Pass 2.
 		passStart = time.Now()
 		emit(Event{Kind: "log", Line: "--- workspace pass 2 ---"})
-		out, err := s.compileInWorkspace(ctx, vm, workDir, "latex", cmd, emit)
+		out, err := s.compileInWorkspace(ctx, vm, workDir, "latex", engine, cmd, emit)
 		emit(Event{Kind: "log", Line: fmt.Sprintf("⏱  pass.2.end           %6dms", time.Since(passStart).Milliseconds())})
 		if err != nil {
 			return "", err
@@ -511,24 +527,53 @@ func (s *Service) compileLatex(ctx context.Context, workDir, scratchDir string, 
 		return out, nil
 	}
 	if useMicroVM() {
+		if gotex {
+			cmd := latexCommand(engine, entryAbs, scratchDir, spec.ExtraArgs, true)
+			emit(Event{Kind: "log", Line: "--- microvm gotex ---"})
+			out, err := s.compileInMicroVM(ctx, workDir, scratchDir, spec, false, engine, cmd, emit)
+			if err != nil {
+				return "", err
+			}
+			return out, nil
+		}
 		cmd := append([]string{engine}, args...)
 		emit(Event{Kind: "log", Line: "--- microvm pass 1 ---"})
-		if _, err := s.compileInMicroVM(ctx, workDir, scratchDir, spec, false, cmd, emit); err != nil {
+		if _, err := s.compileInMicroVM(ctx, workDir, scratchDir, spec, false, engine, cmd, emit); err != nil {
 			return "", err
 		}
 		if bibBase := bibTrigger(scratchDir, base, bibEngine); bibBase != "" {
 			emit(Event{Kind: "log", Line: fmt.Sprintf("--- microvm %s ---", bibEngine)})
 			bibCmd := bibCommand(bibEngine, scratchDir, bibBase)
-			if _, err := s.compileInMicroVM(ctx, workDir, scratchDir, spec, false, bibCmd, emit); err != nil {
+			if _, err := s.compileInMicroVM(ctx, workDir, scratchDir, spec, false, engine, bibCmd, emit); err != nil {
 				return "", err
 			}
 		}
 		emit(Event{Kind: "log", Line: "--- microvm pass 2 ---"})
-		out, err := s.compileInMicroVM(ctx, workDir, scratchDir, spec, false, cmd, emit)
+		out, err := s.compileInMicroVM(ctx, workDir, scratchDir, spec, false, engine, cmd, emit)
 		if err != nil {
 			return "", err
 		}
 		return out, nil
+	}
+
+	// Host subprocess fallback for gotex : the pure-Go `gotex` binary on the
+	// host PATH, one pass, no bibliography processor.
+	if gotex {
+		cmd := latexCommand(engine, entryAbs, scratchDir, spec.ExtraArgs, false)
+		bin, err := exec.LookPath("gotex")
+		if err != nil {
+			return "", fmt.Errorf("gotex not installed on the loom host (build github.com/go-tex/engine/cmd/gotex, or set WEFT_LOOM_BACKEND=microvm with the weft-loom-gotex image)")
+		}
+		emit(Event{Kind: "log", Line: strings.Join(cmd, " ")})
+		emit(Event{Kind: "log", Line: "--- gotex ---"})
+		if perr := runStreaming(ctx, bin, cmd[1:], workDir, emit); perr != nil {
+			return "", fmt.Errorf("gotex failed : %w", perr)
+		}
+		pdf := filepath.Join(scratchDir, base+".pdf")
+		if _, err := os.Stat(pdf); err != nil {
+			return "", fmt.Errorf("gotex finished but no PDF at %s", pdf)
+		}
+		return pdf, nil
 	}
 
 	// Host subprocess fallback. Look up the chosen engine — if it's
@@ -606,6 +651,33 @@ func bibCommand(engine, scratchDir, base string) []string {
 	return []string{engine, abs}
 }
 
+// latexCommand builds the argv for one compile invocation of the chosen engine.
+//
+// gotex speaks its own CLI (`gotex -pdf -outdir=<dir> <entry>`, a single pass
+// that resolves cross-references internally) rather than the latexmk/pdflatex
+// flag set, and its FROM-scratch image exposes the binary at an absolute path
+// with no shell or PATH — so `containerized` selects `/gotex` (image) vs `gotex`
+// (host PATH). Every other engine gets the standard pdflatex-compatible flags.
+func latexCommand(engine, entryAbs, scratchDir string, extra []string, containerized bool) []string {
+	if engine == "gotex" {
+		bin := "gotex"
+		if containerized {
+			bin = "/gotex"
+		}
+		cmd := []string{bin, "-pdf", "-outdir=" + scratchDir, entryAbs}
+		return append(cmd, extra...)
+	}
+	cmd := []string{
+		engine,
+		"-interaction=nonstopmode",
+		"-halt-on-error",
+		"-synctex=1",
+		"-output-directory=" + scratchDir,
+		entryAbs,
+	}
+	return append(cmd, extra...)
+}
+
 // compileMarkdown : detects Marp front-matter ; runs marp-cli for
 // slide decks or pandoc for regular markdown. Both produce a PDF in
 // scratchDir.
@@ -638,14 +710,14 @@ func (s *Service) compileMarkdown(ctx context.Context, workDir, scratchDir strin
 		args = append(args, spec.ExtraArgs...)
 		if vm := s.resolveVMForCompile(spec); vm != nil {
 			cmd := append([]string{"marp"}, args...)
-			if _, err := s.compileInWorkspace(ctx, vm, workDir, "markdown", cmd, emit); err != nil {
+			if _, err := s.compileInWorkspace(ctx, vm, workDir, "markdown", "", cmd, emit); err != nil {
 				return "", err
 			}
 			return outPath, nil
 		}
 		if useMicroVM() {
 			cmd := append([]string{"marp"}, args...)
-			if _, err := s.compileInMicroVM(ctx, workDir, scratchDir, spec, true, cmd, emit); err != nil {
+			if _, err := s.compileInMicroVM(ctx, workDir, scratchDir, spec, true, "", cmd, emit); err != nil {
 				return "", err
 			}
 		} else {
@@ -663,14 +735,14 @@ func (s *Service) compileMarkdown(ctx context.Context, workDir, scratchDir strin
 		args = append(args, spec.ExtraArgs...)
 		if vm := s.resolveVMForCompile(spec); vm != nil {
 			cmd := append([]string{"pandoc"}, args...)
-			if _, err := s.compileInWorkspace(ctx, vm, workDir, "markdown", cmd, emit); err != nil {
+			if _, err := s.compileInWorkspace(ctx, vm, workDir, "markdown", "", cmd, emit); err != nil {
 				return "", err
 			}
 			return outPath, nil
 		}
 		if useMicroVM() {
 			cmd := append([]string{"pandoc"}, args...)
-			if _, err := s.compileInMicroVM(ctx, workDir, scratchDir, spec, false, cmd, emit); err != nil {
+			if _, err := s.compileInMicroVM(ctx, workDir, scratchDir, spec, false, "", cmd, emit); err != nil {
 				return "", err
 			}
 		} else {
@@ -714,7 +786,7 @@ func (s *Service) compileGeneric(ctx context.Context, workDir, _scratchDir strin
 
 	emit(Event{Kind: "log", Line: fmt.Sprintf("--- workspace run (%s) ---", spec.Language)})
 	emit(Event{Kind: "log", Line: "$ " + strings.Join(cmd, " ")})
-	if _, err := s.compileInWorkspace(ctx, vm, workDir, spec.Language, cmd, emit); err != nil {
+	if _, err := s.compileInWorkspace(ctx, vm, workDir, spec.Language, "", cmd, emit); err != nil {
 		return "", err
 	}
 	return "", nil

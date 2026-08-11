@@ -25,10 +25,10 @@ type startCompileBody struct {
 	// they'd paste in a terminal.
 	Command string `json:"command,omitempty" doc:"Optional verbatim shell command — overrides the language's default when set. Inside the workspace μVM, the dispatcher runs sh -c <command>."`
 	// Engine : LaTeX engine binary the dispatcher invokes for the
-	// `latex` language. One of `pdflatex` / `lualatex` / `xelatex`.
-	// Defaults to pdflatex when empty. Ignored for non-LaTeX
-	// languages.
-	Engine string `json:"engine,omitempty" doc:"LaTeX engine to invoke for the latex language : pdflatex | lualatex | xelatex. Defaults to pdflatex."`
+	// `latex` language. One of `pdflatex` / `lualatex` / `xelatex` /
+	// `gotex` (the pure-Go, WASM-capable engine). Defaults to pdflatex
+	// when empty. Ignored for non-LaTeX languages.
+	Engine string `json:"engine,omitempty" doc:"LaTeX engine to invoke for the latex language : pdflatex | lualatex | xelatex | gotex. Defaults to pdflatex."`
 	// Bib : bibliography processor invoked between the two LaTeX
 	// passes when the project carries a bibliography database.
 	// One of `bibtex` / `biber`. Defaults to bibtex. Ignored when

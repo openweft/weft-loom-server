@@ -178,7 +178,7 @@ export const compileCommands = new CompileCommandStore();
 // Default = pdflatex + bibtex (broadest TeX Live coverage, what
 // pre-V0.7 hard-coded).
 
-export type LatexEngine = 'pdflatex' | 'lualatex' | 'xelatex';
+export type LatexEngine = 'pdflatex' | 'lualatex' | 'xelatex' | 'gotex';
 export type BibEngine = 'bibtex' | 'biber';
 
 export interface CompilerChoice {

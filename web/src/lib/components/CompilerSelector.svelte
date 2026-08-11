@@ -21,7 +21,7 @@
   // (project-switcher click) without unmounting the component.
   const choice = $derived(compilerChoices.get(project));
 
-  const ENGINES: LatexEngine[] = ['pdflatex', 'lualatex', 'xelatex'];
+  const ENGINES: LatexEngine[] = ['pdflatex', 'lualatex', 'xelatex', 'gotex'];
   const BIBS: BibEngine[] = ['bibtex', 'biber'];
 
   function onEngine(ev: Event) {
@@ -42,7 +42,7 @@
       class="select select-xs select-bordered text-[10px] min-h-0 h-6 py-0"
       value={choice.engine}
       onchange={onEngine}
-      title="LaTeX engine — pdflatex (default), lualatex (Lua + modern fonts), xelatex (Unicode + system fonts)"
+      title="LaTeX engine — pdflatex (default), lualatex (Lua + modern fonts), xelatex (Unicode + system fonts), gotex (pure-Go, WASM-capable)"
       data-testid="compiler-engine"
     >
       {#each ENGINES as e}
