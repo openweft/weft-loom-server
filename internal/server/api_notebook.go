@@ -69,7 +69,7 @@ func mountNotebookAPI(api huma.API, s *Server) {
 			return nil, huma.Error500InternalServerError("server not initialised")
 		}
 		ident, _ := auth.IdentityFrom(ctx)
-		// Per-project ACL : matches /sync and /shell. ListFiles fails on
+		// Per-project ACL : matches /collab and /shell. ListFiles fails on
 		// "this user can't see this project" so it doubles as the gate.
 		if _, err := s.opts.Projects.ListFiles(ctx, ident, in.Project); err != nil {
 			return nil, huma.Error403Forbidden("forbidden")

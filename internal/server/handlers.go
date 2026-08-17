@@ -10,14 +10,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/coder/websocket"
 
 	"github.com/openweft/weft-loom-server/internal/auth"
-	"github.com/openweft/weft-loom-server/internal/eventbus"
 	loomlsp "github.com/openweft/weft-loom-server/internal/lsp"
 	"github.com/openweft/weft-loom-server/internal/synctex"
 	"github.com/openweft/weft-loom-server/internal/workspace"
-	"github.com/openweft/weft-loom-server/internal/ywebsocket"
 )
 
 // projectName is the URL path parameter "{name}". A simple wrapper
@@ -253,84 +250,3 @@ func (s *Server) handleCompileStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleSync upgrades the HTTP request to a WebSocket and bridges it
-// into the y-websocket Hub. roomID = "<project>:default" for V0.1 ;
-// future revs scope per-file or per-named-doc.
-func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
-	ident, ok := s.identify(r)
-	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	// Authorize : caller must have access to the project. The Store
-	// owns the policy ; ListFiles errs on access denied today.
-	if _, err := s.opts.Projects.ListFiles(r.Context(), ident, projectName(r)); err != nil {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
-
-	conn, err := websocket.Accept(w, r, s.wsAcceptOpts())
-	if err != nil {
-		// Accept already wrote the error response.
-		return
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
-	// roomID uses the URL's room segment so multiple Yjs rooms can
-	// coexist under one project (per-file rooms, the test harness's
-	// random room names, etc.). Empty → "default" for back-compat
-	// with clients that don't pass a room.
-	roomSeg := r.PathValue("room")
-	if roomSeg == "" {
-		roomSeg = "default"
-	}
-	roomID := projectName(r) + ":" + roomSeg
-	connID := ywebsocket.ConnID(ident.Subject + "@" + r.RemoteAddr)
-	m := s.hub.Join(roomID, connID)
-	defer m.Leave()
-
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
-	m.LeaveOnContextDone(ctx)
-
-	log := s.opts.Logger
-	log.Info("ws.upgraded", "room", roomID, "conn", string(connID), "members", s.hub.MembersCount(roomID))
-	s.events.Publish(eventbus.Event{
-		Source: "server", Component: "ws", Verb: "upgraded",
-		Project: projectName(r),
-		Fields: map[string]any{
-			"room": roomID, "conn": string(connID),
-			"members": s.hub.MembersCount(roomID),
-		},
-	})
-
-	// Writer goroutine : forward Recv() onto the socket.
-	go func() {
-		var outBytes, outFrames uint64
-		for payload := range m.Recv() {
-			outBytes += uint64(len(payload))
-			outFrames++
-			log.Info("ws.out", "room", roomID, "conn", string(connID), "frame_n", outFrames, "bytes", len(payload))
-			if err := conn.Write(ctx, websocket.MessageBinary, payload); err != nil {
-				log.Info("ws.write.err", "room", roomID, "conn", string(connID), "out_frames", outFrames, "out_bytes", outBytes, "err", err.Error())
-				cancel()
-				return
-			}
-		}
-		log.Info("ws.writer.exit", "room", roomID, "conn", string(connID), "out_frames", outFrames, "out_bytes", outBytes)
-	}()
-
-	// Reader loop : every frame from the client becomes a broadcast.
-	var inBytes, inFrames uint64
-	for {
-		_, payload, err := conn.Read(ctx)
-		if err != nil {
-			log.Info("ws.reader.exit", "room", roomID, "conn", string(connID), "in_frames", inFrames, "in_bytes", inBytes, "err", err.Error())
-			return
-		}
-		inBytes += uint64(len(payload))
-		inFrames++
-		log.Info("ws.in", "room", roomID, "conn", string(connID), "frame_n", inFrames, "bytes", len(payload))
-		m.Send(payload)
-	}
-}
