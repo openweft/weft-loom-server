@@ -10,7 +10,18 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // from there. Keeping the bundle inside the Go module tree means
 // `go build` is the single source of truth for the deployed
 // artefact.
+// The SPA is deployed under /loom/ behind a proxy that strips the prefix, so
+// every asset URL in index.html has to carry it. That was done by hand-editing
+// the built index.html (4f6d69d), which meant a fresh `npm run build` silently
+// replaced it with one referencing assets at the wrong path — and, because the
+// hashes move with every build, referencing assets that no longer exist. A
+// binary built from a clean checkout served a blank page.
+//
+// It is a build setting now. LOOM_BASE overrides it, which is what a local run
+// wants: the server itself mounts the SPA at "/", so `LOOM_BASE=/ npm run
+// build` produces a bundle that works without a proxy in front of it.
 export default defineConfig({
+  base: process.env.LOOM_BASE ?? '/loom/',
   plugins: [svelte(), tailwindcss()],
   build: {
     outDir: resolve(__dirname, '../internal/web/dist'),
