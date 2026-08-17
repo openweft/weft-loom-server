@@ -3,7 +3,7 @@
   // bibliography clusters. Visible for ANY editable file (not just
   // LaTeX) since collaborative comments are useful everywhere.
   //
-  // Comments live in a Y.Array on the same Y.Doc the editor uses,
+  // Comments live as parts of the same collab document the editor uses —
   // so the round-trip is full-CRDT : another peer adds a comment +
   // the local panel re-renders on the next Yjs observe tick.
   //
@@ -16,12 +16,16 @@
   // Out of scope V0.1 : threaded replies, markdown body, mentions,
   // notification badges.
 
-  import * as Y from 'yjs';
   import {
-    commentsArray, encodeRP, genId,
-    newCommentMap,
+    genId,
+    filePart,
+    anchorRange,
+    putComment,
+    setResolved,
+    removeComment,
     type CommentRecord,
-  } from '../comments';
+  } from '../comments-collab';
+  import type { Session as CollabSession } from '../collab';
   import type { Identity } from '../identity';
   import type { Awareness } from 'y-protocols/awareness';
   import {
@@ -35,7 +39,9 @@
   import { notifyMention } from '../api';
 
   interface Props {
-    ydoc?: Y.Doc;
+    // The collab session the comments live in. Each comment is a map part of
+    // its own and a list part holds the order; see lib/comments-collab.ts.
+    session?: CollabSession;
     project?: string;
     file?: string;
     identity?: Identity;
@@ -48,7 +54,7 @@
     // dispatches a `jumpToLine` effect on the editor.
     onJumpToOffset?: (from: number, to: number) => void;
   }
-  let { ydoc, project, file, identity, visible, awareness, onJumpToOffset }: Props = $props();
+  let { session, project, file, identity, visible, awareness, onJumpToOffset }: Props = $props();
 
   // notifyMentioned fan-outs the email notification for @-mentioned
   // peers. Fire-and-forget : commenters never wait on SMTP.
@@ -95,7 +101,6 @@
     return roots.map((r) => ({ root: r, replies: byParent.get(r.id) ?? [] }));
   });
 
-  let arr: Y.Array<Y.Map<unknown>> | undefined;
 
   // ─── @-mention autocomplete state ──────────────────────────────
   //
@@ -251,13 +256,11 @@
   // panel list).
   //
   // `arr` is still resolved here because addComment / toggleResolved /
-  // deleteComment / addReply need to write back into the Y.Array.
+  // deleteComment / addReply write back through lib/comments-collab.
   $effect(() => {
     comments = [];
     resolved = {};
-    arr = undefined;
-    if (!ydoc || !file) return;
-    arr = commentsArray(ydoc, file);
+    if (!session || !file) return;
     const pickSnapshot = () => {
       const snap = (window as unknown as {
         weftLoomCommentRanges?: {
@@ -294,7 +297,7 @@
   });
 
   function addComment() {
-    if (!arr || !ydoc || !file) return;
+    if (!session || !file) return;
     const body = pendingBody.trim();
     if (!body) return;
     const sel = lastSelection;
@@ -302,14 +305,9 @@
       alert('Select some text in the editor first, then add a comment.');
       return;
     }
-    const ytext = ydoc.getText('file:' + file);
-    const fromRP = Y.createRelativePositionFromTypeIndex(ytext, sel.from);
-    const toRP   = Y.createRelativePositionFromTypeIndex(ytext, sel.to);
     const mentions = extractMentionedClientIDs(body, allCandidates);
-    const rec: CommentRecord = {
+    const rec = {
       id: genId(),
-      from: encodeRP(fromRP),
-      to:   encodeRP(toRP),
       body,
       authorId:    identity?.name ?? 'anon',
       authorName:  identity?.name ?? 'Anonymous',
@@ -318,68 +316,64 @@
       ts: Date.now(),
       mentions,
     };
-    ydoc.transact(() => { arr!.push([newCommentMap(rec)]); }, 'comment-add');
+    // The anchors name characters rather than offsets, so the comment follows
+    // the sentence as the text moves under it.
+    void (async () => {
+      const text = await session!.text(filePart(file!));
+      const range = await anchorRange(text, sel.from, sel.to);
+      await putComment(session!, file!, { ...rec, ...range } as CommentRecord);
+    })().catch((err) => console.error('collab: adding a comment', err));
     notifyMentioned(mentions, body);
     pendingBody = '';
   }
 
   function toggleResolved(id: string) {
-    if (!arr || !ydoc) return;
-    ydoc.transact(() => {
-      const all = arr!.toArray();
-      const idx = all.findIndex(m => m.get('id') === id);
-      if (idx < 0) return;
-      const cmap = all[idx];
-      cmap.set('resolved', !cmap.get('resolved'));
-    }, 'comment-toggle');
+    if (!session) return;
+    // One key on one part, which is why two people resolving at the same
+    // moment leave one comment rather than two.
+    const now = comments.find((c) => c.id === id)?.resolved ?? false;
+    void setResolved(session, id, !now).catch((err) =>
+      console.error('collab: resolving', err),
+    );
   }
 
   function deleteComment(id: string) {
-    if (!arr || !ydoc) return;
-    // Threaded comments : when deleting a thread root we cascade
-    // through replies in the same transaction so peers see a clean
-    // disappearance. Deleting a reply leaves the root + siblings.
-    ydoc.transact(() => {
-      const all = arr!.toArray();
-      // Pre-compute ids to drop : the target + (when target is a
-      // root) every direct/indirect reply that points back at it.
-      const toDrop = new Set<string>([id]);
-      let grew = true;
-      while (grew) {
-        grew = false;
-        for (const m of all) {
-          const p = m.get('parentId') as string | undefined;
-          const ownId = m.get('id') as string;
-          if (p && toDrop.has(p) && !toDrop.has(ownId)) {
-            toDrop.add(ownId);
-            grew = true;
-          }
+    if (!session || !file) return;
+    // Threaded comments : deleting a thread root takes its replies with it, so
+    // peers see a clean disappearance rather than orphans pointing at nothing.
+    // Deleting a reply leaves the root and its siblings alone.
+    const toDrop = new Set<string>([id]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const c of comments) {
+        if (c.parentId && toDrop.has(c.parentId) && !toDrop.has(c.id)) {
+          toDrop.add(c.id);
+          grew = true;
         }
       }
-      // Delete from highest index to lowest so indices stay valid.
-      const indices: number[] = [];
-      for (let i = 0; i < all.length; i++) {
-        if (toDrop.has(all[i].get('id') as string)) indices.push(i);
-      }
-      indices.reverse();
-      for (const i of indices) arr!.delete(i, 1);
-    }, 'comment-delete');
+    }
+    // One at a time and in order: each removal is an operation on the order
+    // list, and the list is what the next removal is looked up in.
+    void (async () => {
+      for (const dropping of toDrop) await removeComment(session!, file!, dropping);
+    })().catch((err) => console.error('collab: deleting a comment', err));
   }
 
   function addReply(rootId: string) {
-    if (!arr || !ydoc || !file) return;
+    if (!session || !file) return;
     const body = (replyDrafts[rootId] ?? '').trim();
     if (!body) return;
-    // Replies inherit the root thread's anchor range — they reference
-    // the same span of text, so no new from/to needed. We still store
-    // empty number[] in the CRDT shape so commentFromMap doesn't bork
-    // on missing fields ; the renderer skips anchor decoration for
-    // replies.
+    // A reply inherits the root's range: it is about the same span of text. It
+    // carries the root's anchors rather than empty ones, so that a reply read
+    // on its own still says what it is about.
     const mentions = extractMentionedClientIDs(body, allCandidates);
+    const root = comments.find((c) => c.id === rootId);
+    if (!root) return;
     const rec: CommentRecord = {
       id: genId(),
-      from: [],
-      to: [],
+      from: root.from,
+      to: root.to,
       body,
       authorId:    identity?.name ?? 'anon',
       authorName:  identity?.name ?? 'Anonymous',
@@ -389,7 +383,9 @@
       parentId: rootId,
       mentions,
     };
-    ydoc.transact(() => { arr!.push([newCommentMap(rec)]); }, 'comment-reply');
+    void putComment(session, file, rec).catch((err) =>
+      console.error('collab: replying', err),
+    );
     notifyMentioned(mentions, body);
     replyDrafts = { ...replyDrafts, [rootId]: '' };
     replyOpen = null;
