@@ -21,34 +21,31 @@
 //
 // CommentsPanel.svelte composes them ; tests exercise each in isolation.
 
-import type { Awareness } from 'y-protocols/awareness';
+import type { Session } from './collab';
 
 export interface MentionCandidate {
-  clientID: number;
+  /** The replica identity, which does not fit a number. */
+  clientID: string;
   name: string;
   color: string;
 }
 
-// getMentionCandidates : enumerate every remote peer that currently
-// has a `user.name` in Awareness. Returns a stable, sorted-by-name
-// array so the autocomplete order is deterministic regardless of the
-// underlying Map iteration order.
-export function getMentionCandidates(
-  awareness: Awareness,
-  localClientID: number,
-): MentionCandidate[] {
+// getMentionCandidates : everybody else the session says is here and has a
+// name. Sorted, so the autocomplete order does not depend on what order the
+// session happens to report them in.
+export function getMentionCandidates(session: Session): MentionCandidate[] {
   const out: MentionCandidate[] = [];
-  awareness.getStates().forEach((state, clientID) => {
-    if (clientID === localClientID) return;
-    const s = state as { user?: { name?: string; color?: string } };
-    const user = s.user;
-    if (!user || !user.name) return;
+  const self = session.site;
+  for (const peer of session.peers()) {
+    if (peer.site === self) continue;
+    const name = peer.meta?.name;
+    if (!name) continue;
     out.push({
-      clientID,
-      name: user.name,
-      color: user.color ?? '#888',
+      clientID: peer.site,
+      name,
+      color: peer.meta?.color ?? '#888',
     });
-  });
+  }
   out.sort((a, b) => a.name.localeCompare(b.name));
   return out;
 }
@@ -136,7 +133,7 @@ export function extractMentionedClientIDs(
   candidates: MentionCandidate[],
 ): string[] {
   if (!body) return [];
-  const byName = new Map<string, number>();
+  const byName = new Map<string, string>();
   for (const c of candidates) byName.set(c.name.toLowerCase(), c.clientID);
   const found = new Set<string>();
   let m: RegExpExecArray | null;

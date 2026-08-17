@@ -25,9 +25,8 @@
     removeComment,
     type CommentRecord,
   } from '../comments-collab';
-  import type { Session as CollabSession } from '../collab';
+  import { watchPeers, type Session as CollabSession } from '../collab';
   import type { Identity } from '../identity';
-  import type { Awareness } from 'y-protocols/awareness';
   import {
     getMentionCandidates,
     getMentionPrefix,
@@ -49,12 +48,11 @@
     // Optional Awareness override (tests inject a synthetic one) ;
     // when absent we fall back to the global `window.weftLoomAwareness`
     // that Editor.svelte publishes on connect.
-    awareness?: Awareness;
     // Called when the user clicks a comment in the list — App
     // dispatches a `jumpToLine` effect on the editor.
     onJumpToOffset?: (from: number, to: number) => void;
   }
-  let { session, project, file, identity, visible, awareness, onJumpToOffset }: Props = $props();
+  let { session, project, file, identity, visible, onJumpToOffset }: Props = $props();
 
   // notifyMentioned fan-outs the email notification for @-mentioned
   // peers. Fire-and-forget : commenters never wait on SMTP.
@@ -117,17 +115,24 @@
   // dropdown immediately. Source : prop > window global > none.
   let allCandidates = $state<MentionCandidate[]>([]);
   $effect(() => {
-    const a = awareness ?? (window as unknown as { weftLoomAwareness?: Awareness }).weftLoomAwareness;
-    if (!a) {
+    const live = session;
+    if (!live) {
       allCandidates = [];
       return;
     }
     const refresh = () => {
-      allCandidates = getMentionCandidates(a, a.clientID);
+      allCandidates = getMentionCandidates(live);
     };
     refresh();
-    a.on('change', refresh);
-    return () => a.off('change', refresh);
+    let stopped = false;
+    let off: (() => void) | undefined;
+    void watchPeers(live, refresh)
+      .then((stop) => (stopped ? stop() : (off = stop)))
+      .catch((err) => console.error('collab: mention candidates', err));
+    return () => {
+      stopped = true;
+      off?.();
+    };
   });
   const mentionMatches = $derived.by((): MentionCandidate[] => {
     if (mentionPrefix === null) return [];
