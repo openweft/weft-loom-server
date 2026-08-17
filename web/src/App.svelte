@@ -37,6 +37,7 @@
   import ScaffoldDialog from './lib/components/ScaffoldDialog.svelte';
   import {
     filePart,
+    onCommentWritten,
     orderPart,
     readComments,
     resolveAnchors,
@@ -1057,6 +1058,11 @@
       // The text moving changes where every anchor resolves; a comment part
       // changing changes what there is to resolve. Both come through the one
       // handler the session has, shared out in lib/collab.
+      // A local write announces itself: collab reports only what peers did,
+      // and this panel's content is assembled by re-reading after a change,
+      // so without this the tab that writes a comment is the one tab that
+      // does not list it.
+      const stopLocal = onCommentWritten(rebuild);
       void watch(live, {
         text: (name) => {
           if (name === filePart(file)) rebuild();
@@ -1068,8 +1074,14 @@
           if (name === orderPart(file)) rebuild();
         },
       })
-        .then((off) => (commentRebuild = off))
-        .catch((err) => console.error('collab: watching comments', err));
+        .then((off) => (commentRebuild = () => {
+          off();
+          stopLocal();
+        }))
+        .catch((err) => {
+          console.error('collab: watching comments', err);
+          commentRebuild = stopLocal;
+        });
     }
     // T5b SyncTeX backward : PDF click (page + x + y in synctex sp)
     // → source file + line. The hook OPENS the source file (via

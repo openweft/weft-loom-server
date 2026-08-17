@@ -60,6 +60,35 @@ export interface Resolved {
   visible: boolean;
 }
 
+// # Why a local write announces itself
+//
+// collab never reports a local edit back — a caller that made one already
+// knows. That is right for a binding, which would otherwise echo typing into
+// the editor it came from, and wrong for a panel, whose whole content is
+// assembled by re-reading after a change. Without this the tab that writes a
+// comment is the one tab that does not list it, which is exactly how it
+// behaved.
+//
+// It lives here rather than at the one caller because all three writers below
+// have to announce, and a fourth added later would have to remember to.
+const written = new Set<() => void>();
+
+/** Calls back after this replica writes a comment, whatever wrote it. */
+export function onCommentWritten(fn: () => void): () => void {
+  written.add(fn);
+  return () => written.delete(fn);
+}
+
+function announce(): void {
+  for (const fn of [...written]) {
+    try {
+      fn();
+    } catch (err) {
+      console.error('collab: a comment listener threw', err);
+    }
+  }
+}
+
 /** The list part holding the order of a file's comments. */
 export function orderPart(file: string): string {
   return `comments:${file}`;
@@ -114,6 +143,7 @@ export async function putComment(
   // The order goes last, so a comment is in the list only once it can be read.
   const order = await session.list(orderPart(file));
   if (!records<string>(order).includes(rec.id)) await order.append(encode(rec.id));
+  announce();
 }
 
 /** Reads one comment back, or undefined if this replica has none. */
@@ -148,6 +178,7 @@ export async function readComments(session: Session, file: string): Promise<Comm
 export async function setResolved(session: Session, id: string, resolved: boolean): Promise<void> {
   const part = await session.map(commentPart(id));
   await part.set('resolved', encode(resolved));
+  announce();
 }
 
 /**
@@ -160,6 +191,7 @@ export async function removeComment(session: Session, file: string, id: string):
   const ids = records<string>(order);
   const at = ids.indexOf(id);
   if (at >= 0) await order.delete(at, 1);
+  announce();
 }
 
 /**

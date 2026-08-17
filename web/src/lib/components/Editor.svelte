@@ -1404,26 +1404,37 @@
       <!-- Tool drawers : icon buttons that toggle the side-panels.
            Each dispatches a window event the matching panel listens
            for ; the panels themselves still own their popover state +
-           DOM so this toolbar stays a thin trigger surface. -->
+           DOM so this toolbar stays a thin trigger surface.
+
+           The data-testid on each is the handle two suites had been reaching
+           for since these were floating buttons. Replacing the buttons
+           dropped the attributes and left the suites looking for something
+           that was no longer in the DOM — a test handle is not decoration,
+           and an aria-label is user-facing copy rather than a substitute. -->
       <div class="join mr-2">
         <button class="join-item btn btn-xs btn-ghost"
           onclick={() => window.dispatchEvent(new CustomEvent('weft-loom:toggle-palette'))}
+          data-testid="latex-palette-toggle"
           title="LaTeX symbol palette"
           aria-label="Toggle LaTeX symbol palette">∑</button>
         <button class="join-item btn btn-xs btn-ghost"
           onclick={() => window.dispatchEvent(new CustomEvent('weft-loom:toggle-bib'))}
+          data-testid="bib-toggle"
           title="Bibliography"
           aria-label="Toggle bibliography">📚</button>
         <button class="join-item btn btn-xs btn-ghost"
           onclick={() => window.dispatchEvent(new CustomEvent('weft-loom:toggle-snippets'))}
+          data-testid="snippets-toggle"
           title="Snippets (user-defined + built-in)"
           aria-label="Toggle snippets">✂️</button>
         <button class="join-item btn btn-xs btn-ghost"
           onclick={() => window.dispatchEvent(new CustomEvent('weft-loom:toggle-comments'))}
+          data-testid="comments-toggle"
           title="Comments"
           aria-label="Toggle comments">💬</button>
         <button class="join-item btn btn-xs btn-ghost"
           onclick={() => window.dispatchEvent(new CustomEvent('weft-loom:toggle-words'))}
+          data-testid="words-toggle"
           title="Word count + writing goals"
           aria-label="Toggle word count">🔢</button>
       </div>
