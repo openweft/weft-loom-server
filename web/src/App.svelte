@@ -1417,7 +1417,7 @@
                      DOMParser ; the grid is contenteditable cells. -->
                 {#key project + '|ods|' + currentFile}
                   {#if LazySpreadsheetEditor}
-                    <LazySpreadsheetEditor {project} file={currentFile} />
+                    <LazySpreadsheetEditor {project} file={currentFile} session={collabSession} />
                   {:else}
                     <div class="flex-1 flex items-center justify-center text-base-content/50">Loading spreadsheet editor…</div>
                   {/if}

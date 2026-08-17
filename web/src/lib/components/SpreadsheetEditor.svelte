@@ -12,15 +12,20 @@
   import { parseODS, writeODS, columnLabel, blankSheet, type ODSSheet, type ODSCell } from '../ods';
   import { writeFile } from '../api';
   import { HyperFormula, type ExportedChange, ExportedCellChange } from 'hyperformula';
-  import * as Y from 'yjs';
-  import { WebsocketProvider } from 'y-websocket';
+  import { encode, decode, watch, type MapPart, type Session } from '../collab';
   import { onDestroy, onMount } from 'svelte';
 
   interface Props {
     project: string;
     file: string;
+    /**
+     * The project's collab session. Without one the workbook opens, edits and
+     * saves; it just does not collaborate — which is what the editor did
+     * before a session existed at all.
+     */
+    session?: Session;
   }
-  let { project, file }: Props = $props();
+  let { project, file, session }: Props = $props();
 
   let sheets = $state<ODSSheet[]>([]);
   let activeSheet = $state(0);
@@ -234,41 +239,48 @@
   const lastVisCol  = $derived(Math.min(MAX_COLS - 1, Math.ceil((scrollLeft + viewportW) / COL_W) + BUFFER));
   const visRows = $derived(Array.from({ length: lastVisRow - firstVisRow + 1 }, (_, i) => firstVisRow + i));
   const visCols = $derived(Array.from({ length: lastVisCol - firstVisCol + 1 }, (_, i) => firstVisCol + i));
-  // T9 V0.3 : Y.Doc + provider for live multi-user collab. The
-  // cells live in a Y.Map keyed by "<sheetIdx>:<row>:<col>" so
-  // updates are atomic per-cell ; concurrent edits to different
-  // cells don't collide. We use the same WS sync endpoint as the
-  // text editors (`/api/projects/<p>/sync`) — the relay doesn't
-  // care about payload semantics, just the doc id.
-  let ydoc: Y.Doc | undefined;
-  let provider: WebsocketProvider | undefined;
-  let cellsMap: Y.Map<{
+  // Cells live in a map part keyed "<sheetIdx>:<row>:<col>", so two people
+  // editing different cells never collide and two people editing the same one
+  // leave one value rather than two. That was already the right shape; what
+  // changed underneath it is that the document is on the server's disk.
+  //
+  // The sheet shape was a Y.Array and is a map part keyed by sheet index. That
+  // is not a translation — see the seed below, where it is the whole reason the
+  // election could go.
+  type Cell = {
     display: string;
     value: string | number | boolean;
     type: string;
     formula?: string;
-  }> | undefined;
-  // Sheet-shape Y.Array : one entry per sheet describing its name +
-  // dense row/col counts. Peers observe this to add/remove/resize
-  // sheets in lockstep ; cell content keeps flowing through cellsMap.
+  };
   type SheetShape = { name: string; rows: number; cols: number };
-  let shapeArr: Y.Array<SheetShape> | undefined;
+  let cellsPart: MapPart | undefined;
+  let shapePart: MapPart | undefined;
+  let unwatch: (() => void) | undefined;
   // `applyingRemote` guards against the observer triggering its own
   // local change handler when we mutate the local sheets[] in
   // response to a remote update.
   let applyingRemote = false;
-  // Cells received before their sheet exists locally (sheet-shape
-  // event hasn't landed yet). Replayed once the sheet materialises.
-  const pendingCells = new Map<string, {
-    display: string;
-    value: string | number | boolean;
-    type: string;
-    formula?: string;
-  } | undefined>();
+  // Cells received before their sheet exists locally (the shape has not landed
+  // yet). Replayed once the sheet materialises.
+  const pendingCells = new Map<string, Cell | undefined>();
 
-  function wsURL(p: string): string {
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return proto + '//' + window.location.host + '/api/projects/' + encodeURIComponent(p) + '/sync';
+  /** Every cell this replica holds, as the seed and the replay both want it. */
+  function cellEntries(part: MapPart): Array<[string, Cell | undefined]> {
+    return part.keys().map((k) => [k, decode<Cell>(cellsCache.get(k))]);
+  }
+
+  // A map part reads a key with a promise, and both the replay and the shape
+  // handler want to walk everything at once without awaiting per key. So what
+  // arrives is kept here, written by the watch and by the reads that seed it.
+  const cellsCache = new Map<string, Uint8Array | undefined>();
+
+  async function refillCells(part: MapPart, keys: string[]): Promise<void> {
+    await Promise.all(
+      keys.map(async (k) => {
+        cellsCache.set(k, await part.get(k));
+      }),
+    );
   }
 
   function cellKey(sheetIdx: number, r: number, c: number): string {
@@ -276,25 +288,25 @@
   }
 
   function pushCellToYMap(sheetIdx: number, r: number, c: number) {
-    if (!ydoc || !cellsMap) return;
+    const part = cellsPart;
+    if (!part) return;
     const cell = sheets[sheetIdx]?.cells[r]?.[c];
     if (!cell) return;
-    ydoc.transact(() => {
-      cellsMap!.set(cellKey(sheetIdx, r, c), {
-        display: cell.display,
-        value: cell.value,
-        type: cell.type,
-        formula: cell.formula,
-      });
-    }, 'ods-cell');
+    const key = cellKey(sheetIdx, r, c);
+    const raw = encode({
+      display: cell.display,
+      value: cell.value,
+      type: cell.type,
+      formula: cell.formula,
+    });
+    // The cache is written here as well as by the watch, because collab does
+    // not replay a local edit — so this is the only place this replica will
+    // ever be told what it just wrote.
+    cellsCache.set(key, raw);
+    void part.set(key, raw).catch((err) => console.error('collab: writing a cell', err));
   }
 
-  function applyRemoteCell(key: string, value: {
-    display: string;
-    value: string | number | boolean;
-    type: string;
-    formula?: string;
-  } | undefined) {
+  function applyRemoteCell(key: string, value: Cell | undefined) {
     const parts = key.split(':');
     if (parts.length !== 3) return;
     const [si, r, c] = parts.map(Number);
@@ -337,14 +349,9 @@
   // updateDisplayCache that applyRemoteCell would trigger for each entry ;
   // does one HF batch + one reactivity trigger + one full-cache seed at
   // the end. Mirrors M3 of the perf audit (no nested transacts on seed).
-  function replayRemoteCells(map: NonNullable<typeof cellsMap>) {
+  function replayRemoteCells(entries: Array<[string, Cell | undefined]>) {
     let touched = false;
-    const apply = (key: string, value: {
-      display: string;
-      value: string | number | boolean;
-      type: string;
-      formula?: string;
-    } | undefined) => {
+    const apply = (key: string, value: Cell | undefined) => {
       const parts = key.split(':');
       if (parts.length !== 3) return;
       const [si, r, c] = parts.map(Number);
@@ -378,13 +385,13 @@
       // HF batch() coalesces dependent recomputation into a single pass.
       try {
         hf.batch(() => {
-          for (const [k, v] of map.entries()) apply(k, v);
+          for (const [k, v] of entries) apply(k, v);
         });
       } catch {
-        for (const [k, v] of map.entries()) apply(k, v);
+        for (const [k, v] of entries) apply(k, v);
       }
     } else {
-      for (const [k, v] of map.entries()) apply(k, v);
+      for (const [k, v] of entries) apply(k, v);
     }
     if (touched) {
       sheets = sheets; // single reactivity trigger after the full replay
@@ -395,15 +402,41 @@
   }
 
   function pushShape() {
-    if (!ydoc || !shapeArr) return;
-    ydoc.transact(() => {
-      shapeArr!.delete(0, shapeArr!.length);
-      shapeArr!.push(sheets.map((sh) => ({
+    const part = shapePart;
+    if (!part) return;
+    sheets.forEach((sh, i) => {
+      const raw = encode({
         name: sh.name,
         rows: sh.cells.length,
         cols: sh.cells[0]?.length ?? 0,
-      })));
-    }, 'ods-shape');
+      });
+      shapeCache.set(String(i), raw);
+      void part.set(String(i), raw).catch((err) => console.error('collab: writing a sheet', err));
+    });
+  }
+
+  // The shape as this replica holds it, by sheet index. A map part has no
+  // order, and applyShape wants one, so it is read back in index order.
+  const shapeCache = new Map<string, Uint8Array | undefined>();
+
+  function shapeList(): SheetShape[] {
+    const out: SheetShape[] = [];
+    for (const key of Array.from(shapeCache.keys()).map(Number).sort((a, b) => a - b)) {
+      const one = decode<SheetShape>(shapeCache.get(String(key)));
+      if (one) out[key] = one;
+    }
+    // A gap would be a sheet whose shape has not arrived; the cells for it are
+    // buffered in pendingCells until it does, so it is left out rather than
+    // filled with a guess.
+    return out.filter((s) => !!s);
+  }
+
+  async function refillShape(part: MapPart, keys: string[]): Promise<void> {
+    await Promise.all(
+      keys.map(async (k) => {
+        shapeCache.set(k, await part.get(k));
+      }),
+    );
   }
 
   function applyShape(shapes: SheetShape[]) {
@@ -453,152 +486,94 @@
     }
   }
 
-  // Designated-seeder protocol mirrored from Editor.svelte. Three
-  // outcomes : 'won' (this peer should seed), 'lost' (server explicitly
-  // refused — another peer is seeding, do NOT fall back), 'unknown'
-  // (endpoint missing in dev — caller may fall back to clientID race).
-  type SeedClaim = 'won' | 'lost' | 'unknown';
-  async function claimSeed(): Promise<SeedClaim> {
-    if (!file) return 'unknown';
+  // # Why there is no seeder election any more
+  //
+  // There used to be one: claimSeed() against a server endpoint, falling back
+  // to whoever had the lowest clientID, after a 500 ms wait for awareness to
+  // settle. All of it existed because a Y.Doc is empty whenever the relay is
+  // holding nothing, so on every first join somebody had to be chosen to fill
+  // it from the file on disk — and two peers filling it at once would have
+  // pushed the sheet shape twice into an array, giving a workbook twice as many
+  // sheets as it has.
+  //
+  // The collab document is on the server's disk, so a workbook is seeded once
+  // ever rather than once per session. And the shape is keyed by sheet index
+  // now, so two replicas seeding at the same moment write the same keys with
+  // the same values — they both parsed the same file — and converge on that
+  // value instead of concatenating. The election was guarding against an
+  // encoding, and the encoding is gone.
+  //
+  // The seed-claim endpoint stays where it is; Editor.svelte still uses it.
+
+  async function attachProvider() {
+    if (!file || !session || cellsPart) return;
+    const suffix = ':' + file;
+    const cells = await session.map('cells' + suffix);
+    const shape = await session.map('sheets' + suffix);
+    cellsPart = cells;
+    shapePart = shape;
+
+    await refillShape(shape, shape.keys());
+    await refillCells(cells, cells.keys());
+
+    applyingRemote = true;
     try {
-      const url = '/api/projects/' + encodeURIComponent(project)
-        + '/seed-claim/cells:' + file.split('/').map(encodeURIComponent).join('/');
-      const resp = await fetch(url, { method: 'POST' });
-      if (resp.status === 409) {
-        await new Promise((r) => setTimeout(r, 3000));
-        return 'lost';
-      }
-      if (resp.ok) return 'won';
-      if (resp.status === 404 || resp.status === 501) return 'unknown';
-      return 'lost';
-    } catch {
-      // Network failure or endpoint absent — treat as "no signal" and
-      // let the caller decide. Crucially we do NOT return 'lost' here :
-      // a missing endpoint in dev shouldn't deadlock the seed.
-      return 'unknown';
+      const shapes = shapeList();
+      if (shapes.length > 0) applyShape(shapes);
+      if (cells.size > 0) replayRemoteCells(cellEntries(cells));
+    } finally {
+      applyingRemote = false;
     }
-  }
 
-  function isLowestClientID(): boolean {
-    if (!provider) return false;
-    const states = provider.awareness.getStates();
-    const ids = Array.from(states.keys());
-    if (ids.length === 0) return true;
-    const self = provider.awareness.clientID;
-    return ids.every((id) => self <= id);
-  }
+    // Nothing there: this replica has the file, so it writes it. If another
+    // replica is doing the same thing right now they are writing what this one
+    // is writing.
+    if (cells.size === 0 && shape.size === 0) {
+      pushShape();
+      sheets.forEach((sh, si) =>
+        sh.cells.forEach((row, r) => row.forEach((_, c) => pushCellToYMap(si, r, c))),
+      );
+    }
 
-  function attachProvider() {
-    if (!file) return;
-    if (provider) return;
-    ydoc = new Y.Doc();
-    provider = new WebsocketProvider(wsURL(project), 'ods:' + file, ydoc);
-    cellsMap = ydoc.getMap('cells');
-    shapeArr = ydoc.getArray<SheetShape>('sheet-shape');
-    // Seed the Y.Map + sheet-shape with our locally-loaded data the
-    // first time the provider syncs ; if another peer already
-    // populated either structure, their state wins.
-    provider.once('sync', () => {
-      if (!cellsMap || !ydoc || !shapeArr) return;
-      // Pull any existing shape into local state before deciding to
-      // seed cells — shape might be non-empty even if cells are
-      // (peer mid-seed).
-      if (shapeArr.length > 0) {
-        applyingRemote = true;
-        try { applyShape(shapeArr.toArray()); } finally { applyingRemote = false; }
-      }
-      // Resolve seeder election : prefer the server-side claim, fall
-      // back to lowest clientID. Wait 500 ms for awareness to settle
-      // so the comparison sees every peer.
-      setTimeout(() => {
-        void (async () => {
-          if (!cellsMap || !ydoc || !shapeArr) return;
-          const empty = cellsMap.size === 0 && shapeArr.length === 0;
-          if (!empty) {
-            // Some peer already seeded ; pull whatever's there. Batch
-            // the HF updates so the cascade fires once per replay
-            // instead of once per cell.
+    const off = await watch(session, {
+      map: (name, keys) => {
+        if (name === shape.name) {
+          void refillShape(shape, keys).then(() => {
             applyingRemote = true;
             try {
-              if (shapeArr.length > 0) applyShape(shapeArr.toArray());
-              replayRemoteCells(cellsMap);
+              applyShape(shapeList());
             } finally {
               applyingRemote = false;
             }
-            return;
-          }
-          const claim = await claimSeed();
-          // 'lost' = server explicitly refused — never seed.
-          // 'won' = always seed. 'unknown' = endpoint missing, fall back
-          // to lowest-clientID. The previous version conflated 'lost'
-          // and 'unknown' and let a peer override the server refusal.
-          if (claim === 'lost') return;
-          const shouldSeed = claim === 'won' || (claim === 'unknown' && isLowestClientID());
-          if (!shouldSeed) return;
-          // Re-check emptiness in case a peer seeded while we waited.
-          if (cellsMap.size > 0 || shapeArr.length > 0) {
-            applyingRemote = true;
-            try {
-              if (shapeArr.length > 0) applyShape(shapeArr.toArray());
-              replayRemoteCells(cellsMap);
-            } finally {
-              applyingRemote = false;
-            }
-            return;
-          }
-          pushShape();
-          // Inline cellsMap.set directly inside the outer transact so
-          // we don't open one nested ydoc.transact per cell (10k cells =
-          // 10k transacts otherwise). The observer at line ~498 already
-          // filters by origin === 'ods-seed' so semantics are preserved.
-          ydoc.transact(() => {
-            sheets.forEach((sh, si) => {
-              sh.cells.forEach((row, r) => {
-                row.forEach((cell, c) => {
-                  cellsMap!.set(cellKey(si, r, c), {
-                    display: cell.display,
-                    value: cell.value,
-                    type: cell.type,
-                    formula: cell.formula,
-                  });
-                });
-              });
-            });
-          }, 'ods-seed');
-        })();
-      }, 500);
-    });
-    cellsMap.observe((ev) => {
-      // Apply only what changed, and only when the origin isn't
-      // our own transaction (transact tags via ydoc.transact 2nd arg).
-      if (ev.transaction.origin === 'ods-cell' || ev.transaction.origin === 'ods-seed') return;
-      applyingRemote = true;
-      try {
-        for (const [key, change] of ev.keys) {
-          if (change.action === 'delete') {
-            applyRemoteCell(key, undefined);
-          } else {
-            applyRemoteCell(key, cellsMap!.get(key));
-          }
+          });
+          return;
         }
-      } finally {
-        applyingRemote = false;
-      }
+        if (name !== cells.name) return;
+        void refillCells(cells, keys).then(() => {
+          applyingRemote = true;
+          try {
+            for (const key of keys) applyRemoteCell(key, decode<Cell>(cellsCache.get(key)));
+          } finally {
+            applyingRemote = false;
+          }
+        });
+      },
     });
-    shapeArr.observe((ev) => {
-      if (ev.transaction.origin === 'ods-shape') return;
-      applyingRemote = true;
-      try { applyShape(shapeArr!.toArray()); } finally { applyingRemote = false; }
-    });
+    // Only what peers did arrives here — a local write is never reported back,
+    // which is why pushCellToYMap fills the cache itself.
+    if (cellsPart) unwatch = off;
+    else off();
   }
 
   function detachProvider() {
-    if (provider) { try { provider.destroy(); } catch { /* ignore */ } provider = undefined; }
-    if (ydoc) { try { ydoc.destroy(); } catch { /* ignore */ } ydoc = undefined; }
-    cellsMap = undefined;
-    shapeArr = undefined;
-    // Clear the cross-peer buffer so a stale cell from workbook A
-    // doesn't replay into workbook B when we attach to a new file.
+    unwatch?.();
+    unwatch = undefined;
+    cellsPart = undefined;
+    shapePart = undefined;
+    // Clear the caches and the cross-peer buffer so a stale cell from workbook
+    // A doesn't replay into workbook B when we attach to a new file.
+    cellsCache.clear();
+    shapeCache.clear();
     pendingCells.clear();
   }
 
@@ -662,9 +637,9 @@
       // the typed value as the cell content. HF stores formulas
       // natively + computes the cascade of dependents.
       rebuildHF();
-      // T9 V0.3 : attach Yjs provider AFTER the local sheets are
-      // populated so seed-push has something to push.
-      attachProvider();
+      // Attach AFTER the local sheets are populated, so a seed has something
+      // to write.
+      void attachProvider().catch((err) => console.error('collab: the workbook', err));
       status = 'ready';
       dirty = false;
     } catch (e) {
