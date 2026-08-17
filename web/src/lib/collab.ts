@@ -187,6 +187,33 @@ export async function watchParts(session: Session, fn: Watcher): Promise<() => v
   };
 }
 
+// Who is here has the same shape of problem as what changed, and the same
+// answer: one handler on the session, everybody else told from it.
+type PeerWatcher = () => void;
+const peerWatchers = new WeakMap<Session, Set<PeerWatcher>>();
+
+/** Calls fn whenever the participants change, until the returned function is called. */
+export async function watchPeers(session: Session, fn: PeerWatcher): Promise<() => void> {
+  let set = peerWatchers.get(session);
+  if (!set) {
+    set = new Set();
+    peerWatchers.set(session, set);
+    await session.onPeers(() => {
+      for (const watcher of [...set!]) {
+        try {
+          watcher();
+        } catch (err) {
+          console.error('collab: a peer watcher threw', err);
+        }
+      }
+    });
+  }
+  set.add(fn);
+  return () => {
+    set!.delete(fn);
+  };
+}
+
 /** watch is watchParts for a caller that only cares about some of the kinds. */
 export function watch(
   session: Session,
