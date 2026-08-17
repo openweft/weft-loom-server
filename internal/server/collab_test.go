@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/openweft/weft-loom-server/internal/auth"
@@ -110,4 +112,43 @@ func TestTheRoomInTheUrlIsTheDocumentName(t *testing.T) {
 			t.Errorf("projectOf(%q) = %q, %v", tt.want, name, ok)
 		}
 	}
+}
+
+// The documents follow the projects rather than picking a home. This server
+// boots a LocalStore by default and a PostgresStore for the HA deployments, and
+// the first version of this required a database — which meant the default
+// deployment would have served no collaborative editing at all, with a line in
+// the log where the feature should have been.
+func TestTheDocumentsFollowTheProjects(t *testing.T) {
+	t.Run("on disk, beside the project files", func(t *testing.T) {
+		root := t.TempDir()
+		store, db, err := documentStore(t.Context(), project.NewLocalStore(root))
+		if err != nil {
+			t.Fatalf("a store with no database was refused: %v", err)
+		}
+		if db != nil {
+			t.Error("a store with no database opened one")
+		}
+		// It works, and it works where the projects are.
+		if err := store.Save(t.Context(), "thesis:default", []byte("bonjour")); err != nil {
+			t.Fatal(err)
+		}
+		got, err := store.Load(t.Context(), "thesis:default")
+		if err != nil || string(got) != "bonjour" {
+			t.Fatalf("Load = %q, %v", got, err)
+		}
+		if _, err := os.Stat(filepath.Join(root, ".collab")); err != nil {
+			t.Errorf("the documents are not beside the project files: %v", err)
+		}
+		// And a document nobody has written is a new one rather than an error.
+		if got, err := store.Load(t.Context(), "thesis:untouched"); err != nil || got != nil {
+			t.Fatalf("a new document = %q, %v", got, err)
+		}
+	})
+
+	t.Run("a store documents cannot follow", func(t *testing.T) {
+		if _, _, err := documentStore(t.Context(), fakeProjects{}); err == nil {
+			t.Fatal("a project store with neither a database nor a disk was accepted")
+		}
+	})
 }

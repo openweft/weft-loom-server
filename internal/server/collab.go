@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -35,10 +36,21 @@ import (
 //
 // # Where they are kept
 //
-// In the same database as the projects, rather than beside their files. The
-// schema is written to be run by several replicas at once — "safe to run
-// concurrently across replicas" — and a store on local disk would give each
-// replica its own idea of a document. Postgres gives them one.
+// Wherever the projects are, which is not one place: this server boots a
+// LocalStore by default and a PostgresStore for the HA deployments, and the
+// documents have to follow rather than pick.
+//
+// With Postgres, the documents go in the same database. Its schema is written to
+// be run by several replicas at once — "safe to run concurrently across
+// replicas" — and a store on local disk would give each replica its own idea of
+// a document; one database gives them one. Without it, they go in a directory
+// beside the project files, so they are backed up with the thing they are about
+// and nothing else has to be running.
+//
+// Choosing the first and refusing to start without it was the first version of
+// this, and it was wrong in the way that matters: the default deployment has no
+// Postgres, so collaborative editing would simply not have been served, with a
+// line in the log saying so.
 
 // How often a document that changed is written, and how long one nobody is in is
 // kept.
@@ -123,11 +135,16 @@ func authorizeDocument(projects project.Store) func(context.Context, string, crd
 	}
 }
 
-// pooled is a project store that will share its connections. Everything that
-// keeps projects in PostgreSQL does; the interface is here so that one that does
-// not is a compile error at the call rather than a nil pointer at runtime.
+// pooled is a project store that keeps its projects in a database and will
+// share the connections to it.
 type pooled interface {
 	Pool() *pgxpool.Pool
+}
+
+// rooted is a project store that keeps its files somewhere on disk. Both stores
+// here are, which is what makes the fallback total rather than a hope.
+type rooted interface {
+	Root() string
 }
 
 // newCollabServer builds the collaborative editing server and the database
@@ -138,22 +155,9 @@ type pooled interface {
 // would take twice the connections for no reason. pgstore takes a database/sql
 // handle and pgx's adapter makes one from a pool.
 func newCollabServer(ctx context.Context, projects project.Store, logger *slog.Logger) (*collab.Server, *sql.DB, error) {
-	shared, ok := projects.(pooled)
-	if !ok {
-		return nil, nil, fmt.Errorf("collab: %T keeps no database to put documents in", projects)
-	}
-	db := stdlib.OpenDBFromPool(shared.Pool())
-	store, err := pgstore.New(db)
+	store, db, err := documentStore(ctx, projects)
 	if err != nil {
-		_ = db.Close()
-		return nil, nil, fmt.Errorf("collab: preparing the document store: %w", err)
-	}
-	// The table is made here rather than in the project schema, so that the
-	// store owns its own shape. Like the rest of this server's schema it is
-	// idempotent and safe from several replicas booting at once.
-	if err := store.Migrate(ctx); err != nil {
-		_ = db.Close()
-		return nil, nil, fmt.Errorf("collab: preparing the document store: %w", err)
+		return nil, nil, err
 	}
 	return collab.NewServer(collab.Config{
 		Store:        store,
@@ -167,4 +171,36 @@ func newCollabServer(ctx context.Context, projects project.Store, logger *slog.L
 			logger.Error("collab.evict.save.failed", "document", document, "err", err.Error())
 		},
 	}), db, nil
+}
+
+// documentStore puts the documents where the projects are. The database handle
+// it returns is nil when there is none, which is what the caller closes.
+func documentStore(ctx context.Context, projects project.Store) (collab.Store, *sql.DB, error) {
+	if shared, ok := projects.(pooled); ok {
+		db := stdlib.OpenDBFromPool(shared.Pool())
+		store, err := pgstore.New(db)
+		if err == nil {
+			// The table is made here rather than in the project schema, so the
+			// store owns its own shape. Like the rest of this server's schema it
+			// is idempotent and safe from several replicas booting at once.
+			err = store.Migrate(ctx)
+		}
+		if err != nil {
+			_ = db.Close()
+			return nil, nil, fmt.Errorf("collab: preparing the document store: %w", err)
+		}
+		return store, db, nil
+	}
+	if onDisk, ok := projects.(rooted); ok {
+		// Beside the project files rather than among them: a document is not a
+		// file anybody edits by hand, and a directory of its own keeps it from
+		// turning up in a listing.
+		dir := filepath.Join(onDisk.Root(), ".collab")
+		store, err := collab.NewDirStore(dir)
+		if err != nil {
+			return nil, nil, fmt.Errorf("collab: preparing the document store: %w", err)
+		}
+		return store, nil, nil
+	}
+	return nil, nil, fmt.Errorf("collab: %T keeps its projects somewhere documents cannot follow", projects)
 }
