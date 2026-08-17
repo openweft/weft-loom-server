@@ -3,7 +3,6 @@
   import { logEvent, logError } from '../logbus';
   import { Compartment, EditorState } from '@codemirror/state';
   import { EditorView, keymap, drawSelection, rectangularSelection, crosshairCursor } from '@codemirror/view';
-  import { authorshipExtension } from '../authorship';
   import {
     defaultKeymap,
     history,
@@ -69,7 +68,7 @@
   import { watch, type Session as CollabSession, type Text as CollabText } from '../collab';
   import type { Awareness } from 'y-protocols/awareness';
   import { presenceCursors } from '../presence-collab';
-  import type { Identity } from '../identity';
+  import { presenceMeta, type Identity } from '../identity';
   import { readFile, writeFile } from '../api';
 
   interface Props {
@@ -387,6 +386,14 @@
   // Compartment holds the authorship extension so we can swap it
   // in / out at runtime when revisionMode changes — no editor remount.
   const authorshipCompartment = new Compartment();
+  // Presence is in a Compartment for a different reason than authorship is.
+  // Authorship is toggled by a button; presence is here because the session
+  // can arrive after the EditorState is built. It usually does, on the first
+  // load of a tab: the binding waits for the text handle, but an extension
+  // list is evaluated once, so a session that lands a moment later left the
+  // editor with no presence at all and nothing to notice it. That is why the
+  // first tab a person opened painted nobody while the second painted them.
+  const presenceCompartment = new Compartment();
 
   let host: HTMLDivElement | undefined = $state();
   // The collab text part for the file on screen, once its session has handed it
@@ -824,13 +831,9 @@
         // Where everybody else is, and where this participant is. The identity
         // travels with every cursor rather than being set once, because a
         // session publishes the two together.
-        session
-          ? presenceCursors(session, () => ({
-              name: identity.name,
-              color: identity.color,
-              ...(identity.avatar ? { avatar: identity.avatar } : {}),
-            }))
-          : [],
+        presenceCompartment.of(
+          session ? presenceCursors(session, () => presenceMeta(identity)) : [],
+        ),
         // Authorship colouring goes through a Compartment so the
         // toggle button in the navbar can swap it in / out without
         // rebuilding the whole EditorState.
@@ -1281,19 +1284,35 @@
     };
   });
 
-  // Reconfigure the authorship Compartment when revisionMode flips.
-  // untrack the view/provider/ydoc reads so the effect's only dep is
-  // revisionMode itself — the other state is captured by closure but
-  // doesn't drive re-runs.
+  // Reconfigure the authorship Compartment when revisionMode flips — and when
+  // the session or the text handle arrives, because the toggle is not the only
+  // thing that can make the extension buildable. This used to depend on
+  // revisionMode alone and rebuild the Yjs extension against a Y.Text nothing
+  // writes to, so the first toggle replaced the working painter with one that
+  // had nothing to read.
   $effect(() => {
     const on = revisionMode;
+    const live = session;
+    const text = collabTextHandle;
     untrack(() => {
-      if (!view || !provider || !ydoc) return;
-      const ytextKey = file && file !== '' ? 'file:' + file : 'codemirror';
-      const ext = on
-        ? authorshipExtension(ydoc.getText(ytextKey), provider.awareness)
-        : [];
+      if (!view) return;
+      const ext = on && live && text ? collabAuthorship(live, text) : [];
       view.dispatch({ effects: authorshipCompartment.reconfigure(ext) });
+    });
+  });
+
+  // And the presence Compartment when the session arrives. identity is read
+  // through the thunk rather than depended on here: a rename republishes
+  // itself, and rebuilding the extension would drop every peer decoration.
+  $effect(() => {
+    const live = session;
+    untrack(() => {
+      if (!view) return;
+      view.dispatch({
+        effects: presenceCompartment.reconfigure(
+          live ? presenceCursors(live, () => presenceMeta(identity)) : [],
+        ),
+      });
     });
   });
 

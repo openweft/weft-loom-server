@@ -3,8 +3,6 @@
   // the blocker we eliminated those). y-websocket now reaches
   // /sync/default so it doesn't saturate the conn pool any more.
   import { onMount, onDestroy, type Component } from 'svelte';
-  import * as Y from 'yjs';
-  import type { Awareness } from 'y-protocols/awareness';
   import FileExplorer from './lib/components/FileExplorer.svelte';
   import Navbar from './lib/components/Navbar.svelte';
   import MenuBar from './lib/components/MenuBar.svelte';
@@ -44,7 +42,7 @@
     resolveAnchors,
     type CommentRecord,
   } from './lib/comments-collab';
-  import { joinProject, tabIdentity, watch, type Session as CollabSession } from './lib/collab';
+  import { joinProject, tabIdentity, watch, type Session as CollabSession, type Text } from './lib/collab';
   import type { CommentRange } from './lib/commentDecorations';
   import TabBar from './lib/components/TabBar.svelte';
   import NewFileDialog from './lib/components/NewFileDialog.svelte';
@@ -53,7 +51,7 @@
   // ShellPanel / CompileLogPanel are mounted inside BottomPanel
   // (the bottom drawer with the "Compile log" + "Shell" tabs).
   import ChatRoom from './lib/components/ChatRoom.svelte';
-  import { loadIdentity, type Identity } from './lib/identity';
+  import { loadIdentity, presenceMeta, type Identity } from './lib/identity';
   import { applyTheme, loadTheme, languageForPath } from './lib/theme';
 
   let identity = $state<Identity>(loadIdentity());
@@ -584,18 +582,31 @@
     const rm = localStorage.getItem('weft-loom-revision-mode');
     if (rm === '1') revisionMode = true;
   });
+  // What the chat panel quotes as context: the file as the document holds it,
+  // which is the same text the editor is bound to. It is read from the cached
+  // handle rather than awaited, because a caller assembling a prompt cannot
+  // wait — an unopened file gives the empty string, as it did before.
+  let contextText: Text | undefined;
   function getFileContent(): string {
-    // Best-effort : the Editor binds the ytext via onYDoc. We pull
-    // the current file's ytext string for the chat panel context.
-    if (!ydoc || !currentFile) return '';
-    return ydoc.getText('file:' + currentFile).toString();
+    return contextText?.toString() ?? '';
   }
-  let ydoc = $state<Y.Doc | undefined>();
-
-  // The go-crdt session, which the editor's Yjs document is being replaced by
-  // one feature at a time. It lives beside ydoc rather than instead of it for
-  // the length of that migration: what has moved reads from here, what has not
-  // still reads from there, and nothing is half-migrated at any moment.
+  $effect(() => {
+    contextText = undefined;
+    const session = collabSession;
+    if (!session || !currentFile) return;
+    let stopped = false;
+    void session
+      .text('file:' + currentFile)
+      .then((t) => {
+        if (!stopped) contextText = t;
+      })
+      .catch((err) => console.error('collab: the chat context', err));
+    return () => {
+      stopped = true;
+    };
+  });
+  // The go-crdt session. It used to live beside a Y.Doc while features moved
+  // across one at a time; nothing reads that document any more.
   //
   // One session per project, not per file: a project's text, its comments, its
   // change log and its chat are parts of one document, so they arrive together
@@ -624,7 +635,6 @@
       if (opened) void opened.close();
     };
   });
-  let awareness = $state<Awareness | undefined>();
   let connectionStatus = $state<'connecting' | 'connected' | 'disconnected'>('connecting');
   let ytextTick = $state<number>(0);
   // Cursor / selection / word-count surfaced by the Editor + piped
@@ -937,8 +947,6 @@
   function onSwitch(name: string, _lang: string) {
     project = name;
     currentFile = '';
-    ydoc = undefined;
-    awareness = undefined;
   }
   function onOpenFile(path: string, lang: string) {
     currentFile = path;
@@ -1166,7 +1174,7 @@
         commentRebuildTimer = null;
       }
       // Drop the snapshot so a stale window hook can't feed the panel
-      // when the user navigates to a file with no ydoc.
+      // when the user navigates to a file with no document.
       delete (window as unknown as { weftLoomCommentRanges?: unknown }).weftLoomCommentRanges;
     };
   });
@@ -1194,25 +1202,21 @@
   }
   function onRename(next: Identity) {
     identity = next;
-    if (!awareness) return;
-    // Re-broadcast the full user payload (name + color + colorLight).
-    // setLocalStateField replaces the named field entirely, so we must
-    // include colorLight here too — otherwise y-codemirror.next loses
-    // the selection-bg tint after the first rename + remote peers see
-    // only the old highlight color.
-    //
-    // colorLight format : HSL → HSLA with 28 % alpha, falls back to
-    // the hex+alpha shorthand for hex inputs the picker emits.
-    const colorLight = next.color.startsWith('hsl(')
-      ? next.color.replace('hsl(', 'hsla(').replace(')', ', 0.28)')
-      : next.color + '47';
-    awareness.setLocalStateField('user', {
-      name: next.name,
-      color: next.color,
-      colorLight,
-      avatar: next.avatar,
-    });
+    const session = collabSession;
+    if (!session) return;
+    // A session publishes the cursor and the meta together, so republishing
+    // the new name means republishing where the caret already is — read back
+    // from this replica's own peer entry rather than guessed, which would
+    // otherwise move everybody else's view of this caret to the top of the
+    // file. Nothing published yet means nothing to correct: the first publish
+    // will carry the new name.
+    const self = session.peers().find((p) => p.site === session.site);
+    if (!self) return;
+    void session
+      .setCursor(self.cursor, presenceMeta(next))
+      .catch((err) => console.error('collab: republishing a name', err));
   }
+
 </script>
 
 <div class="flex h-screen flex-col bg-base-200 weft-loom-shell">
@@ -1364,7 +1368,7 @@
         />
       {:else if sidebarView === 'collab'}
         <CollaboratorsSidebar
-          {awareness}
+          session={collabSession}
           self={identity}
           bind:revisionMode
           onRename={onRename}
@@ -1468,8 +1472,6 @@
                         {jumpToLine}
                         onStatus={(s) => (connectionStatus = s)}
                         session={collabSession}
-                        onYDoc={(d) => (ydoc = d)}
-                        onAwareness={(a) => (awareness = a)}
                         onYTextTick={(n) => (ytextTick = n)}
                         onCursorStats={(s: { line: number; col: number; selectionLen: number; words: number }) => { cursorLine = s.line; cursorCol = s.col; selectionLen = s.selectionLen; wordCount = s.words; }}
                       />
@@ -1494,8 +1496,6 @@
                     {jumpToLine}
                     onStatus={(s) => (connectionStatus = s)}
                     session={collabSession}
-                        onYDoc={(d) => (ydoc = d)}
-                    onAwareness={(a) => (awareness = a)}
                     onYTextTick={(n) => (ytextTick = n)}
                     onCursorStats={(s) => { cursorLine = s.line; cursorCol = s.col; selectionLen = s.selectionLen; wordCount = s.words; }}
                   />
@@ -1585,7 +1585,7 @@
         ></div>
         {#if LazyPreviewPane}
           <LazyPreviewPane
-            {ydoc} {language} {project}
+            session={collabSession} {language} {project}
             file={currentFile}
             pdfURL={artifactURL}
             width={previewWidth}

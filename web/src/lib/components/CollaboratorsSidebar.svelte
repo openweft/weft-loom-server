@@ -4,19 +4,19 @@
   // colour, a "(you)" affordance for the local user, and a toggle
   // for the editor's Revision Mode (author-tinted background).
   //
-  // Single source of truth : provider.awareness.getStates(). Same
+  // Single source of truth : session.peers(). Same
   // map the editor's yCollab extension reads for cursor / selection
   // colouring, the navbar's CollaboratorList used to render before
   // we moved the live list here, and the authorship.ts extension
-  // uses to map clientID → user.color when revision-mode is on.
+  // uses to map a replica identity → its colour when revision-mode is on.
   import { onDestroy } from 'svelte';
-  import type { Awareness } from 'y-protocols/awareness';
+  import { watchPeers, type Session } from '../collab';
   import { saveAvatar, saveColor, saveName, type Identity } from '../identity';
   import Avatar from './Avatar.svelte';
   import ColorPickerPopover from './ColorPickerPopover.svelte';
 
   interface Props {
-    awareness: Awareness | undefined;
+    session: Session | undefined;
     self: Identity;
     revisionMode: boolean;
     onRename: (identity: Identity) => void;
@@ -25,7 +25,7 @@
   }
 
   let {
-    awareness,
+    session,
     self,
     revisionMode = $bindable(),
     onRename,
@@ -34,7 +34,8 @@
   }: Props = $props();
 
   interface Peer {
-    clientID: number;
+    /** A replica identity, which is a decimal string because it does not fit a number. */
+    site: string;
     name: string;
     color: string;
     avatar?: string;
@@ -45,31 +46,32 @@
   let editing = $state(false);
   let draftName = $state('');
   let pickerOpen = $state(false);
-  // awarenessTick counts every awareness change event we receive, both
-  // local and remote. Surfaced as a tiny badge in the header so you can
-  // confirm the WS is actually broadcasting peer updates (count goes
-  // up when the other browser changes its name / color / cursor).
-  let awarenessTick = $state(0);
+  // peerTick counts every peer change we are told about, local and remote.
+  // Surfaced as a tiny badge in the header so you can confirm the connection
+  // is actually carrying peer updates (it goes up when another browser changes
+  // its name, colour or cursor).
+  let peerTick = $state(0);
 
   function snapshot() {
-    if (!awareness) {
+    if (!session) {
       peers = [];
       return;
     }
     const out: Peer[] = [];
-    const states = awareness.getStates();
-    const selfID = awareness.clientID;
-    states.forEach((state, clientID) => {
-      const user = (state as { user?: { name?: string; color?: string; avatar?: string } }).user;
-      if (!user || !user.name) return;
+    // peers() includes this participant, where the awareness map excluded it.
+    // This list wants it — it marks it and puts it first — so the filtering is
+    // a comparison rather than a reliance on what the source leaves out.
+    for (const peer of session.peers()) {
+      const name = peer.meta?.name;
+      if (!name) continue;
       out.push({
-        clientID,
-        name: user.name,
-        color: user.color ?? 'hsl(0, 0%, 60%)',
-        avatar: user.avatar,
-        self: clientID === selfID,
+        site: peer.site,
+        name,
+        color: peer.meta?.color ?? 'hsl(0, 0%, 60%)',
+        avatar: peer.meta?.avatar,
+        self: peer.site === session.site,
       });
-    });
+    }
     out.sort((a, b) => {
       if (a.self !== b.self) return a.self ? -1 : 1;
       return a.name.localeCompare(b.name);
@@ -77,29 +79,32 @@
     peers = out;
   }
 
-  let observer: (() => void) | undefined;
+  let unwatch: (() => void) | undefined;
   $effect(() => {
-    observer = undefined;
-    if (!awareness) {
+    if (!session) {
       peers = [];
       return;
     }
     snapshot();
-    const a = awareness;
-    const fn = () => {
-      awarenessTick++;
+    let stopped = false;
+    void watchPeers(session, () => {
+      peerTick++;
       snapshot();
-    };
-    observer = fn;
-    a.on('change', fn);
+    })
+      .then((off) => {
+        if (stopped) off();
+        else unwatch = off;
+      })
+      .catch((err) => console.error('collab: the collaborator list', err));
     return () => {
-      a.off('change', fn);
-      if (observer === fn) observer = undefined;
+      stopped = true;
+      unwatch?.();
+      unwatch = undefined;
     };
   });
 
   onDestroy(() => {
-    if (observer && awareness) awareness.off('change', observer);
+    unwatch?.();
   });
 
   function startEdit() {
@@ -115,7 +120,7 @@
   function onColor(hex: string) {
     // The picker emits the hex value the user dragged to. Persist +
     // re-broadcast via onRename (which downstream pushes the new
-    // identity into awareness.setLocalStateField). Re-using the
+    // identity into the session's published meta). Re-using the
     // rename callback keeps the App.svelte wiring single-path.
     onRename(saveColor(hex, self.name));
   }
@@ -160,7 +165,7 @@
       Collaborators
     </span>
     <span class="ml-2 badge badge-ghost badge-sm">{peers.length}</span>
-    <span class="ml-1 text-[10px] opacity-40 font-mono" title="Awareness change events received">↻{awarenessTick}</span>
+    <span class="ml-1 text-[10px] opacity-40 font-mono" title="Peer changes received">↻{peerTick}</span>
     <button
       class="btn btn-ghost btn-xs ml-auto"
       title="Hide collaborators panel"
@@ -171,7 +176,7 @@
 
   <!-- Profile : avatar upload + URL paste. Click the picture to
        pick a colour ; click "set photo" to upload an image
-       (rendered as data URL → propagated via awareness). -->
+       (rendered as data URL → published with the rest of the meta). -->
   <details class="border-b border-base-300">
     <summary class="px-3 py-2 cursor-pointer text-xs select-none flex items-center gap-2">
       <Avatar name={self.name} color={self.color} avatar={self.avatar} size={20} />
@@ -223,10 +228,10 @@
   <ul class="flex-1 overflow-y-auto py-1">
     {#if peers.length === 0}
       <li class="px-3 py-2 text-xs opacity-50 italic">
-        {awareness ? 'Connecting…' : 'No room joined yet'}
+        {session ? 'Connecting…' : 'No room joined yet'}
       </li>
     {/if}
-    {#each peers as p (p.clientID)}
+    {#each peers as p (p.site)}
       <li class="px-2 py-1">
         {#if p.self && editing}
           <input
