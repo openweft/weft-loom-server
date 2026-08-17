@@ -16,6 +16,19 @@ import (
 // responsible for the http.Server shutdown ; Shutdown handles
 // the workspace VMs + embedded broker.
 func (s *Server) Shutdown(ctx context.Context) {
+	// The documents first, and before anything that could take the database
+	// away: closing saves everything that changed since the last interval, and
+	// a comment written a second ago is exactly what would otherwise be lost.
+	if s.collab != nil {
+		if err := s.collab.Close(ctx); err != nil {
+			s.opts.Logger.Error("collab: saving on shutdown failed", "err", err.Error())
+		}
+	}
+	if s.collabDB != nil {
+		// The pool underneath belongs to the project store, which closes it.
+		// This only gives back the database/sql wrapper around it.
+		_ = s.collabDB.Close()
+	}
 	if s.workspaces != nil {
 		s.workspaces.Close(ctx)
 	}
