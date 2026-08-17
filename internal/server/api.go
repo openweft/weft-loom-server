@@ -6,7 +6,6 @@
 //   - GET /api/projects/{name}/files/{path...}  binary stream
 //   - PUT /api/projects/{name}/files/{path...}  binary upload
 //   - GET /api/projects/{name}/compile/{id}     SSE stream
-//   - WS  /api/projects/{name}/sync             y-websocket bridge
 //
 // huma adds a few KB to the binary but eliminates the
 // map[string]any envelope class — same trade weft-webui made.

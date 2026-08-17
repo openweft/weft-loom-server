@@ -1,5 +1,5 @@
 // Package server wires the HTTP surface : the SPA static handler,
-// the WebSocket endpoint that drives y-websocket sync, the compile
+// the WebSocket endpoint that carries collaboration, the compile
 // API, and the auth middleware.
 //
 // Routes :
@@ -13,7 +13,6 @@
 //	PUT  /api/projects/{name}/files/{path}  write file (only for non-CRDT files like build output)
 //	POST /api/projects/{name}/compile       start a compile job
 //	GET  /api/projects/{name}/compile/{id}  stream stdout/stderr + artifacts
-//	WS   /api/projects/{name}/sync          y-websocket bridge (being replaced)
 //	WS   /api/projects/{name}/collab        go-crdt/collab session
 //
 // Auth : every /api/* (except healthz) requires a valid OIDC bearer
@@ -45,7 +44,6 @@ import (
 	"github.com/openweft/weft-loom-server/internal/workspace"
 
 	"github.com/go-crdt/collab"
-	"github.com/openweft/weft-loom-server/internal/ywebsocket"
 )
 
 // Options bundles everything the server needs to boot.
@@ -107,7 +105,6 @@ type GitSecurityConfig struct {
 // Server is the HTTP handler tree, built once at startup.
 type Server struct {
 	opts Options
-	hub  *ywebsocket.Hub
 	// collab holds the documents this server serves over go-crdt/collab, and
 	// collabDB is the handle it borrows from the projects' pool. Both are nil
 	// when the projects are kept somewhere without a database, which is what a
@@ -157,7 +154,6 @@ func New(opts Options) (*Server, error) {
 	}
 	s := &Server{
 		opts:         opts,
-		hub:          ywebsocket.NewHub(),
 		mux:          http.NewServeMux(),
 		git:          newGitState(),
 		seedClaims:   newSeedClaimRegistry(),
@@ -385,21 +381,10 @@ func (s *Server) routes() {
 	// GET /api/lsp typed via mountLSPAPI (api_lsp.go).
 	// /api/projects/{name}/notebook/exec flows through the huma typed
 	// API — see mountNotebookAPI in api_notebook.go.
-	s.mux.HandleFunc("GET /api/projects/{name}/sync", s.handleSync)
-	// y-websocket appends "/{roomName}" to the configured WS URL, even
-	// when the room name is empty — so the actual URL hitting us is
-	// /api/projects/{name}/sync/ (trailing slash) or /sync/{room}.
-	// Registering this catch-all keeps both shapes working ; the room
-	// segment is informational today (we already partition by ytext key
-	// inside the shared per-project Yjs doc) but a future
-	// per-room handler would read it via r.PathValue("room").
-	s.mux.HandleFunc("GET /api/projects/{name}/sync/{room...}", s.handleSync)
-
-	// The same rooms over go-crdt/collab, where the server holds the document
-	// instead of relaying frames it cannot read. It is mounted beside the bridge
-	// rather than over it so that the SPA can move one feature at a time and the
-	// branch stays runnable in between; the bridge goes when the last of them
-	// has moved.
+	// Collaboration over go-crdt/collab, where the server holds the document
+	// instead of relaying frames it cannot read. It was mounted beside the
+	// y-websocket bridge while the SPA moved one feature at a time; the last of
+	// them has moved, so the bridge is gone and this is the only one.
 	//
 	// The handler does its own upgrade and takes the document name from the
 	// session's first message, so all this route does is authenticate and put

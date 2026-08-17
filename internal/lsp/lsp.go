@@ -176,7 +176,7 @@ func (s LanguageServer) resolveBinary() (string, error) {
 //
 // acceptOpts : the caller passes the same websocket.AcceptOptions
 // it uses for the rest of its WS endpoints so the Origin allowlist
-// stays uniform across /api/projects/{name}/sync, /shell and /lsp.
+// stays uniform across /api/projects/{name}/collab, /shell and /lsp.
 // nil = use a permissive default (dev mode).
 func HandleWS(w http.ResponseWriter, r *http.Request, langKey string, logger *slog.Logger, acceptOpts *websocket.AcceptOptions) {
 	// Per-user + global concurrency caps : reject early so a runaway

@@ -45,7 +45,7 @@ func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	// Authorize : same gate as /sync — the project must list-files
+	// Authorize : same gate as /collab — the project must list-files
 	// for this identity.
 	if _, err := s.opts.Projects.ListFiles(r.Context(), ident, projectName(r)); err != nil {
 		http.Error(w, "forbidden", http.StatusForbidden)
