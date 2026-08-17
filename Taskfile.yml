@@ -35,26 +35,16 @@ tasks:
 
   gen-collab-wasm:
     desc: Build the collaborative editing client into web/public
-    # The editor is TypeScript and cannot call Go, so the client is compiled to
-    # WebAssembly and reached through globalThis.collab. It goes in public/ for
-    # the same reason the icons do: vite copies that into the bundle the Go
-    # binary embeds, so `go build` stays the single source of truth for what is
-    # deployed.
-    #
-    # wasm_exec.js comes from the toolchain rather than the repository, because a
-    # copy checked in is a copy that silently stops matching the compiler.
+    # The commands live in scripts/gen-collab-wasm.sh rather than here, because
+    # CI's web-check and the release lane have to run exactly the same ones —
+    # and when they did not, svelte-check could not resolve './collab.d' and a
+    # release would have shipped an SPA with no collab.wasm beside it.
     cmds:
-      - GOOS=js GOARCH=wasm go build -ldflags="-s -w" -o web/public/collab.wasm github.com/go-crdt/collab/wasm
-      - cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" web/public/wasm_exec.js
-      # The declarations come from the same module as the binary, so they cannot
-      # describe a version that is not the one running.
-      # The module cache is read-only, so the copy is too until told otherwise —
-      # and a second run would fail on its own output.
-      - cp "$(go list -m -f '{{.Dir}}' github.com/go-crdt/collab)/wasm/collab.d.ts" web/src/lib/collab.d.ts
-      - chmod u+w web/src/lib/collab.d.ts
+      - ./scripts/gen-collab-wasm.sh
     sources:
       - go.mod
       - go.sum
+      - scripts/gen-collab-wasm.sh
     generates:
       - web/public/collab.wasm
       - web/public/wasm_exec.js

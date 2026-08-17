@@ -85,6 +85,12 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - name: install web deps
         run: cd web && npm ci
+      # The collab client and its type declarations are generated rather than
+      # checked in, so svelte-check cannot resolve './collab.d' without this —
+      # and reports forty cascading "implicitly has an 'any' type" errors from
+      # the one missing file.
+      - name: generate the collab client
+        run: ./scripts/gen-collab-wasm.sh
       - name: regenerate openapi + ts client
         run: |
           go run ./tools/dump-openapi > openapi.json
