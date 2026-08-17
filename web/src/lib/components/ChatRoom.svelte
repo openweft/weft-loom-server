@@ -123,11 +123,13 @@
         // That is what the views written against one do, and a chat holds
         // messages rather than the hundreds of thousands of characters a
         // document holds.
-        await watch(live, {
+        const off = await watch(live, {
           list: (name) => {
             if (name === 'chat' && !stopped) refresh();
           },
         });
+        if (stopped) off();
+        else unwatch = off;
       })().catch((err) => console.error('collab: chat', err));
     });
   });

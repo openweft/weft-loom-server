@@ -142,14 +142,52 @@ export function records<T>(list: List): T[] {
   return out;
 }
 
+// A session takes one change handler and a later one replaces it, which is
+// right for the session and wrong for a page: the editor watches the text, the
+// chat watches its list, the comments watch theirs, and each would silently
+// unregister the last. So the one handler is installed here and what it hears
+// is handed to everybody watching.
+//
+// It is per session rather than global, because switching projects ends a
+// session and everything watching it should stop with it.
+type Watcher = (parts: PartChange[]) => void;
+const watchers = new WeakMap<Session, Set<Watcher>>();
+
 /**
- * Calls back whenever the named part changed, and once to start with.
+ * Calls fn with what changed, until the returned function is called.
  *
- * A list reports only that it moved, which is why this hands over nothing: the
- * views written against one read it back whole, and a list here holds tens or
- * hundreds of values rather than the hundreds of thousands a document holds.
- * A map hands over the keys that changed, because a view reads those back.
+ * A list part reports only that it moved: the views written against one read it
+ * back whole, and a list here holds tens or hundreds of values rather than the
+ * hundreds of thousands of characters a document holds. A map hands over the
+ * keys that changed, because a view reads those back. A text hands over the
+ * edits, because an editor cannot re-read a document per keystroke and keep a
+ * cursor.
  */
+export async function watchParts(session: Session, fn: Watcher): Promise<() => void> {
+  let set = watchers.get(session);
+  if (!set) {
+    set = new Set();
+    watchers.set(session, set);
+    await session.onChange((parts) => {
+      // A copy, so that a watcher unsubscribing from inside its own callback
+      // does not change the set being walked.
+      for (const watcher of [...set!]) {
+        try {
+          watcher(parts);
+        } catch (err) {
+          // One view throwing must not stop the others being told.
+          console.error('collab: a watcher threw', err);
+        }
+      }
+    });
+  }
+  set.add(fn);
+  return () => {
+    set!.delete(fn);
+  };
+}
+
+/** watch is watchParts for a caller that only cares about some of the kinds. */
 export function watch(
   session: Session,
   handlers: {
@@ -157,8 +195,8 @@ export function watch(
     list?: (name: string) => void;
     map?: (name: string, keys: string[]) => void;
   },
-): Promise<void> {
-  return session.onChange((parts) => {
+): Promise<() => void> {
+  return watchParts(session, (parts) => {
     for (const part of parts) {
       if (part.kind === 'text' && handlers.text) handlers.text(part.name, part.text);
       if (part.kind === 'list' && handlers.list) handlers.list(part.name);
