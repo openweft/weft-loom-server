@@ -1456,6 +1456,7 @@
                         {revisionMode}
                         {jumpToLine}
                         onStatus={(s) => (connectionStatus = s)}
+                        session={collabSession}
                         onYDoc={(d) => (ydoc = d)}
                         onAwareness={(a) => (awareness = a)}
                         onYTextTick={(n) => (ytextTick = n)}
@@ -1481,7 +1482,8 @@
                     {revisionMode}
                     {jumpToLine}
                     onStatus={(s) => (connectionStatus = s)}
-                    onYDoc={(d) => (ydoc = d)}
+                    session={collabSession}
+                        onYDoc={(d) => (ydoc = d)}
                     onAwareness={(a) => (awareness = a)}
                     onYTextTick={(n) => (ytextTick = n)}
                     onCursorStats={(s) => { cursorLine = s.line; cursorCol = s.col; selectionLen = s.selectionLen; wordCount = s.words; }}

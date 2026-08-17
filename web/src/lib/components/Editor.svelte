@@ -64,7 +64,9 @@
 
   import * as Y from 'yjs';
   import { WebsocketProvider } from 'y-websocket';
-  import { yjsBinding, YORIGIN_LOCAL } from '../ybinding';
+  import { collabBinding, fromCollab } from '../cmbinding';
+  import { authorshipExtension as collabAuthorship } from '../authorship-collab';
+  import { watch, type Session as CollabSession, type Text as CollabText } from '../collab';
   import type { Awareness } from 'y-protocols/awareness';
   import { presenceCursors } from '../presence';
   import type { Identity } from '../identity';
@@ -79,6 +81,11 @@
       status: 'connecting' | 'connected' | 'disconnected',
     ) => void;
     onYDoc?: (doc: Y.Doc) => void;
+    // The go-crdt session this project's document lives in. The text is bound
+    // to it; the Y.Doc below stays for presence, which has not moved yet.
+    // Nothing writes to its Y.Text any more, so there is one text CRDT and not
+    // two.
+    session?: CollabSession;
     onAwareness?: (a: Awareness) => void;
     // onYTextTick fires every time the Y.Text observes a change
     // (local OR remote). Surfaced in the navbar as a counter so we
@@ -104,7 +111,7 @@
     jumpToLine?: number;
   }
 
-  let { project, language, file, identity, onStatus, onYDoc, onAwareness, onYTextTick, onCursorStats, revisionMode, jumpToLine }: Props = $props();
+  let { project, language, file, identity, session, onStatus, onYDoc, onAwareness, onYTextTick, onCursorStats, revisionMode, jumpToLine }: Props = $props();
 
   // Rich-text in-source decorations were the wrong UX for LaTeX —
   // user feedback : the rendered view belongs in a SEPARATE pane
@@ -382,6 +389,9 @@
   const authorshipCompartment = new Compartment();
 
   let host: HTMLDivElement | undefined = $state();
+  // The collab text part for the file on screen, once its session has handed it
+  // over. Undefined before that, and between files.
+  let collabTextHandle: CollabText | undefined = $state();
   let view: EditorView | undefined;
   let provider: WebsocketProvider | undefined;
   let ydoc: Y.Doc | undefined;
@@ -699,18 +709,35 @@
     // decoration rebuild end-to-end exactly like a remote peer would.
     (window as unknown as { weftLoomAwareness?: Awareness }).weftLoomAwareness = provider.awareness;
     const ytextKey = file && file !== '' ? 'file:' + file : 'codemirror';
-    const ytext = ydoc.getText(ytextKey);
 
-    // Build the cmToY extension here. The yToCm observer is wired
-    // INLINE further down after EditorView is created so it captures
-    // the view reference directly via closure (any indirection
-    // through a binding factory was making Svelte's #key-driven
-    // remounts leak the wrong view ref).
-    const binding = yjsBinding(ytext, ydoc);
+    // The text is a part of the collab document. The handle is asked for once,
+    // here, and everything that needs it awaits the same promise — the binding
+    // to attach itself, and the seed path to ask whether the document is empty.
+    // A session is joined asynchronously and an EditorState's extensions are
+    // not, so the binding's extension goes in through a compartment.
+    const collabCompartment = new Compartment();
+    // Declared before the state is built, filled below, and put in through its
+    // own compartment for the same reason the binding is.
+    const saveCompartment = new Compartment();
+    let saveExtension: Extension = [];
+    const textReady: Promise<CollabText | undefined> = session
+      ? session.text(ytextKey).catch((err) => {
+          console.error('collab: opening the text', err);
+          return undefined;
+        })
+      : Promise.resolve(undefined);
+    let detachCollab: (() => void) | undefined;
+    // Set once the handle arrives, for the parts of this component that read it
+    // synchronously — authorship, and the seed path's "is it empty" question.
+    void textReady.then((h) => (collabTextHandle = h));
 
     const state = EditorState.create({
-      doc: ytext.toString(),
+      // Empty: what the document holds arrives with the session, and the
+      // binding seeds the view when it attaches.
+      doc: '',
       extensions: [
+        collabCompartment.of([]),
+        saveCompartment.of([]),
         lineNumbersCompartment.of(lineNumExt()),
         history(),
         // Multi-cursor : Alt-click adds a cursor at the clicked spot,
@@ -778,7 +805,8 @@
         // zero-height paint). Cheap — gated on viewportChanged.
         // See editorVisibilityCheck.ts for the contract.
         visibilityCheckExtension(),
-        // Custom Y.Text ↔ CodeMirror two-way binding. Replaces
+        // The collab ↔ CodeMirror binding goes in through collabCompartment
+        // above, once the session has handed over the text part. Replaces
         // y-codemirror.next's yCollab : its observer dropped updates
         // past the first sync handshake in our setup and ALSO
         // conflicted with our seed-from-disk path (double dispatch on
@@ -786,7 +814,6 @@
         // binding here ; cursor + selection colouring for awareness
         // peers lives in app.css against the .cm-y* classes the
         // y-protocols Awareness state already exposes.
-        binding.extension,
         // Real-time presence : remote peers' carets + selection
         // ranges decorate the editor surface live, driven by the
         // same Yjs Awareness map CollaboratorsSidebar reads. Every
@@ -799,7 +826,9 @@
         // toggle button in the navbar can swap it in / out without
         // rebuilding the whole EditorState.
         authorshipCompartment.of(
-          revisionMode ? authorshipExtension(ytext, provider.awareness) : [],
+          revisionMode && session && collabTextHandle
+            ? collabAuthorship(session, collabTextHandle)
+            : [],
         ),
         // Marp theme autocomplete : fires when the cursor sits in a
         // YAML front-matter block on a `theme:` line. Closed if the
@@ -892,9 +921,15 @@
     // pack ; the chunk arrival reconfigures the Compartment with
     // the real parser + highlighter.
     void loadLanguagePack(language);
-    // Attach the yToCm observer NOW so it has a valid view target
-    // even for the very first remote update.
-    bindingDetach = binding.attach(view);
+    // Attach as soon as the handle exists, so the binding has a valid view
+    // target for the very first change arriving from elsewhere.
+    void textReady.then((handle) => {
+      if (!handle || !session) return;
+      const bound = collabBinding(session, handle);
+      view!.dispatch({ effects: collabCompartment.reconfigure(bound.extension) });
+      detachCollab = bound.attach(view!);
+    });
+    bindingDetach = () => detachCollab?.();
 
     // Expose a global insert-at-cursor hook so the LaTeX symbol
     // palette + math equation builder can splice LaTeX commands
@@ -989,7 +1024,9 @@
     //      is mid-typing or about to seed ; let them.
     const seedFromDisk = async () => {
       if (!file || seeded) return;
-      if (ytext.length > 0) {
+      const seedText = await textReady;
+      if (!seedText) { loading = false; return; }
+      if (seedText.length > 0) {
         seeded = true;
         loading = false;
         return;
@@ -1008,7 +1045,7 @@
         const peerCount = provider!.awareness.getStates().size;
         if (peerCount <= 1) {
           const content = await readFile(project, file);
-          if (content && ytext.length === 0 && view) {
+          if (content && seedText.length === 0 && view) {
             view.dispatch({ changes: { from: 0, insert: content } });
             logEvent('seed', 'solo-fast-path', { file, bytes: content.length });
           }
@@ -1023,45 +1060,52 @@
         if (resp.status === 409) {
           // Someone else holds the claim. Two paths converge here :
           //   - they're a live peer about to push the seed via Yjs
-          //     update (we should see it via ytext.observe momentarily)
+          //     update (we should see it through the session momentarily)
           //   - they're a stale claim (crashed mid-seed, page reload
           //     within the 30 s window). No one will push, so we have
           //     to force-fetch ourselves.
           //
-          // Race-aware wait : observe ytext until it goes non-empty
+          // Race-aware wait : watch the part until it goes non-empty
           // OR a 3 s hard deadline expires. Wakes up immediately when
           // the elected seeder lands content (typical reload = O(ms)),
           // falls back to force-fetch otherwise.
           await new Promise<void>((resolve) => {
             let done = false;
+            let unwatch: (() => void) | undefined;
             const finish = () => {
               if (done) return;
               done = true;
-              ytext.unobserve(onChange);
+              unwatch?.();
               clearTimeout(timer);
               resolve();
             };
             const onChange = () => {
-              if (ytext.length > 0) finish();
+              if (seedText.length > 0) finish();
             };
-            ytext.observe(onChange);
+            void watch(session!, {
+              text: (name) => {
+                if (name === ytextKey) onChange();
+              },
+            })
+              .then((off) => (done ? off() : (unwatch = off)))
+              .catch(() => finish());
             // 500 ms deadline : the awareness propagation + ytext
             // update from a real co-author is sub-second on the
             // local relay. If nobody pushes in 500 ms the claim
             // holder is most likely a stale ghost (page reload
             // before WS close), so force-fetching ourselves loses
-            // nothing — the `ytext.length === 0` re-check below
+            // nothing — the `seedText.length === 0` re-check below
             // still guards against a last-second double-insert.
             const timer = setTimeout(finish, 500);
             // Already populated by the time we registered ? Check
             // once synchronously to avoid the entire wait when the
             // peer's insert beat us to the observe() call.
-            if (ytext.length > 0) finish();
+            if (seedText.length > 0) finish();
           });
-          if (ytext.length === 0 && view) {
+          if (seedText.length === 0 && view) {
             try {
               const content = await readFile(project, file);
-              if (content && ytext.length === 0) {
+              if (content && seedText.length === 0) {
                 view.dispatch({ changes: { from: 0, insert: content } });
                 logEvent('seed', 'force-after-409', { file, bytes: content.length });
               }
@@ -1071,7 +1115,7 @@
         }
         if (!resp.ok) { loading = false; return; }
         const content = await readFile(project, file);
-        if (content && ytext.length === 0 && view) {
+        if (content && seedText.length === 0 && view) {
           view.dispatch({ changes: { from: 0, insert: content } });
           logEvent('seed', 'completed', { file, bytes: content.length });
         }
@@ -1110,14 +1154,17 @@
     // is past the median sync latency by an order of magnitude.
     setTimeout(() => { void seedFromDisk(); }, 2000);
 
-    // Diagnostic : every ytext.observe pulse pushes the count up via
-    // onYTextTick. Helps isolate whether remote WS frames reach the
-    // Y.Text CRDT or are dropped at the y-websocket → ydoc layer.
+    // Diagnostic : every change arriving from somebody else pushes the count
+    // up via onYTextTick. Helps isolate whether remote frames reach the CRDT
+    // or are dropped on the way in.
     let ytextTickCount = 0;
-    ytext.observe(() => {
-      ytextTickCount++;
-      onYTextTick?.(ytextTickCount);
-    });
+    void watch(session!, {
+      text: (name) => {
+        if (name !== ytextKey) return;
+        ytextTickCount++;
+        onYTextTick?.(ytextTickCount);
+      },
+    }).catch(() => { /* diagnostics only */ });
 
     // DIAGNOSTIC : log every ydoc update event so we can see whether
     // local typing actually produces Y.Doc updates that should reach
@@ -1148,9 +1195,9 @@
     (window as unknown as { __weftDebug: { insert: (s: string) => void } }).__weftDebug = {
       insert: (s: string) => {
         ydoc!.transact(() => {
-          ytext.insert(ytext.length, s);
+          void collabTextHandle?.insert(collabTextHandle.length, s);
         }, 'debug-insert');
-        console.log('[__weftDebug] inserted', s, 'ytext.length now', ytext.length);
+        console.log('[__weftDebug] inserted', s, 'length now', collabTextHandle?.length);
       },
     };
 
@@ -1161,14 +1208,17 @@
     // push pipeline. Remote (peer) updates skip the autosave path —
     // the originating peer already wrote the file ; double-writing
     // from every viewer would thrash the disk + fight on the lock.
-    ytext.observe((_event, tr) => {
-      if (tr.origin !== YORIGIN_LOCAL) return;
+    // A file is written by whoever typed into it, not by everybody who was told
+    // about the edit. With Yjs that was a transaction origin; collab never
+    // reports local edits, so the question is asked of the editor instead.
+    saveExtension = EditorView.updateListener.of((update) => {
+      if (!update.docChanged || fromCollab(update)) return;
       if (!file) return;
       if (saveDebounce) clearTimeout(saveDebounce);
       saveDebounce = setTimeout(async () => {
         if (!file) return;
         try {
-          await writeFile(project, file, ytext.toString());
+          await writeFile(project, file, update.state.doc.toString());
           // V0.11 : dispatch an autosave-completed signal so the
           // compile-on-save toggle can fire a recompile. Throttled +
           // language-gated at the listener side, NOT here — the
@@ -1185,10 +1235,12 @@
         // disk. We piggy-back on the same 250 ms debounce as the
         // file write — pre-commit diagnostics are rarely useful.
         if (lspClient) {
-          try { lspClient.didChange('file://' + file, ytext.toString()); } catch { /* ignore */ }
+          try { lspClient.didChange('file://' + file, update.state.doc.toString()); } catch { /* ignore */ }
         }
       }, 250);
     });
+
+    view!.dispatch({ effects: saveCompartment.reconfigure(saveExtension) });
 
     // Compile-time flush : the user expects "Compile" to use what's
     // in the editor RIGHT NOW, not what was last debounced to disk
@@ -1199,10 +1251,10 @@
     // promise to ev.detail.ack so the dispatcher can await it.
     const flushSaves = (e: Event) => {
       const ev = e as CustomEvent<{ ack: Promise<void> | null }>;
-      if (!file || !ydoc) return;
+      if (!file || !view) return;
       ev.detail.ack = (async () => {
         if (saveDebounce) { clearTimeout(saveDebounce); saveDebounce = undefined; }
-        const content = ytext.toString();
+        const content = view.state.doc.toString();
         try {
           await writeFile(project, file, content);
           console.log('[flush-saves] wrote', file, content.length, 'bytes');

@@ -34,6 +34,20 @@ import { watch, type PartChange, type Session, type Text } from './collab';
 /** Marks a transaction this binding made, so it is not sent back. */
 const remoteAnnot = Annotation.define<boolean>();
 
+/**
+ * fromCollab reports whether an update is one this binding applied — somebody
+ * else's edit arriving — rather than something the person at this keyboard did.
+ *
+ * It is exported because "did the local editor change this" is a question the
+ * editor asks for its own reasons, and saving is the one that matters: a file is
+ * written by whoever typed into it, not by everybody who was told about it.
+ * With Yjs that question was answered by a transaction origin; here local edits
+ * are simply never reported back, so the only place left to ask is the editor.
+ */
+export function fromCollab(update: ViewUpdate): boolean {
+  return update.transactions.some((t) => t.annotation(remoteAnnot));
+}
+
 export interface CollabBinding {
   /** The extension to put in the EditorState's extensions array. */
   extension: Extension;
@@ -64,7 +78,7 @@ export function collabBinding(session: Session, text: Text): CollabBinding {
 
   const extension = EditorView.updateListener.of((update: ViewUpdate) => {
     if (!update.docChanged) return;
-    if (update.transactions.some((t) => t.annotation(remoteAnnot))) return;
+    if (fromCollab(update)) return;
     // iterChanges walks in ascending order against the document as it was, and
     // each edit here shifts what follows it — so they are applied against the
     // running text by sending them in the same order, which the chain does.
