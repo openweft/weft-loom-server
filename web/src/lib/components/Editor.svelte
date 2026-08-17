@@ -68,7 +68,7 @@
   import { authorshipExtension as collabAuthorship } from '../authorship-collab';
   import { watch, type Session as CollabSession, type Text as CollabText } from '../collab';
   import type { Awareness } from 'y-protocols/awareness';
-  import { presenceCursors } from '../presence';
+  import { presenceCursors } from '../presence-collab';
   import type { Identity } from '../identity';
   import { readFile, writeFile } from '../api';
 
@@ -821,7 +821,16 @@
         // awareness (throttled at 50 ms) so peers see us too. The
         // extension is unconditional — when no peers are connected
         // it simply paints nothing.
-        presenceCursors(provider.awareness),
+        // Where everybody else is, and where this participant is. The identity
+        // travels with every cursor rather than being set once, because a
+        // session publishes the two together.
+        session
+          ? presenceCursors(session, () => ({
+              name: identity.name,
+              color: identity.color,
+              ...(identity.avatar ? { avatar: identity.avatar } : {}),
+            }))
+          : [],
         // Authorship colouring goes through a Compartment so the
         // toggle button in the navbar can swap it in / out without
         // rebuilding the whole EditorState.
