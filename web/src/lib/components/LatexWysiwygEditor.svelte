@@ -12,8 +12,6 @@
   // source view byte-for-byte.
 
   import { onMount, onDestroy } from 'svelte';
-  import * as Y from 'yjs';
-  import { WebsocketProvider } from 'y-websocket';
   import katex from 'katex';
   import { parseLatex, serializeLatex, type ParsedLatex } from '../latexWysiwyg';
   import { readFile, writeFile } from '../api';
@@ -29,11 +27,13 @@
   import { wireWysiwygPresence, type PresenceWiring } from '../wysiwygPresence';
   import { wireSpellFilter } from '../wysiwygSpellFilter';
   import { attachChangeLog, type ChangeLog } from '../changelog-collab';
-  import type { Session } from '../collab';
+  import { watch, type Session, type Text as CollabText } from '../collab';
+  import { minimalEdit } from '../minimal-edit';
+  import { loadIdentity, presenceMeta, type Identity } from '../identity';
   import {
     snapshotFormatting,
     applyFormatting,
-    publishPainterAwareness,
+    painterMeta,
     wirePeerFormatPainters,
     type FormatSnapshot,
   } from '../formatPainter';
@@ -41,7 +41,6 @@
 
   // Y.js bridge origin sentinel — local edits tagged with this so
   // the ytext.observe callback can short-circuit our own writes.
-  const WYSIWYG_LOCAL = 'wysiwyg-local';
 
   interface Props {
     project: string;
@@ -55,8 +54,10 @@
      * and only the log is absent.
      */
     session?: Session;
+    /** Who this participant is, for the change log and the presence badges. */
+    identity?: Identity;
   }
-  let { project, file, onCursorStats, session }: Props = $props();
+  let { project, file, onCursorStats, session, identity = loadIdentity() }: Props = $props();
 
   // svelte-ignore non_reactive_update -- bind:this populates this; we only read it in handlers after onMount has fired.
   let editorEl: HTMLDivElement;
@@ -121,22 +122,43 @@
   let identityColor = $state<string>('hsl(220, 60%, 50%)');
 
   // ─── format painter ────────────────────────────────────────────
-  // Word-style : click the brush → next selection inherits the
-  // formatting captured at click time. The armed snapshot is also
-  // broadcast on awareness.formatPainter so peers see the brush
-  // light up — wirePeerFormatPainters reads that field below.
+  // Where this participant is in this surface, and whether their brush is
+  // armed, published together.
+  //
+  // A session carries one cursor and one bag of meta per replica, and
+  // publishing either replaces both — so there is no "set this field and leave
+  // the rest" to reach for, and both callers have to say what the other half
+  // is. That is a smaller API than the awareness map's and one less thing to
+  // leave stale, but it does mean the last selection is remembered here.
+  let lastSelection = { startOffset: 0, endOffset: 0 };
+  function publishPresence(snap: FormatSnapshot | null) {
+    if (!session) return;
+    void session
+      .setCursor(
+        { anchor: lastSelection.startOffset, head: lastSelection.endOffset },
+        { ...presenceMeta(identity), ...painterMeta(snap) },
+      )
+      .catch(() => {
+        // A badge nobody sees is not worth ending a session over.
+      });
+  }
+
+  // Word-style : click the brush → next selection inherits the formatting
+  // captured at click time. The armed snapshot travels with this
+  // participant's position so peers see the brush light up —
+  // wirePeerFormatPainters reads it back below.
   let painterSnap = $state<FormatSnapshot | null>(null);
   let painterPresenceDestroy: (() => void) | undefined;
   function toggleFormatPainter() {
     if (painterSnap) {
       painterSnap = null; // cancel
-      publishPainterAwareness(provider?.awareness, null);
+      publishPresence(null);
       return;
     }
     const snap = snapshotFormatting(window.getSelection());
     if (snap) {
       painterSnap = snap;
-      publishPainterAwareness(provider?.awareness, snap);
+      publishPresence(snap);
     }
   }
   function onSurfaceMouseUp() {
@@ -146,7 +168,7 @@
     if (sel && !sel.isCollapsed) {
       const changed = applyFormatting(sel, painterSnap);
       painterSnap = null;
-      publishPainterAwareness(provider?.awareness, null);
+      publishPresence(null);
       if (changed) onInput();
     }
   }
@@ -156,29 +178,47 @@
   // connected to the project's /sync WS room. Both editors (source +
   // WYSIWYG) attach to the SAME Y.Text key "file:<path>" so remote
   // edits from either side land in both views via the relay.
-  let ydoc: Y.Doc | undefined;
-  let provider: WebsocketProvider | undefined;
-  let ytext: Y.Text | undefined;
+  let textPart: CollabText | undefined;
+  let unwatchText: (() => void) | undefined;
+  // Local edits go out one after another: two issued together could be applied
+  // in either order, which for a sequence of edits is corruption rather than a
+  // race. Same chain the source editor's binding uses, for the same reason.
+  let sending: Promise<unknown> = Promise.resolve();
   let muteObserver = false; // true while we're applying a remote update
 
-  function wsURL(p: string): string {
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${proto}//${window.location.host}/api/projects/${encodeURIComponent(p)}/sync`;
-  }
 
-  // pushToYtext : called after every local edit (debounced). Reads
-  // the live host.innerHTML, serializes back to LaTeX source, and
-  // writes the result into the Y.Text inside a LOCAL-origin
-  // transaction so the observer below recognises it as our own.
+  // pushToYtext : called after every local edit (debounced). Reads the live
+  // host.innerHTML, serialises it back to LaTeX source, and writes what
+  // changed into the document's text part.
+  //
+  // What changed, rather than the whole thing. This used to delete the
+  // document and re-insert it on every edit — survivable while the CRDT lived
+  // in memory for as long as the tab did, and not now that the operations are
+  // kept: a keystroke in a three-thousand-character file would have left three
+  // thousand tombstones behind, every time. It also gives per-character
+  // authorship back, which the whole-document replace is exactly what
+  // destroyed.
+  //
+  // There is no local origin tag any more. collab never reports a local edit
+  // back, so there is no loop to break.
   function pushToYtext() {
-    if (!ytext || !ydoc || !editorEl) return;
+    const part = textPart;
+    if (!part || !editorEl) return;
     const newSource = serializeLatex(parsed, editorEl.innerHTML);
-    const prev = ytext.toString();
+    const prev = part.toString();
     if (newSource === prev) return;
-    ydoc.transact(() => {
-      ytext!.delete(0, ytext!.length);
-      ytext!.insert(0, newSource);
-    }, WYSIWYG_LOCAL);
+    const edit = minimalEdit(prev, newSource);
+    if (edit) {
+      // In order: the removal has to land before the insertion that replaces
+      // it, and a second edit must not be applied against the text as it was
+      // before the first.
+      sending = sending
+        .then(async () => {
+          if (edit.removed > 0) await part.delete(edit.pos, edit.removed);
+          if (edit.insert.length > 0) await part.insert(edit.pos, edit.insert);
+        })
+        .catch((err) => console.error('collab: writing the source', err));
+    }
     // Record the edit in the change log so peers can review +
     // accept/reject. Skip on initial seed (prev === '').
     if (changeLog && lastSnapshot !== '' && lastSnapshot !== newSource) {
@@ -487,44 +527,35 @@
       status = 'loading';
       bib.setProject(project);
 
-      // Y.js bootstrap : create the same { ydoc, provider, ytext }
-      // triple Editor.svelte does, so remote peers (source view in
-      // split mode, OR a second browser on the same file) share the
-      // ytext "file:<path>" buffer via the relay.
-      ydoc = new Y.Doc();
-      provider = new WebsocketProvider(wsURL(project), 'default', ydoc);
+      // The same text part the source editor binds to, so a second browser —
+      // or the source pane beside this one in split mode — is editing this
+      // document rather than a copy of it. There is no handshake to wait for:
+      // a session does not settle before its document has arrived.
       const ytextKey = file ? 'file:' + file : 'wysiwyg';
-      ytext = ydoc.getText(ytextKey);
-
-      // Read identity from window-exposed awareness so presence
-      // cursors carry the user's color/name. Falls back to a
-      // deterministic-ish placeholder so dev mode still renders.
-      try {
-        const state = provider.awareness.getLocalState() as { user?: { name?: string; color?: string } } | null;
-        if (state?.user?.name) identityName = state.user.name;
-        if (state?.user?.color) identityColor = state.user.color;
-      } catch { /* ignore */ }
-
-      // Wait for the WS sync handshake OR 2 s fallback for offline.
-      // Mirrors Editor.svelte's seedFromDisk window.
-      await new Promise<void>((resolve) => {
-        let done = false;
-        const finish = () => { if (!done) { done = true; resolve(); } };
-        provider!.once('sync', finish);
-        setTimeout(finish, 2000);
-      });
+      if (session) {
+        textPart = await session.text(ytextKey);
+        identityName = identity.name;
+        identityColor = identity.color;
+      }
+      if (!textPart) {
+        // No session: render the file and let the person edit it. Everything
+        // below that collaborates is simply absent, which is what the source
+        // editor does in the same situation.
+        parsed = parseLatex(await readFile(project, file));
+        editorEl.innerHTML = parsed.bodyHtml;
+        status = 'ready';
+        return;
+      }
 
       // Source-of-truth resolution :
       //   - ytext has content (relay-cached OR a peer pushed) →
       //     trust it ; parse + render
       //   - else → seed from disk + push the source into ytext so
       //     peers joining later get it
-      let source = ytext.toString();
+      let source = textPart.toString();
       if (source.length === 0) {
         source = await readFile(project, file);
-        if (source.length > 0) {
-          ydoc.transact(() => { ytext!.insert(0, source); }, WYSIWYG_LOCAL);
-        }
+        if (source.length > 0) await textPart.insert(0, source);
       }
       parsed = parseLatex(source);
       editorEl.innerHTML = parsed.bodyHtml;
@@ -538,35 +569,28 @@
       renderCiteNodes(editorEl);
       renderFigureNodes(editorEl);
 
-      // Observe ytext for remote updates. Local origin tagging
-      // prevents the feedback loop.
-      ytext.observe((_event, tr) => {
-        if (tr.origin === WYSIWYG_LOCAL) return;
-        applyRemoteSource(ytext!.toString());
+      // Somebody else's edits. Only theirs arrive — a local edit is never
+      // reported back — so the origin tag that used to break the loop has
+      // nothing left to do.
+      unwatchText = await watch(session!, {
+        text: (name) => {
+          if (name === ytextKey) applyRemoteSource(textPart!.toString());
+        },
       });
 
       // V0.10 wire-ups : presence cursors, LaTeX-aware spell filter,
       // change log for track-changes UI.
-      const localClientID = ydoc.clientID;
-      const presenceWiring: PresenceWiring = wireWysiwygPresence(
-        editorEl,
-        provider.awareness,
-        localClientID,
-      );
+      const presenceWiring: PresenceWiring = wireWysiwygPresence(editorEl, session!);
       presenceDestroy = presenceWiring.destroy;
       // Peer format-painter badges. Same overlay shape as presence
       // carets ; separate destroy so each can be unmounted on its
       // own (defensive — we tear them down together in onDestroy).
-      painterPresenceDestroy = wirePeerFormatPainters(
-        editorEl,
-        provider.awareness,
-        localClientID,
-      ).destroy;
+      painterPresenceDestroy = wirePeerFormatPainters(editorEl, session!).destroy;
       spellDestroy = wireSpellFilter(editorEl);
       if (session) {
         changeLog = await attachChangeLog(session, file ?? '');
       }
-      lastSnapshot = ytext.toString();
+      lastSnapshot = textPart.toString();
 
       status = 'ready';
       logEvent('latex-wysiwyg', 'loaded', { file, bytes: source.length });
@@ -814,7 +838,7 @@
   // Y.js Awareness so peers can paint our presence cursor in their
   // wysiwygPresence overlay. No-op outside ready + when not focused.
   function publishLocalSelection() {
-    if (!editorEl || !provider) return;
+    if (!editorEl || !session) return;
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0) return;
     const range = sel.getRangeAt(0);
@@ -826,7 +850,8 @@
       const startOffset = pre.toString().length;
       pre.setEnd(range.endContainer, range.endOffset);
       const endOffset = pre.toString().length;
-      provider.awareness.setLocalStateField('wysiwygSelection', { startOffset, endOffset });
+      lastSelection = { startOffset, endOffset };
+      publishPresence(painterSnap);
     } catch { /* selectionchange races, ignore */ }
   }
 
@@ -864,11 +889,17 @@
   // change is the LAST one (no concurrent edits on top).
   function onRollbackChange(e: Event) {
     const detail = (e as CustomEvent).detail as { id: string; before: string } | null;
-    if (!detail || !ytext || !ydoc) return;
-    ydoc.transact(() => {
-      ytext!.delete(0, ytext!.length);
-      ytext!.insert(0, detail.before);
-    }, WYSIWYG_LOCAL);
+    if (!detail || !textPart) return;
+    const part = textPart;
+    const rollback = minimalEdit(part.toString(), detail.before);
+    if (rollback) {
+      sending = sending
+        .then(async () => {
+          if (rollback.removed > 0) await part.delete(rollback.pos, rollback.removed);
+          if (rollback.insert.length > 0) await part.insert(rollback.pos, rollback.insert);
+        })
+        .catch((err) => console.error('collab: rolling a change back', err));
+    }
     applyRemoteSource(detail.before);
     lastSnapshot = detail.before;
   }
@@ -891,8 +922,7 @@
     painterPresenceDestroy?.();
     spellDestroy?.();
     try { changeLog?.destroy(); } catch { /* ignore */ }
-    try { provider?.destroy(); } catch { /* ignore */ }
-    try { ydoc?.destroy(); } catch { /* ignore */ }
+    unwatchText?.();
   });
 </script>
 

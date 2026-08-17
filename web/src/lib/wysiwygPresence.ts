@@ -36,7 +36,7 @@
 // rect of a multi-node range is the union, which is what we want
 // for the selection highlight.
 
-import type { Awareness } from 'y-protocols/awareness';
+import { watchPeers, type Session } from './collab';
 
 export interface PresenceWiring {
   /** Tear down listeners + remove DOM nodes. */
@@ -126,11 +126,7 @@ function buildRange(root: HTMLElement, start: number, end: number): Range | null
  * Each awareness 'change' event recomputes everyone's overlay
  * positions ; coalesced to 60 Hz via requestAnimationFrame.
  */
-export function wireWysiwygPresence(
-  host: HTMLElement,
-  awareness: Awareness,
-  localClientID: number,
-): PresenceWiring {
+export function wireWysiwygPresence(host: HTMLElement, session: Session): PresenceWiring {
   // Sibling overlay div. Lives under the same parent as the host so
   // it inherits the same stacking context + scroll container, but
   // sits OUTSIDE the contenteditable boundary so nothing in here is
@@ -156,12 +152,14 @@ export function wireWysiwygPresence(
     caret: HTMLSpanElement;
     selection: HTMLSpanElement | null;
   }
-  const peerNodes = new Map<number, PeerNodes>();
+  // Keyed by replica identity, which is a string: a site does not fit a
+  // JavaScript number.
+  const peerNodes = new Map<string, PeerNodes>();
 
   // removePeer : drop a peer's caret + selection from the overlay
   // and from the cache. Used both on departure (awareness state
   // removed) and on destroy().
-  function removePeer(clientID: number) {
+  function removePeer(clientID: string) {
     const entry = peerNodes.get(clientID);
     if (!entry) return;
     entry.caret.remove();
@@ -177,20 +175,22 @@ export function wireWysiwygPresence(
   // selection elements. Peers that have left awareness get their
   // nodes pruned at the end.
   function paint() {
-    const states = awareness.getStates();
     const hostRect = host.getBoundingClientRect();
-    const seen = new Set<number>();
+    const seen = new Set<string>();
 
-    states.forEach((raw, clientID) => {
-      if (clientID === localClientID) return;
-      const state = raw as PeerState;
-      const sel = state.wysiwygSelection;
-      if (!sel) return;
+    // A peer's selection in this surface is its cursor: the session carries
+    // one anchor and one head, which is exactly the pair this used to keep in
+    // a `wysiwygSelection` field of its own.
+    for (const peer of session.peers()) {
+      const clientID = peer.site;
+      if (clientID === session.site) continue;
+      const sel = { startOffset: peer.cursor.anchor, endOffset: peer.cursor.head };
+      const state: PeerState = { user: { name: peer.meta?.name, color: peer.meta?.color } };
       const range = buildRange(host, sel.startOffset, sel.endOffset);
-      if (!range) return;
+      if (!range) continue;
 
       const user = state.user ?? {};
-      const name = user.name ?? `client ${clientID}`;
+      const name = user.name ?? `site ${clientID}`;
       const color = user.color ?? 'hsl(0, 0%, 60%)';
 
       // The caret is anchored at the END of the range (the "head"
@@ -199,7 +199,7 @@ export function wireWysiwygPresence(
       // the CodeMirror presence does with selection.main.head.
       const caretRange = document.createRange();
       const endResolved = resolveTextOffset(host, sel.endOffset);
-      if (!endResolved) return;
+      if (!endResolved) continue;
       caretRange.setStart(endResolved.node, endResolved.offset);
       caretRange.collapse(true);
       const caretRect = caretRange.getBoundingClientRect();
@@ -248,18 +248,17 @@ export function wireWysiwygPresence(
         entry.selection = null;
       }
       seen.add(clientID);
-    });
+    }
 
-    // Prune peers that disappeared from awareness OR that have a
-    // state but no wysiwygSelection any more (toggled away).
+    // Prune peers who left, or who are no longer publishing a position in
+    // this surface.
     for (const clientID of Array.from(peerNodes.keys())) {
       if (!seen.has(clientID)) removePeer(clientID);
     }
   }
 
-  // rAF coalescer : awareness 'change' can fire bursts (e.g.
-  // initial sync sending every existing peer's state in sequence).
-  // We schedule a single repaint per frame.
+  // rAF coalescer : peer changes can arrive in bursts (a join hands over
+  // every participant in sequence). We schedule a single repaint per frame.
   let frame = 0;
   function schedulePaint() {
     if (frame) return;
@@ -272,7 +271,11 @@ export function wireWysiwygPresence(
     });
   }
 
-  awareness.on('change', schedulePaint);
+  let unwatch: (() => void) | undefined;
+  let stopped = false;
+  void watchPeers(session, schedulePaint)
+    .then((off) => (stopped ? off() : (unwatch = off)))
+    .catch((err) => console.error('collab: wysiwyg presence', err));
 
   // Initial paint : capture peers that were already present when
   // we wired up (e.g. user joined mid-session).
@@ -280,7 +283,8 @@ export function wireWysiwygPresence(
 
   return {
     destroy() {
-      awareness.off('change', schedulePaint);
+      stopped = true;
+      unwatch?.();
       if (frame) {
         if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame);
         frame = 0;
