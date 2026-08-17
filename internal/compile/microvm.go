@@ -40,7 +40,7 @@ import (
 // (cross-referenced against each repo's build.yml on 2026-06-10).
 // Per-cluster override via WEFT_LOOM_IMAGE_<LANG> for air-gapped
 // installs pointing at a private registry.
-func imageForLanguage(language string, marp bool) string {
+func imageForLanguage(language, engine string, marp bool) string {
 	_ = marp
 	envOverride := func(key, def string) string {
 		if v := os.Getenv(key); v != "" {
@@ -50,6 +50,11 @@ func imageForLanguage(language string, marp bool) string {
 	}
 	switch language {
 	case "latex":
+		if engine == "gotex" {
+			// Pure-Go engine : a FROM-scratch single-binary image, the
+			// drop-in alternative to the multi-GB TeX Live image.
+			return envOverride("WEFT_LOOM_IMAGE_LATEX_GOTEX", "ghcr.io/openweft/weft-loom-gotex:latest")
+		}
 		return envOverride("WEFT_LOOM_IMAGE_LATEX", "ghcr.io/openweft/weft-loom-texlive:latest")
 	case "markdown":
 		// One image covers BOTH marp + pandoc — the runtime picks
@@ -95,12 +100,12 @@ func useMicroVM() bool {
 // The -v flag was added to `weft microvm run` in weft-microvm 0.2 ;
 // weft-init 0.2 parses the matching `weft.mount=virtiofs:tag:guest[:ro]`
 // cmdline directives. Both ship as part of the v0.5 openweft toolchain.
-func (s *Service) compileInMicroVM(ctx context.Context, workDir, scratchDir string, spec JobSpec, marp bool, command []string, emit func(Event)) (string, error) {
+func (s *Service) compileInMicroVM(ctx context.Context, workDir, scratchDir string, spec JobSpec, marp bool, engine string, command []string, emit func(Event)) (string, error) {
 	bin, err := exec.LookPath("weft")
 	if err != nil {
 		return "", fmt.Errorf("weft CLI not on PATH ; WEFT_LOOM_BACKEND=microvm requires the openweft toolchain installed locally")
 	}
-	image := imageForLanguage(spec.Language, marp)
+	image := imageForLanguage(spec.Language, engine, marp)
 	if image == "" {
 		return "", fmt.Errorf("no microVM image registered for language %q", spec.Language)
 	}

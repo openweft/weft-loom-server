@@ -20,6 +20,7 @@ require (
 	github.com/go-crdt/crdt v0.13.0
 	github.com/nats-io/nats-server/v2 v2.14.2
 	github.com/opencontainers/image-spec v1.1.1
+	github.com/tetratelabs/wazero v1.12.0
 	oras.land/oras-go/v2 v2.6.1
 )
 
