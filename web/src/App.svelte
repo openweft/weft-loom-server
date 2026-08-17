@@ -38,6 +38,7 @@
   import ShortcutHelp from './lib/components/ShortcutHelp.svelte';
   import ScaffoldDialog from './lib/components/ScaffoldDialog.svelte';
   import { commentsArray, commentFromMap, resolveAnchors, type CommentRecord } from './lib/comments';
+  import { joinProject, tabIdentity, type Session as CollabSession } from './lib/collab';
   import type { CommentRange } from './lib/commentDecorations';
   import TabBar from './lib/components/TabBar.svelte';
   import NewFileDialog from './lib/components/NewFileDialog.svelte';
@@ -584,6 +585,39 @@
     return ydoc.getText('file:' + currentFile).toString();
   }
   let ydoc = $state<Y.Doc | undefined>();
+
+  // The go-crdt session, which the editor's Yjs document is being replaced by
+  // one feature at a time. It lives beside ydoc rather than instead of it for
+  // the length of that migration: what has moved reads from here, what has not
+  // still reads from there, and nothing is half-migrated at any moment.
+  //
+  // One session per project, not per file: a project's text, its comments, its
+  // change log and its chat are parts of one document, so they arrive together
+  // and are saved together.
+  let collabSession = $state<CollabSession | undefined>();
+  $effect(() => {
+    const name = project;
+    if (!name) return;
+    let live = true;
+    let opened: CollabSession | undefined;
+    joinProject(name, tabIdentity())
+      .then((s) => {
+        if (!live) {
+          void s.close();
+          return;
+        }
+        opened = s;
+        collabSession = s;
+      })
+      .catch((err) => console.error('collab: could not join', name, err));
+    return () => {
+      // Switching projects ends the session rather than leaving it open behind
+      // a document nobody is looking at.
+      live = false;
+      collabSession = undefined;
+      if (opened) void opened.close();
+    };
+  });
   let awareness = $state<Awareness | undefined>();
   let connectionStatus = $state<'connecting' | 'connected' | 'disconnected'>('connecting');
   let ytextTick = $state<number>(0);
@@ -1615,8 +1649,7 @@
           style={chatCollapsed || !aiCollapsed ? (chatCollapsed ? '' : `height: ${chatPaneHeight}px`) : ''}
         >
           <ChatRoom
-            {ydoc}
-            {awareness}
+            session={collabSession}
             {identity}
             bind:open={chatOpen}
             embedded={true}

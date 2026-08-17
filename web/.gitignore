@@ -1,0 +1,7 @@
+
+# Built by `task gen-collab-wasm` from the go-crdt/collab module, so that what
+# ships is always what the toolchain and that module produce together. A copy
+# checked in is a copy that silently stops matching.
+public/collab.wasm
+public/wasm_exec.js
+src/lib/collab.d.ts
