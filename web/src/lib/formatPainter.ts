@@ -162,51 +162,41 @@ export function applyFormatting(sel: Selection | null, snap: FormatSnapshot): bo
 //                          formatting they captured + will apply on
 //                          their next selection.
 //
-// The originator publishes via publishPainterAwareness. Peers render
+// The originator publishes via painterMeta. Peers render
 // via wirePeerFormatPainters — same module shape as wysiwygPresence
 // (overlay sibling div, rAF-coalesced paint, returns destroy()).
 
-import type { Awareness } from 'y-protocols/awareness';
+import { watchPeers, type Session } from './collab';
 
-// Minimal subset of the awareness API formatPainter uses ; lets
-// callers pass a shim in unit tests without depending on the Yjs
-// runtime. setLocalStateField is structurally compatible with
-// y-protocols/awareness.Awareness.
-export interface AwarenessLike {
-  setLocalStateField(field: string, value: unknown): void;
-}
+/** The meta key a peer's armed painter travels under. */
+export const PAINTER_KEY = 'formatPainter';
 
-/** Broadcast or clear the local painter snapshot. Pass null to
- *  unarm — the awareness field is set to null so peers observing the
- *  field-presence drop the badge. No-op when awareness is undefined
- *  (e.g. the WS provider hasn't connected yet).
+/**
+ * How a painter snapshot is carried between replicas.
+ *
+ * A session publishes meta as strings, so the snapshot is JSON rather than an
+ * object — which it effectively was already: awareness payloads were cloned on
+ * the wire, and the field never held anything a JSON round-trip would lose.
+ *
+ * An unarmed painter publishes no key at all rather than a null one. A peer
+ * reading it asks whether the key is there, which is the question it was
+ * already asking, and one less state to represent.
  */
-export function publishPainterAwareness(
-  awareness: AwarenessLike | null | undefined,
-  snap: FormatSnapshot | null,
-): void {
-  if (!awareness) return;
-  // Awareness payloads are JSON-cloned on the wire — keep the value
-  // a plain object (no class instances, no functions).
-  awareness.setLocalStateField('formatPainter', snap ? { ...snap } : null);
+export function painterMeta(snap: FormatSnapshot | null): Record<string, string> {
+  return snap ? { [PAINTER_KEY]: JSON.stringify(snap) } : {};
 }
 
-// PeerPainterState : the slice of awareness state wirePeerFormatPainters
-// reads. The peer's caret position comes from wysiwygSelection (same
-// field wysiwygPresence drives off), so we don't duplicate offset
-// tracking — we only need to know that a peer is armed + their color.
-interface PeerSelection {
-  startOffset: number;
-  endOffset: number;
-}
-interface PeerUser {
-  name?: string;
-  color?: string;
-}
-interface PeerPainterState {
-  user?: PeerUser;
-  wysiwygSelection?: PeerSelection;
-  formatPainter?: FormatSnapshot | null;
+/** Reads a peer's painter back, or undefined when they are not holding one. */
+export function painterOf(meta: Record<string, string> | undefined): FormatSnapshot | undefined {
+  const raw = meta?.[PAINTER_KEY];
+  if (!raw) return undefined;
+  try {
+    return JSON.parse(raw) as FormatSnapshot;
+  } catch {
+    // A snapshot this build cannot read is a peer without a badge, not a
+    // paint that throws.
+    return undefined;
+  }
 }
 
 // Snapshot label : short human-readable summary of what the painter
@@ -281,8 +271,7 @@ function resolveCaretRect(host: HTMLElement, target: number): DOMRect | null {
  */
 export function wirePeerFormatPainters(
   host: HTMLElement,
-  awareness: Awareness,
-  localClientID: number,
+  session: Session,
 ): PainterPresenceWiring {
   const overlay = document.createElement('div');
   overlay.className = 'wysiwyg-painter-layer';
@@ -296,9 +285,10 @@ export function wirePeerFormatPainters(
 
   // Per-peer badge cache. Each entry is a single <span> ; we recolor
   // + reposition in place to avoid create/remove churn.
-  const peerBadges = new Map<number, HTMLSpanElement>();
+  // Keyed by replica identity, which is a string.
+  const peerBadges = new Map<string, HTMLSpanElement>();
 
-  function removePeer(clientID: number) {
+  function removePeer(clientID: string) {
     const el = peerBadges.get(clientID);
     if (!el) return;
     el.remove();
@@ -306,24 +296,20 @@ export function wirePeerFormatPainters(
   }
 
   function paint() {
-    const states = awareness.getStates();
     const hostRect = host.getBoundingClientRect();
-    const seen = new Set<number>();
+    const seen = new Set<string>();
 
-    states.forEach((raw, clientID) => {
-      if (clientID === localClientID) return;
-      const state = raw as PeerPainterState;
-      const snap = state.formatPainter;
-      if (!snap) return; // peer's painter idle
-      // Anchor at the peer's caret (head side of wysiwygSelection).
-      // Falls back to char 0 if the peer hasn't published a selection
-      // yet — still better than not rendering at all.
-      const target = state.wysiwygSelection?.endOffset ?? 0;
-      const caretRect = resolveCaretRect(host, target);
-      if (!caretRect) return;
+    for (const peer of session.peers()) {
+      const clientID = peer.site;
+      if (clientID === session.site) continue;
+      const snap = painterOf(peer.meta);
+      if (!snap) continue; // peer's painter idle
+      // Anchor at the peer's caret, which is the head of what they published.
+      const caretRect = resolveCaretRect(host, peer.cursor.head);
+      if (!caretRect) continue;
 
-      const color = state.user?.color ?? 'hsl(0, 0%, 60%)';
-      const name = state.user?.name ?? `client ${clientID}`;
+      const color = peer.meta?.color ?? 'hsl(0, 0%, 60%)';
+      const name = peer.meta?.name ?? `site ${clientID}`;
       const label = `${name} : ${describeSnap(snap)}`;
 
       let badge = peerBadges.get(clientID);
@@ -344,7 +330,7 @@ export function wirePeerFormatPainters(
       badge.style.left = `${caretRect.left - hostRect.left + 4}px`;
       badge.style.top = `${caretRect.top - hostRect.top - 4}px`;
       seen.add(clientID);
-    });
+    }
 
     for (const clientID of Array.from(peerBadges.keys())) {
       if (!seen.has(clientID)) removePeer(clientID);
@@ -363,12 +349,17 @@ export function wirePeerFormatPainters(
     });
   }
 
-  awareness.on('change', schedulePaint);
+  let unwatch: (() => void) | undefined;
+  let stopped = false;
+  void watchPeers(session, schedulePaint)
+    .then((off) => (stopped ? off() : (unwatch = off)))
+    .catch((err) => console.error('collab: peer painters', err));
   schedulePaint();
 
   return {
     destroy() {
-      awareness.off('change', schedulePaint);
+      stopped = true;
+      unwatch?.();
       if (frame) {
         if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame);
         frame = 0;

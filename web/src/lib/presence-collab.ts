@@ -1,5 +1,10 @@
-// presence.ts — CodeMirror 6 extension that paints remote peers'
-// carets + selections live, driven by the Yjs Awareness map.
+// presence-collab.ts — remote carets and selections, from a collab session.
+//
+// It replaces presence.ts and most of it is that file unchanged: painting
+// somebody else's caret is the same problem whoever is telling you where they
+// are. What changed is who tells you, and the one thing that follows — peers()
+// includes this participant, so the self filter is on the session's own site,
+// and a site is a string rather than a number.
 //
 // Today CollaboratorsSidebar shows who's in the room, but the editor
 // surface itself has no visual presence : you can't tell where a peer
@@ -33,20 +38,7 @@ import {
 import type { DecorationSet, ViewUpdate } from '@codemirror/view';
 import { RangeSetBuilder } from '@codemirror/state';
 import type { Extension } from '@codemirror/state';
-import type { Awareness } from 'y-protocols/awareness';
-
-// PeerCursor : what we read out of each remote awareness state.
-// Offsets are absolute positions in the current Y.Text doc — converted
-// back to CodeMirror offsets by clamping against doc.length on every
-// rebuild.
-interface PeerCursor {
-  anchor: number;
-  head: number;
-}
-interface PeerUser {
-  name?: string;
-  color?: string;
-}
+import { watchPeers, type Session } from './collab';
 
 // Throttle helper : trailing-edge throttle, returns a wrapped fn that
 // fires at most once per `ms` and queues the latest call so the final
@@ -86,7 +78,7 @@ function throttle<T extends (...a: never[]) => void>(fn: T, ms: number): T {
 // position (CodeMirror inserts it inline between glyphs).
 class CaretWidget extends WidgetType {
   constructor(
-    readonly clientID: number,
+    readonly site: string,
     readonly name: string,
     readonly color: string,
   ) {
@@ -94,7 +86,7 @@ class CaretWidget extends WidgetType {
   }
   eq(other: CaretWidget): boolean {
     return (
-      other.clientID === this.clientID &&
+      other.site === this.site &&
       other.name === this.name &&
       other.color === this.color
     );
@@ -108,7 +100,7 @@ class CaretWidget extends WidgetType {
     // real document content.
     const wrap = document.createElement('span');
     wrap.className = 'cm-peer-caret';
-    wrap.setAttribute('data-client-id', String(this.clientID));
+    wrap.setAttribute('data-client-id', String(this.site));
     wrap.setAttribute('data-name', this.name);
     wrap.setAttribute('aria-hidden', 'true');
     wrap.style.borderLeftColor = this.color;
@@ -127,68 +119,6 @@ class CaretWidget extends WidgetType {
 // containing :
 //   - one mark per non-empty selection range (.cm-peer-selection)
 //   - one widget per caret position (.cm-peer-caret)
-// Range entries must be added in offset order ; we collect everything
-// then sort before pushing into the RangeSetBuilder.
-function buildPeerDecorations(
-  view: EditorView,
-  awareness: Awareness,
-): DecorationSet {
-  const docLen = view.state.doc.length;
-  const selfID = awareness.clientID;
-  interface Entry {
-    from: number;
-    to: number;
-    deco: Decoration;
-    // tiebreak — selections sort before widgets at the same offset
-    // so the selection background paints under the caret bar.
-    kind: 0 | 1;
-  }
-  const entries: Entry[] = [];
-  awareness.getStates().forEach((state, clientID) => {
-    if (clientID === selfID) return;
-    const s = state as { user?: PeerUser; cursor?: PeerCursor };
-    const cursor = s.cursor;
-    if (!cursor) return;
-    const anchor = Math.max(0, Math.min(docLen, cursor.anchor | 0));
-    const head = Math.max(0, Math.min(docLen, cursor.head | 0));
-    const user = s.user ?? {};
-    const name = user.name ?? `client ${clientID}`;
-    const color = user.color ?? 'hsl(0, 0%, 60%)';
-    // Selection range (only when non-empty).
-    if (anchor !== head) {
-      const from = Math.min(anchor, head);
-      const to = Math.max(anchor, head);
-      entries.push({
-        from,
-        to,
-        kind: 0,
-        deco: Decoration.mark({
-          class: 'cm-peer-selection',
-          attributes: {
-            style: `background-color: ${withAlpha(color, 0.22)}`,
-            'data-client-id': String(clientID),
-          },
-        }),
-      });
-    }
-    // Caret widget at head.
-    entries.push({
-      from: head,
-      to: head,
-      kind: 1,
-      deco: Decoration.widget({
-        widget: new CaretWidget(clientID, name, color),
-        side: 1,
-      }),
-    });
-  });
-  entries.sort((a, b) => a.from - b.from || a.to - b.to || a.kind - b.kind);
-  const builder = new RangeSetBuilder<Decoration>();
-  for (const e of entries) builder.add(e.from, e.to, e.deco);
-  return builder.finish();
-}
-
-// withAlpha : same shape as authorship.ts but local to keep the module
 // dependency-free. Handles hsl(), hsla(), #RRGGBB ; falls back to a
 // CSS color-mix wrapper for anything else.
 function withAlpha(c: string, alpha: number): string {
@@ -211,50 +141,113 @@ function withAlpha(c: string, alpha: number): string {
 //     and listens on awareness 'change' to rebuild it.
 //   - an EditorView.updateListener that broadcasts the LOCAL selection
 //     into awareness.cursor (throttled to 50 ms), so peers see us too.
-export function presenceCursors(awareness: Awareness): Extension {
+function buildPeerDecorations(view: EditorView, session: Session): DecorationSet {
+  const docLen = view.state.doc.length;
+  const self = session.site;
+  interface Entry {
+    from: number;
+    to: number;
+    deco: Decoration;
+    // Tiebreak: selections sort before widgets at the same offset so the
+    // selection background paints under the caret bar.
+    kind: 0 | 1;
+  }
+  const entries: Entry[] = [];
+  for (const peer of session.peers()) {
+    if (peer.site === self) continue;
+    if (!peer.cursor) continue;
+    // Offsets are UTF-16 code units on both sides of this, which is what
+    // CodeMirror counts in — nothing to convert.
+    const anchor = Math.max(0, Math.min(docLen, peer.cursor.anchor | 0));
+    const head = Math.max(0, Math.min(docLen, peer.cursor.head | 0));
+    const name = peer.meta?.name ?? `site ${peer.site}`;
+    const color = peer.meta?.color ?? 'hsl(0, 0%, 60%)';
+    if (anchor !== head) {
+      entries.push({
+        from: Math.min(anchor, head),
+        to: Math.max(anchor, head),
+        kind: 0,
+        deco: Decoration.mark({
+          class: 'cm-peer-selection',
+          attributes: {
+            style: `background-color: ${withAlpha(color, 0.22)}`,
+            'data-client-id': peer.site,
+          },
+        }),
+      });
+    }
+    entries.push({
+      from: head,
+      to: head,
+      kind: 1,
+      deco: Decoration.widget({ widget: new CaretWidget(peer.site, name, color), side: 1 }),
+    });
+  }
+  entries.sort((a, b) => a.from - b.from || a.kind - b.kind);
+  const builder = new RangeSetBuilder<Decoration>();
+  for (const e of entries) builder.add(e.from, e.to, e.deco);
+  return builder.finish();
+}
+
+/**
+ * presenceCursors paints where everybody else is, and publishes where this
+ * participant is.
+ *
+ * meta travels with every cursor rather than being set once, because a session
+ * publishes the two together — there is no "set this field and leave the rest"
+ * here, which is a smaller API and one less thing to leave stale.
+ */
+export function presenceCursors(
+  session: Session,
+  meta: () => Record<string, string>,
+): Extension {
   const plugin = ViewPlugin.fromClass(
     class {
       decorations: DecorationSet;
       cleanup: () => void;
-      // The throttled local broadcaster — closure-captured by the
-      // updateListener below so we don't re-wrap on every update.
       broadcast: (anchor: number, head: number) => void;
 
       constructor(view: EditorView) {
-        this.decorations = buildPeerDecorations(view, awareness);
-        // Awareness 'change' can fire SYNCHRONOUSLY from inside our own
-        // throttled broadcast — which itself runs inside a CM update.
-        // Dispatching back into the view there throws
-        // "Calls to EditorView.update are not allowed while an update
-        // is in progress". Defer via requestAnimationFrame so the
-        // rebuild lands on the next tick.
+        this.decorations = buildPeerDecorations(view, session);
+        // A peer change can arrive synchronously from inside our own throttled
+        // publish, which itself runs inside a CodeMirror update. Dispatching
+        // back into the view there throws "Calls to EditorView.update are not
+        // allowed while an update is in progress", so the rebuild is deferred
+        // to the next frame.
         let pending = false;
         const refresh = () => {
           if (pending) return;
           pending = true;
           requestAnimationFrame(() => {
             pending = false;
-            this.decorations = buildPeerDecorations(view, awareness);
+            this.decorations = buildPeerDecorations(view, session);
             view.dispatch({});
           });
         };
-        awareness.on('change', refresh);
-        this.cleanup = () => awareness.off('change', refresh);
+        let stop: (() => void) | undefined;
+        let stopped = false;
+        void watchPeers(session, refresh)
+          .then((off) => (stopped ? off() : (stop = off)))
+          .catch((err) => console.error('collab: watching peers', err));
+        this.cleanup = () => {
+          stopped = true;
+          stop?.();
+        };
         this.broadcast = throttle((anchor: number, head: number) => {
-          awareness.setLocalStateField('cursor', { anchor, head });
+          void session.setCursor({ anchor, head }, meta()).catch(() => {
+            // A cursor nobody sees is not worth ending a session over.
+          });
         }, 50);
-        // Push initial cursor so peers see us the moment we mount.
         const sel = view.state.selection.main;
         this.broadcast(sel.anchor, sel.head);
       }
 
       update(u: ViewUpdate) {
-        // When the doc changes we map peer offsets implicitly by
-        // rebuilding from awareness — peers' next broadcast will
-        // include their own post-edit offsets ; until then, the
-        // clamping in buildPeerDecorations keeps stale offsets sane.
+        // Peer offsets are not mapped through the edit: their next publish
+        // carries their own post-edit offsets, and the clamping above keeps a
+        // stale one sane until it arrives.
         if (u.docChanged) {
-          this.decorations = buildPeerDecorations(u.view, awareness);
+          this.decorations = buildPeerDecorations(u.view, session);
         }
         if (u.selectionSet || u.docChanged) {
           const sel = u.state.selection.main;
@@ -266,11 +259,8 @@ export function presenceCursors(awareness: Awareness): Extension {
         this.cleanup();
       }
     },
-    {
-      decorations: (v) => v.decorations,
-    },
+    { decorations: (v) => v.decorations },
   );
-
   return [
     plugin,
     EditorView.baseTheme({

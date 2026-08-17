@@ -1,9 +1,9 @@
 module github.com/openweft/weft-loom-server
 
-go 1.26
+go 1.26.4
 
 require (
-	github.com/coder/websocket v1.8.13
+	github.com/coder/websocket v1.8.15
 	github.com/danielgtaylor/huma/v2 v2.38.0
 	github.com/go-git/go-git/v5 v5.19.1
 	github.com/hashicorp/hcl/v2 v2.23.0
@@ -15,6 +15,9 @@ require (
 
 require (
 	github.com/creack/pty v1.1.24
+	github.com/go-crdt/collab v0.13.0
+	github.com/go-crdt/collab/pgstore v0.0.0-20260817083619-7454d01970e7
+	github.com/go-crdt/crdt v0.13.0
 	github.com/nats-io/nats-server/v2 v2.14.2
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/tetratelabs/wazero v1.12.0
@@ -28,6 +31,9 @@ require (
 	github.com/nats-io/jwt/v2 v2.8.2 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260226221140-a57be14db171 // indirect
+	google.golang.org/grpc v1.81.1 // indirect
+	google.golang.org/protobuf v1.36.12 // indirect
 )
 
 require (

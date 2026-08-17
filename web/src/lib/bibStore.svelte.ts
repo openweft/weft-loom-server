@@ -82,12 +82,24 @@ class BibStore {
         } catch { /* ignore per-file errors */ }
       }
       // Merge every cached file into a flat entries list + byKey map.
-      const all: BibEntry[] = [];
-      for (const row of this.cache.values()) all.push(...row.entries);
-      this.entries = all;
-      const m = new Map<string, BibEntry>();
-      for (const e of all) m.set(e.key, e);
-      this.byKey = m;
+      //
+      // A key defined in two files is one entry, not two. BibTeX resolves it
+      // the same way — the first definition wins and later ones are ignored —
+      // and two .bib files sharing a key is ordinary in a real project: a
+      // shared library alongside a paper's own references.
+      //
+      // The map was already collapsing them and the list was not, which is
+      // worse than either choice on its own: the panel keys its rows by the
+      // citation key, so a duplicate made Svelte throw each_key_duplicate and
+      // the whole bibliography stopped rendering. A citation picker that
+      // refuses to open is a harsher answer to a duplicate key than any
+      // paper deserves.
+      const byKey = new Map<string, BibEntry>();
+      for (const row of this.cache.values()) {
+        for (const e of row.entries) if (!byKey.has(e.key)) byKey.set(e.key, e);
+      }
+      this.entries = Array.from(byKey.values());
+      this.byKey = byKey;
     } catch (e) {
       this.err = String(e);
     } finally {

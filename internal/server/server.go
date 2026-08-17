@@ -13,7 +13,8 @@
 //	PUT  /api/projects/{name}/files/{path}  write file (only for non-CRDT files like build output)
 //	POST /api/projects/{name}/compile       start a compile job
 //	GET  /api/projects/{name}/compile/{id}  stream stdout/stderr + artifacts
-//	WS   /api/projects/{name}/sync          y-websocket bridge
+//	WS   /api/projects/{name}/sync          y-websocket bridge (being replaced)
+//	WS   /api/projects/{name}/collab        go-crdt/collab session
 //
 // Auth : every /api/* (except healthz) requires a valid OIDC bearer
 // from dex ; the middleware extracts the subject + groups and
@@ -28,6 +29,8 @@ import (
 	"net/http"
 	"sync"
 
+	"context"
+	"database/sql"
 	"github.com/coder/websocket"
 	"github.com/nats-io/nats.go"
 	"github.com/openweft/weft-loom-server/internal/auth"
@@ -40,6 +43,8 @@ import (
 	"github.com/openweft/weft-loom-server/internal/shares"
 	"github.com/openweft/weft-loom-server/internal/toolshare"
 	"github.com/openweft/weft-loom-server/internal/workspace"
+
+	"github.com/go-crdt/collab"
 	"github.com/openweft/weft-loom-server/internal/ywebsocket"
 )
 
@@ -101,8 +106,14 @@ type GitSecurityConfig struct {
 
 // Server is the HTTP handler tree, built once at startup.
 type Server struct {
-	opts       Options
-	hub        *ywebsocket.Hub
+	opts Options
+	hub  *ywebsocket.Hub
+	// collab holds the documents this server serves over go-crdt/collab, and
+	// collabDB is the handle it borrows from the projects' pool. Both are nil
+	// when the projects are kept somewhere without a database, which is what a
+	// test with an in-memory store looks like: the route is simply not mounted.
+	collab     *collab.Server
+	collabDB   *sql.DB
 	mux        *http.ServeMux
 	git        *gitState
 	seedClaims *seedClaimRegistry
@@ -157,6 +168,16 @@ func New(opts Options) (*Server, error) {
 		history:      history.New(),
 		sidecarLocks: newSidecarLockPool(),
 	}
+	// Collaborative editing keeps its documents in the projects' own database.
+	// A project store without one — the in-memory store a test uses — simply
+	// does not get the route, rather than failing to start a server that has
+	// nothing to do with documents.
+	if collabSrv, db, err := newCollabServer(context.Background(), opts.Projects, opts.Logger); err == nil {
+		s.collab, s.collabDB = collabSrv, db
+	} else {
+		opts.Logger.Info("collab: not serving documents", "reason", err.Error())
+	}
+
 	if opts.Auth != nil && opts.Config.AllowHostPty {
 		opts.Logger.Warn("security: AllowHostPty=true in a non-dev config — workspace shell fallback escapes the VM sandbox")
 	}
@@ -373,6 +394,21 @@ func (s *Server) routes() {
 	// inside the shared per-project Yjs doc) but a future
 	// per-room handler would read it via r.PathValue("room").
 	s.mux.HandleFunc("GET /api/projects/{name}/sync/{room...}", s.handleSync)
+
+	// The same rooms over go-crdt/collab, where the server holds the document
+	// instead of relaying frames it cannot read. It is mounted beside the bridge
+	// rather than over it so that the SPA can move one feature at a time and the
+	// branch stays runnable in between; the bridge goes when the last of them
+	// has moved.
+	//
+	// The handler does its own upgrade and takes the document name from the
+	// session's first message, so all this route does is authenticate and put
+	// the caller where Authorize can find it.
+	if s.collab != nil {
+		collabWS := s.withIdentity(s.collab.ServeWebSocket(s.allowedOriginPatterns()...))
+		s.mux.Handle("GET /api/projects/{name}/collab", collabWS)
+		s.mux.Handle("GET /api/projects/{name}/collab/{room...}", collabWS)
+	}
 
 	// SPA — fall-through on every other GET. The static FS is rooted
 	// at the dist/ directory the build emits.

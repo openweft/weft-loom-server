@@ -1,15 +1,19 @@
 // wysiwyg-presence.mjs — node tests for wysiwygPresence.ts.
 //
 // Asserts the five observable contracts of wireWysiwygPresence :
-//   1. Single peer in awareness → overlay div created with one
-//      .wysiwyg-peer-caret.
-//   2. Peer state {name: "alice", color: "hsl(120, 60%, 50%)"} →
-//      caret has data-name + --peer-color set from the state.
-//   3. Local clientID's state SKIPPED (we don't draw our own caret).
-//   4. destroy() removes the overlay + unwires the awareness
-//      listener.
-//   5. Awareness state.change update → overlay updates without
-//      leaking duplicate nodes.
+//   1. One peer → overlay div created with one .wysiwyg-peer-caret.
+//   2. A peer named "alice" in a colour → caret has data-name and --peer-color
+//      taken from what that peer published.
+//   3. This replica's own entry SKIPPED (we don't draw our own caret). It now
+//      *is* in the list — peers() includes it, where the awareness map left it
+//      out — so this is a filter the module has to perform rather than an
+//      absence it can rely on.
+//   4. destroy() removes the overlay and stops watching.
+//   5. A peer change updates the overlay without leaking duplicate nodes.
+//
+// The peer selection is the cursor a session publishes: one anchor and one
+// head, which is the pair this used to keep in a `wysiwygSelection` field of
+// its own.
 //
 // jsdom is not installed in this workspace ; we hand-roll the
 // slice of DOM the module actually touches :
@@ -33,8 +37,6 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import esbuild from '../web/node_modules/esbuild/lib/main.js';
-import * as Y from '../web/node_modules/yjs/dist/yjs.cjs';
-import { Awareness } from '../web/node_modules/y-protocols/dist/awareness.cjs';
 
 // ─── DOM stub ────────────────────────────────────────────────────
 
@@ -261,12 +263,46 @@ ${built.code}
 module.exports = { wireWysiwygPresence };
 `;
 
+// The module reads peers through collab's watchPeers, so that is the one
+// import the loader has to answer. It hands back the registered callback so a
+// test can say "the peers changed" without a server.
+let notifyPeers = () => {};
 function loadModule() {
   const mod = { exports: {} };
   new Function('module', 'exports', 'require', wrapped)(mod, mod.exports, (id) => {
+    if (id === './collab') {
+      return {
+        watchPeers: async (_session, fn) => {
+          notifyPeers = fn;
+          return () => {
+            notifyPeers = () => {};
+          };
+        },
+      };
+    }
     throw new Error('unexpected require: ' + id);
   });
   return mod.exports;
+}
+
+/**
+ * A session as this module reads one: an identity and a list of participants.
+ *
+ * peers() includes this replica, which is the difference from the awareness map
+ * it replaced — so a test for "no self-caret" puts the local site in the list
+ * rather than leaving it out, and the module has to do the filtering.
+ */
+function makeSession(site, peers) {
+  return { site, peers: () => peers, current: peers };
+}
+
+/** A participant, with a selection carried as the cursor a session publishes. */
+function peer(site, name, color, startOffset, endOffset) {
+  return {
+    site,
+    cursor: { anchor: startOffset, head: endOffset },
+    meta: { ...(name ? { name } : {}), ...(color ? { color } : {}) },
+  };
 }
 
 // Helpers : count caret + selection nodes in the overlay, and find
@@ -297,21 +333,17 @@ function makeHost(text = 'hello world') {
 
 // ─── Tests ────────────────────────────────────────────────────────
 
-test('single peer in awareness → overlay div + one caret', () => {
+test('one peer → overlay div + one caret', () => {
   installDom();
   const { wireWysiwygPresence } = loadModule();
 
-  const ydoc = new Y.Doc();
-  const awareness = new Awareness(ydoc);
   const { parent, host } = makeHost('hello world');
+  const session = makeSession('1', [
+    peer('1', 'me', 'hsl(220, 70%, 50%)', 0, 0),
+    peer('42', 'bob', 'hsl(0, 80%, 50%)', 3, 3),
+  ]);
 
-  // Local client : 1. Remote peer : 42.
-  awareness.states.set(42, {
-    user: { name: 'bob', color: 'hsl(0, 80%, 50%)' },
-    wysiwygSelection: { startOffset: 3, endOffset: 3 },
-  });
-
-  const wiring = wireWysiwygPresence(host, awareness, 1);
+  const wiring = wireWysiwygPresence(host, session);
   flushRaf();
 
   const overlay = overlayOf(parent);
@@ -322,35 +354,28 @@ test('single peer in awareness → overlay div + one caret', () => {
     'collapsed selection → no selection rect');
 
   wiring.destroy();
-  awareness.destroy();
 });
 
-test('peer state name + color → data-name + --peer-color', () => {
+test('a peer’s name and colour → data-name + --peer-color', () => {
   installDom();
   const { wireWysiwygPresence } = loadModule();
 
-  const ydoc = new Y.Doc();
-  const awareness = new Awareness(ydoc);
   const { parent, host } = makeHost('hello world');
+  const session = makeSession('1', [peer('7', 'alice', 'hsl(120, 60%, 50%)', 2, 5)]);
 
-  awareness.states.set(7, {
-    user: { name: 'alice', color: 'hsl(120, 60%, 50%)' },
-    wysiwygSelection: { startOffset: 2, endOffset: 5 },
-  });
-
-  const wiring = wireWysiwygPresence(host, awareness, 1);
+  const wiring = wireWysiwygPresence(host, session);
   flushRaf();
 
   const overlay = overlayOf(parent);
   const [caret] = caretsIn(overlay);
   assert.ok(caret, 'caret rendered');
   assert.equal(caret.getAttribute('data-name'), 'alice',
-    'data-name comes from awareness user.name');
+    'data-name comes from what that peer published');
   assert.equal(caret.getAttribute('data-client-id'), '7',
-    'data-client-id comes from awareness key');
+    'data-client-id is the peer’s replica identity');
   assert.equal(caret.style.getPropertyValue('--peer-color'),
     'hsl(120, 60%, 50%)',
-    '--peer-color comes from awareness user.color');
+    '--peer-color comes from what that peer published');
 
   // Non-collapsed range → a selection rect appears next to the caret.
   const sels = selectionsIn(overlay);
@@ -360,29 +385,20 @@ test('peer state name + color → data-name + --peer-color', () => {
     'selection rect picks up same --peer-color');
 
   wiring.destroy();
-  awareness.destroy();
 });
 
-test('local clientID is skipped (no self-caret)', () => {
+test('this replica is skipped (no self-caret)', () => {
   installDom();
   const { wireWysiwygPresence } = loadModule();
 
-  const ydoc = new Y.Doc();
-  const awareness = new Awareness(ydoc);
   const { parent, host } = makeHost('hello world');
+  // This replica is in the list, which is the point: it has to be filtered.
+  const session = makeSession('99', [
+    peer('99', 'me', 'hsl(220, 70%, 50%)', 1, 1),
+    peer('101', 'peer', 'hsl(50, 70%, 50%)', 2, 2),
+  ]);
 
-  // Same clientID as the "local" one we pass in below → must
-  // never render.
-  awareness.states.set(99, {
-    user: { name: 'me', color: 'hsl(220, 70%, 50%)' },
-    wysiwygSelection: { startOffset: 1, endOffset: 1 },
-  });
-  awareness.states.set(101, {
-    user: { name: 'peer', color: 'hsl(50, 70%, 50%)' },
-    wysiwygSelection: { startOffset: 2, endOffset: 2 },
-  });
-
-  const wiring = wireWysiwygPresence(host, awareness, 99);
+  const wiring = wireWysiwygPresence(host, session);
   flushRaf();
 
   const overlay = overlayOf(parent);
@@ -392,23 +408,17 @@ test('local clientID is skipped (no self-caret)', () => {
     'the rendered caret is the remote peer, not us');
 
   wiring.destroy();
-  awareness.destroy();
 });
 
-test('destroy() removes overlay + unwires awareness listener', () => {
+test('destroy() removes overlay + gives the watch back', () => {
   installDom();
   const { wireWysiwygPresence } = loadModule();
 
-  const ydoc = new Y.Doc();
-  const awareness = new Awareness(ydoc);
   const { parent, host } = makeHost('hello world');
+  const peers = [peer('42', 'bob', 'hsl(0, 80%, 50%)', 1, 1)];
+  const session = { site: '1', peers: () => peers };
 
-  awareness.states.set(42, {
-    user: { name: 'bob', color: 'hsl(0, 80%, 50%)' },
-    wysiwygSelection: { startOffset: 1, endOffset: 1 },
-  });
-
-  const wiring = wireWysiwygPresence(host, awareness, 1);
+  const wiring = wireWysiwygPresence(host, session);
   flushRaf();
   assert.ok(overlayOf(parent), 'overlay exists before destroy');
 
@@ -416,59 +426,44 @@ test('destroy() removes overlay + unwires awareness listener', () => {
   assert.equal(overlayOf(parent), undefined,
     'overlay removed from parent after destroy');
 
-  // After destroy(), changes to awareness must NOT re-create the
-  // overlay (listener was unwired). We add a new peer + emit a
-  // change ; if the listener leaked it would re-paint and re-
-  // append the overlay.
-  awareness.states.set(77, {
-    user: { name: 'late', color: 'hsl(280, 70%, 50%)' },
-    wysiwygSelection: { startOffset: 0, endOffset: 0 },
-  });
-  awareness.emit('change', [{ added: [77], updated: [], removed: [] }, 'test']);
+  // After destroy(), a peer change must NOT re-create the overlay. If the
+  // watch had leaked it would repaint and re-append it.
+  peers.push(peer('77', 'late', 'hsl(280, 70%, 50%)', 0, 0));
+  notifyPeers();
   flushRaf();
 
   assert.equal(overlayOf(parent), undefined,
-    'no overlay re-created after destroy : listener was properly removed');
-
-  awareness.destroy();
+    'no overlay re-created after destroy : the watch was given back');
 });
 
-test('awareness change update → overlay updates without leaking nodes', () => {
+test('a peer change updates the overlay without leaking nodes', () => {
   installDom();
   const { wireWysiwygPresence } = loadModule();
 
-  const ydoc = new Y.Doc();
-  const awareness = new Awareness(ydoc);
   const { parent, host } = makeHost('hello world this is text');
+  // One peer to start; the array is mutated in place and the watch is poked,
+  // which is what a peer change is here.
+  let peers = [peer('7', 'alice', 'hsl(120, 60%, 50%)', 1, 1)];
+  const session = { site: '1', peers: () => peers };
 
-  // One peer to start.
-  awareness.states.set(7, {
-    user: { name: 'alice', color: 'hsl(120, 60%, 50%)' },
-    wysiwygSelection: { startOffset: 1, endOffset: 1 },
-  });
-
-  const wiring = wireWysiwygPresence(host, awareness, 1);
+  const wiring = wireWysiwygPresence(host, session);
   flushRaf();
   const overlay = overlayOf(parent);
   assert.equal(caretsIn(overlay).length, 1, 'one peer = one caret');
 
-  // Move alice's caret. The same caret node should be reused (no
-  // duplicate inserted).
-  awareness.states.set(7, {
-    user: { name: 'alice', color: 'hsl(120, 60%, 50%)' },
-    wysiwygSelection: { startOffset: 5, endOffset: 5 },
-  });
-  awareness.emit('change', [{ added: [], updated: [7], removed: [] }, 'test']);
+  // Move alice's caret. The same caret node should be reused (no duplicate).
+  peers = [peer('7', 'alice', 'hsl(120, 60%, 50%)', 5, 5)];
+  notifyPeers();
   flushRaf();
   assert.equal(caretsIn(overlay).length, 1,
     'updating a peer does not duplicate its caret');
 
   // Add a second peer.
-  awareness.states.set(9, {
-    user: { name: 'bob', color: 'hsl(0, 80%, 50%)' },
-    wysiwygSelection: { startOffset: 3, endOffset: 7 },
-  });
-  awareness.emit('change', [{ added: [9], updated: [], removed: [] }, 'test']);
+  peers = [
+    peer('7', 'alice', 'hsl(120, 60%, 50%)', 5, 5),
+    peer('9', 'bob', 'hsl(0, 80%, 50%)', 3, 7),
+  ];
+  notifyPeers();
   flushRaf();
   assert.equal(caretsIn(overlay).length, 2,
     'second peer gets its own caret');
@@ -476,8 +471,8 @@ test('awareness change update → overlay updates without leaking nodes', () => 
     'second peer has a non-collapsed selection rect');
 
   // Remove alice. Only bob remains.
-  awareness.states.delete(7);
-  awareness.emit('change', [{ added: [], updated: [], removed: [7] }, 'test']);
+  peers = [peer('9', 'bob', 'hsl(0, 80%, 50%)', 3, 7)];
+  notifyPeers();
   flushRaf();
   const remaining = caretsIn(overlay);
   assert.equal(remaining.length, 1, 'alice pruned, bob remains');
@@ -485,5 +480,4 @@ test('awareness change update → overlay updates without leaking nodes', () => 
     'the surviving caret is bob');
 
   wiring.destroy();
-  awareness.destroy();
 });

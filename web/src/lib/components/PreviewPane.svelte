@@ -17,7 +17,7 @@
   // user asked for : edits land on the left, rendering changes on the
   // right within ~100ms.
   import { onDestroy } from 'svelte';
-  import * as Y from 'yjs';
+  import { watch, type Session, type Text } from '../collab';
   import { marked } from 'marked';
   import markedKatex from 'marked-katex-extension';
   import { markedHighlight } from 'marked-highlight';
@@ -72,7 +72,12 @@
   marked.setOptions({ gfm: true, breaks: false });
 
   interface Props {
-    ydoc: Y.Doc | undefined;
+    /**
+     * The project's collab session. The preview reads the same text part the
+     * editor writes, so what it renders is the document rather than a copy of
+     * it — which is what it was already doing, one CRDT ago.
+     */
+    session: Session | undefined;
     language: string;
     // file is the active file path within the project. Empty maps to
     // the legacy single-ytext key "codemirror" ; a file path X maps
@@ -102,7 +107,7 @@
     width?: number;
   }
 
-  let { ydoc, language, file, project, pdfURL, onShowErrors, onClose, width }: Props = $props();
+  let { session, language, file, project, pdfURL, onShowErrors, onClose, width }: Props = $props();
 
   // Notebooks bypass the Y.Doc-backed renderer entirely : their cell
   // structure + outputs come from a JSON parse of the .ipynb file
@@ -127,8 +132,10 @@
 
   let html: string = $state('');
   let debounce: ReturnType<typeof setTimeout> | undefined;
-  let ytext: Y.Text | undefined;
-  let observer: (() => void) | undefined;
+  let unwatch: (() => void) | undefined;
+  // Held so the debounce reads the text as it is when it fires, not as it was
+  // when it was scheduled.
+  let textPart: Text | undefined;
   // Track whether the renderer is currently busy. Flipped true at
   // the start of each debounced re-render, false in the finally
   // branch. The overlay below uses this to show a loading spinner
@@ -324,7 +331,7 @@
   function scheduleRender() {
     if (debounce) clearTimeout(debounce);
     debounce = setTimeout(() => {
-      const src = ytext?.toString() ?? '';
+      const src = textPart?.toString() ?? '';
       rendering = true;
       try {
         render(src);
@@ -335,27 +342,43 @@
     }, RENDER_DEBOUNCE_MS);
   }
 
-  // Re-subscribe when ydoc changes (different project).
+  // Re-subscribe when the session or the file changes.
   $effect(() => {
-    if (observer) {
-      ytext?.unobserve(observer);
-      observer = undefined;
-    }
-    ytext = undefined;
-    if (!ydoc) {
+    unwatch?.();
+    unwatch = undefined;
+    if (!session) {
       html = '<div class="text-base-content/60 p-4 italic">No document loaded</div>';
       return;
     }
-    const ytextKey = file && file !== '' ? 'file:' + file : 'codemirror';
-    ytext = ydoc.getText(ytextKey);
-    render(ytext.toString());
-    observer = () => scheduleRender();
-    ytext.observe(observer);
+    let stopped = false;
+    const name = file && file !== '' ? 'file:' + file : 'codemirror';
+    void (async () => {
+      const text = await session.text(name);
+      if (stopped) return;
+      textPart = text;
+      render(text.toString());
+      // A local edit is never reported back, so this only ever fires for a
+      // peer. The editor renders what is typed here itself; there is nothing
+      // for the preview to do about it that the debounce below does not.
+      const off = await watch(session, {
+        text: (changed) => {
+          if (changed === name) scheduleRender();
+        },
+      });
+      if (stopped) off();
+      else unwatch = off;
+    })().catch((err) => console.error('collab: the preview', err));
+    return () => {
+      stopped = true;
+      unwatch?.();
+      unwatch = undefined;
+      textPart = undefined;
+    };
   });
 
   onDestroy(() => {
     if (debounce) clearTimeout(debounce);
-    if (observer) ytext?.unobserve(observer);
+    unwatch?.();
   });
 </script>
 

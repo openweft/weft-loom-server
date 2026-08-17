@@ -166,3 +166,23 @@ export function hslToHex(c: string): string {
       .padStart(2, '0');
   return '#' + to2(r) + to2(g) + to2(b);
 }
+
+/**
+ * What this participant publishes about itself, as every reader of a peer
+ * expects to find it: the collaborator list, the authorship colouring, the
+ * caret labels and the mention candidates all read these keys.
+ *
+ * It is here rather than at the one call site that used to build it because a
+ * rename has to republish the same shape, and two places writing it is two
+ * places for it to drift.
+ *
+ * There is no colorLight: y-codemirror needed a pre-mixed tint, and the caret
+ * painter derives its own from `color`.
+ */
+export function presenceMeta(identity: Identity): Record<string, string> {
+  return {
+    name: identity.name,
+    color: identity.color,
+    ...(identity.avatar ? { avatar: identity.avatar } : {}),
+  };
+}

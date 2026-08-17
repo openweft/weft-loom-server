@@ -3,7 +3,6 @@
   import { logEvent, logError } from '../logbus';
   import { Compartment, EditorState } from '@codemirror/state';
   import { EditorView, keymap, drawSelection, rectangularSelection, crosshairCursor } from '@codemirror/view';
-  import { authorshipExtension } from '../authorship';
   import {
     defaultKeymap,
     history,
@@ -62,12 +61,11 @@
   import { EditorState as ES, type Extension } from '@codemirror/state';
   import { lineNumbers as lineNumbersExt } from '@codemirror/view';
 
-  import * as Y from 'yjs';
-  import { WebsocketProvider } from 'y-websocket';
-  import { yjsBinding, YORIGIN_LOCAL } from '../ybinding';
-  import type { Awareness } from 'y-protocols/awareness';
-  import { presenceCursors } from '../presence';
-  import type { Identity } from '../identity';
+  import { collabBinding, fromCollab } from '../cmbinding';
+  import { authorshipExtension as collabAuthorship } from '../authorship-collab';
+  import { watch, type Session as CollabSession, type Text as CollabText } from '../collab';
+  import { presenceCursors } from '../presence-collab';
+  import { presenceMeta, type Identity } from '../identity';
   import { readFile, writeFile } from '../api';
 
   interface Props {
@@ -78,8 +76,11 @@
     onStatus?: (
       status: 'connecting' | 'connected' | 'disconnected',
     ) => void;
-    onYDoc?: (doc: Y.Doc) => void;
-    onAwareness?: (a: Awareness) => void;
+    // The go-crdt session this project's document lives in. The text is bound
+    // to it; the Y.Doc below stays for presence, which has not moved yet.
+    // Nothing writes to its Y.Text any more, so there is one text CRDT and not
+    // two.
+    session?: CollabSession;
     // onYTextTick fires every time the Y.Text observes a change
     // (local OR remote). Surfaced in the navbar as a counter so we
     // can confirm whether remote updates actually reach the local
@@ -104,7 +105,7 @@
     jumpToLine?: number;
   }
 
-  let { project, language, file, identity, onStatus, onYDoc, onAwareness, onYTextTick, onCursorStats, revisionMode, jumpToLine }: Props = $props();
+  let { project, language, file, identity, session, onStatus, onYTextTick, onCursorStats, revisionMode, jumpToLine }: Props = $props();
 
   // Rich-text in-source decorations were the wrong UX for LaTeX —
   // user feedback : the rendered view belongs in a SEPARATE pane
@@ -380,11 +381,20 @@
   // Compartment holds the authorship extension so we can swap it
   // in / out at runtime when revisionMode changes — no editor remount.
   const authorshipCompartment = new Compartment();
+  // Presence is in a Compartment for a different reason than authorship is.
+  // Authorship is toggled by a button; presence is here because the session
+  // can arrive after the EditorState is built. It usually does, on the first
+  // load of a tab: the binding waits for the text handle, but an extension
+  // list is evaluated once, so a session that lands a moment later left the
+  // editor with no presence at all and nothing to notice it. That is why the
+  // first tab a person opened painted nobody while the second painted them.
+  const presenceCompartment = new Compartment();
 
   let host: HTMLDivElement | undefined = $state();
+  // The collab text part for the file on screen, once its session has handed it
+  // over. Undefined before that, and between files.
+  let collabTextHandle: CollabText | undefined = $state();
   let view: EditorView | undefined;
-  let provider: WebsocketProvider | undefined;
-  let ydoc: Y.Doc | undefined;
   let saveDebounce: ReturnType<typeof setTimeout> | undefined;
   let seeded = false;
   // Show a loading spinner overlay until the editor mounts AND its
@@ -514,11 +524,6 @@
     if (gen !== languageGen) return;
     if (!view) return;
     view.dispatch({ effects: languageCompartment.reconfigure(ext) });
-  }
-
-  function wsURL(p: string): string {
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${proto}//${window.location.host}/api/projects/${encodeURIComponent(p)}/sync`;
   }
 
   // T8 LSP : the per-language client lives for the lifetime of
@@ -675,42 +680,46 @@
   onMount(() => {
     if (!host) return;
     logEvent('editor', 'mount', { file, project });
-    ydoc = new Y.Doc();
-    onYDoc?.(ydoc);
-    provider = new WebsocketProvider(wsURL(project), 'default', ydoc);
-    provider.awareness.setLocalStateField('user', {
-      name: identity.name,
-      color: identity.color,
-      // colorLight is what y-codemirror.next uses as the selection
-      // highlight bg. Defaults to color + '33' (20 % alpha) when
-      // omitted ; we push an explicit slightly-stronger 28 % alpha
-      // so the highlight reads on both light + dark daisyUI themes.
-      colorLight: identity.color.startsWith('hsl(')
-        ? identity.color.replace('hsl(', 'hsla(').replace(')', ', 0.28)')
-        : identity.color + '47',
-      avatar: identity.avatar,
-    });
-    onAwareness?.(provider.awareness);
-    // Expose the live Awareness handle on window so tests (and the
-    // odd power-user) can inject synthetic peer states without needing
-    // a second browser tab. The presence.ts ViewPlugin listens on the
-    // same object's 'change' event, so any `setLocalState` /
-    // `setLocalStateField` call from outside will re-trigger a
-    // decoration rebuild end-to-end exactly like a remote peer would.
-    (window as unknown as { weftLoomAwareness?: Awareness }).weftLoomAwareness = provider.awareness;
+    // The status the navbar shows. A session that has been joined is
+    // connected — the join does not settle until the document has arrived —
+    // so there is no separate handshake to wait for, and the only transition
+    // left to report is the one that ends it.
+    onStatus?.(session ? 'connected' : 'connecting');
+    if (session) {
+      void session
+        .onClose((why) => onStatus?.(why ? 'disconnected' : 'connecting'))
+        .catch((err) => console.error('collab: watching the connection', err));
+    }
     const ytextKey = file && file !== '' ? 'file:' + file : 'codemirror';
-    const ytext = ydoc.getText(ytextKey);
 
-    // Build the cmToY extension here. The yToCm observer is wired
-    // INLINE further down after EditorView is created so it captures
-    // the view reference directly via closure (any indirection
-    // through a binding factory was making Svelte's #key-driven
-    // remounts leak the wrong view ref).
-    const binding = yjsBinding(ytext, ydoc);
+    // The text is a part of the collab document. The handle is asked for once,
+    // here, and everything that needs it awaits the same promise — the binding
+    // to attach itself, and the seed path to ask whether the document is empty.
+    // A session is joined asynchronously and an EditorState's extensions are
+    // not, so the binding's extension goes in through a compartment.
+    const collabCompartment = new Compartment();
+    // Declared before the state is built, filled below, and put in through its
+    // own compartment for the same reason the binding is.
+    const saveCompartment = new Compartment();
+    let saveExtension: Extension = [];
+    const textReady: Promise<CollabText | undefined> = session
+      ? session.text(ytextKey).catch((err) => {
+          console.error('collab: opening the text', err);
+          return undefined;
+        })
+      : Promise.resolve(undefined);
+    let detachCollab: (() => void) | undefined;
+    // Set once the handle arrives, for the parts of this component that read it
+    // synchronously — authorship, and the seed path's "is it empty" question.
+    void textReady.then((h) => (collabTextHandle = h));
 
     const state = EditorState.create({
-      doc: ytext.toString(),
+      // Empty: what the document holds arrives with the session, and the
+      // binding seeds the view when it attaches.
+      doc: '',
       extensions: [
+        collabCompartment.of([]),
+        saveCompartment.of([]),
         lineNumbersCompartment.of(lineNumExt()),
         history(),
         // Multi-cursor : Alt-click adds a cursor at the clicked spot,
@@ -778,28 +787,27 @@
         // zero-height paint). Cheap — gated on viewportChanged.
         // See editorVisibilityCheck.ts for the contract.
         visibilityCheckExtension(),
-        // Custom Y.Text ↔ CodeMirror two-way binding. Replaces
+        // The collab ↔ CodeMirror binding goes in through collabCompartment
+        // above, once the session has handed over the text part. Replaces
         // y-codemirror.next's yCollab : its observer dropped updates
         // past the first sync handshake in our setup and ALSO
         // conflicted with our seed-from-disk path (double dispatch on
-        // initial content load left the editor empty). Pure custom
-        // binding here ; cursor + selection colouring for awareness
-        // peers lives in app.css against the .cm-y* classes the
-        // y-protocols Awareness state already exposes.
-        binding.extension,
-        // Real-time presence : remote peers' carets + selection
-        // ranges decorate the editor surface live, driven by the
-        // same Yjs Awareness map CollaboratorsSidebar reads. Every
-        // local selection change broadcasts a `cursor` field into
-        // awareness (throttled at 50 ms) so peers see us too. The
-        // extension is unconditional — when no peers are connected
-        // it simply paints nothing.
-        presenceCursors(provider.awareness),
+        // initial content load left the editor empty). Pure custom binding
+        // here; the caret and selection colours are painted by the presence
+        // extension below rather than by CSS against somebody else's classes.
+        // Where everybody else is, and where this participant is. The identity
+        // travels with every cursor rather than being set once, because a
+        // session publishes the two together.
+        presenceCompartment.of(
+          session ? presenceCursors(session, () => presenceMeta(identity)) : [],
+        ),
         // Authorship colouring goes through a Compartment so the
         // toggle button in the navbar can swap it in / out without
         // rebuilding the whole EditorState.
         authorshipCompartment.of(
-          revisionMode ? authorshipExtension(ytext, provider.awareness) : [],
+          revisionMode && session && collabTextHandle
+            ? collabAuthorship(session, collabTextHandle)
+            : [],
         ),
         // Marp theme autocomplete : fires when the cursor sits in a
         // YAML front-matter block on a `theme:` line. Closed if the
@@ -892,9 +900,15 @@
     // pack ; the chunk arrival reconfigures the Compartment with
     // the real parser + highlighter.
     void loadLanguagePack(language);
-    // Attach the yToCm observer NOW so it has a valid view target
-    // even for the very first remote update.
-    bindingDetach = binding.attach(view);
+    // Attach as soon as the handle exists, so the binding has a valid view
+    // target for the very first change arriving from elsewhere.
+    void textReady.then((handle) => {
+      if (!handle || !session) return;
+      const bound = collabBinding(session, handle);
+      view!.dispatch({ effects: collabCompartment.reconfigure(bound.extension) });
+      detachCollab = bound.attach(view!);
+    });
+    bindingDetach = () => detachCollab?.();
 
     // Expose a global insert-at-cursor hook so the LaTeX symbol
     // palette + math equation builder can splice LaTeX commands
@@ -956,16 +970,6 @@
       view.focus();
     };
 
-    provider.on('status', (event: { status: string }) => {
-      if (
-        event.status === 'connected' ||
-        event.status === 'connecting' ||
-        event.status === 'disconnected'
-      ) {
-        onStatus?.(event.status);
-      }
-    });
-
     // Auto-seed from disk : MUST wait for the WS sync handshake so
     // that the relay's existing doc state (or another peer's seed)
     // has settled before we decide whether to seed.
@@ -989,7 +993,9 @@
     //      is mid-typing or about to seed ; let them.
     const seedFromDisk = async () => {
       if (!file || seeded) return;
-      if (ytext.length > 0) {
+      const seedText = await textReady;
+      if (!seedText) { loading = false; return; }
+      if (seedText.length > 0) {
         seeded = true;
         loading = false;
         return;
@@ -1005,10 +1011,11 @@
       // against multi-browser racing ; with one client there's
       // nothing to protect.
       try {
-        const peerCount = provider!.awareness.getStates().size;
+        // peers() includes this replica, so "only us" is one.
+        const peerCount = session ? session.peers().length : 1;
         if (peerCount <= 1) {
           const content = await readFile(project, file);
-          if (content && ytext.length === 0 && view) {
+          if (content && seedText.length === 0 && view) {
             view.dispatch({ changes: { from: 0, insert: content } });
             logEvent('seed', 'solo-fast-path', { file, bytes: content.length });
           }
@@ -1023,45 +1030,52 @@
         if (resp.status === 409) {
           // Someone else holds the claim. Two paths converge here :
           //   - they're a live peer about to push the seed via Yjs
-          //     update (we should see it via ytext.observe momentarily)
+          //     update (we should see it through the session momentarily)
           //   - they're a stale claim (crashed mid-seed, page reload
           //     within the 30 s window). No one will push, so we have
           //     to force-fetch ourselves.
           //
-          // Race-aware wait : observe ytext until it goes non-empty
+          // Race-aware wait : watch the part until it goes non-empty
           // OR a 3 s hard deadline expires. Wakes up immediately when
           // the elected seeder lands content (typical reload = O(ms)),
           // falls back to force-fetch otherwise.
           await new Promise<void>((resolve) => {
             let done = false;
+            let unwatch: (() => void) | undefined;
             const finish = () => {
               if (done) return;
               done = true;
-              ytext.unobserve(onChange);
+              unwatch?.();
               clearTimeout(timer);
               resolve();
             };
             const onChange = () => {
-              if (ytext.length > 0) finish();
+              if (seedText.length > 0) finish();
             };
-            ytext.observe(onChange);
+            void watch(session!, {
+              text: (name) => {
+                if (name === ytextKey) onChange();
+              },
+            })
+              .then((off) => (done ? off() : (unwatch = off)))
+              .catch(() => finish());
             // 500 ms deadline : the awareness propagation + ytext
             // update from a real co-author is sub-second on the
             // local relay. If nobody pushes in 500 ms the claim
             // holder is most likely a stale ghost (page reload
             // before WS close), so force-fetching ourselves loses
-            // nothing — the `ytext.length === 0` re-check below
+            // nothing — the `seedText.length === 0` re-check below
             // still guards against a last-second double-insert.
             const timer = setTimeout(finish, 500);
             // Already populated by the time we registered ? Check
             // once synchronously to avoid the entire wait when the
             // peer's insert beat us to the observe() call.
-            if (ytext.length > 0) finish();
+            if (seedText.length > 0) finish();
           });
-          if (ytext.length === 0 && view) {
+          if (seedText.length === 0 && view) {
             try {
               const content = await readFile(project, file);
-              if (content && ytext.length === 0) {
+              if (content && seedText.length === 0) {
                 view.dispatch({ changes: { from: 0, insert: content } });
                 logEvent('seed', 'force-after-409', { file, bytes: content.length });
               }
@@ -1071,7 +1085,7 @@
         }
         if (!resp.ok) { loading = false; return; }
         const content = await readFile(project, file);
-        if (content && ytext.length === 0 && view) {
+        if (content && seedText.length === 0 && view) {
           view.dispatch({ changes: { from: 0, insert: content } });
           logEvent('seed', 'completed', { file, bytes: content.length });
         }
@@ -1100,57 +1114,39 @@
     // later. Polling kicks off the periodic .bib refresh too.
     bib.setProject(project);
     bib.start();
-    provider!.once('sync', () => {
+    // The document has arrived when the text handle has: a join does not
+    // settle before it. That is what the relay's 'sync' event used to
+    // announce, so the wait afterwards is the same wait.
+    void textReady.then(() => {
       setTimeout(() => {
         void seedFromDisk();
       }, 500);
     });
-    // Offline fallback : if the WS never confirms sync (relay down,
-    // handshake broken) we still want the user to see the file. 2 s
-    // is past the median sync latency by an order of magnitude.
+    // Offline fallback : if the session never lands (server down, handshake
+    // broken) we still want the user to see the file. 2 s is past the median
+    // join latency by an order of magnitude.
     setTimeout(() => { void seedFromDisk(); }, 2000);
 
-    // Diagnostic : every ytext.observe pulse pushes the count up via
-    // onYTextTick. Helps isolate whether remote WS frames reach the
-    // Y.Text CRDT or are dropped at the y-websocket → ydoc layer.
+    // Diagnostic : every change arriving from somebody else pushes the count
+    // up via onYTextTick. Helps isolate whether remote frames reach the CRDT
+    // or are dropped on the way in.
     let ytextTickCount = 0;
-    ytext.observe(() => {
-      ytextTickCount++;
-      onYTextTick?.(ytextTickCount);
-    });
+    void watch(session!, {
+      text: (name) => {
+        if (name !== ytextKey) return;
+        ytextTickCount++;
+        onYTextTick?.(ytextTickCount);
+      },
+    }).catch(() => { /* diagnostics only */ });
 
-    // DIAGNOSTIC : log every ydoc update event so we can see whether
-    // local typing actually produces Y.Doc updates that should reach
-    // the WebSocketProvider's send-on-update listener. If the user
-    // types and we see no "[ydoc.update]" line, the CM→Y.Text path
-    // is broken inside our binding. If we see updates but the
-    // server log still shows only heartbeats, the WS provider isn't
-    // forwarding them.
-    // Gated : the unconditional version flooded the console on every
-    // keystroke (~5-15 ms per stroke through the DevTools reflection
-    // bridge). Now opt-in via `window.weftLoomVerbose = true` in a DEV
-    // build only — production users never pay. See perf-audit-2026-06-14
-    // H1.
-    ydoc!.on('update', (update: Uint8Array, origin: unknown) => {
-      // Vite injects `import.meta.env.DEV` ; the cast keeps the
-      // tsconfig (no @types/vite) happy without pulling in client.d.ts.
-      const env = (import.meta as unknown as { env?: { DEV?: boolean } }).env;
-      if (env?.DEV && (window as unknown as { weftLoomVerbose?: boolean }).weftLoomVerbose) {
-        console.log('[ydoc.update]', { bytes: update.length, origin: String(origin) });
-      }
-    });
-
-    // Debug API : window.__weftDebug.insert(s) writes s directly to
-    // the Y.Text CRDT, bypassing CodeMirror + yCollab. If A calls it
-    // and B sees the chars appear → WS sync IS working, the bug is
-    // in yCollab's transaction → Y.Text bridge. If B doesn't see it
-    // either → bug is in y-websocket / Y.Doc.update broadcasting.
+    // Debug API : window.__weftDebug.insert(s) writes straight to the text
+    // part, bypassing CodeMirror and the binding. If A calls it and B sees the
+    // characters appear, the wire is working and any bug is between the editor
+    // and the part; if B sees nothing either, it is below that.
     (window as unknown as { __weftDebug: { insert: (s: string) => void } }).__weftDebug = {
       insert: (s: string) => {
-        ydoc!.transact(() => {
-          ytext.insert(ytext.length, s);
-        }, 'debug-insert');
-        console.log('[__weftDebug] inserted', s, 'ytext.length now', ytext.length);
+        void collabTextHandle?.insert(collabTextHandle.length, s);
+        console.log('[__weftDebug] inserted', s, 'length now', collabTextHandle?.length);
       },
     };
 
@@ -1161,14 +1157,17 @@
     // push pipeline. Remote (peer) updates skip the autosave path —
     // the originating peer already wrote the file ; double-writing
     // from every viewer would thrash the disk + fight on the lock.
-    ytext.observe((_event, tr) => {
-      if (tr.origin !== YORIGIN_LOCAL) return;
+    // A file is written by whoever typed into it, not by everybody who was told
+    // about the edit. With Yjs that was a transaction origin; collab never
+    // reports local edits, so the question is asked of the editor instead.
+    saveExtension = EditorView.updateListener.of((update) => {
+      if (!update.docChanged || fromCollab(update)) return;
       if (!file) return;
       if (saveDebounce) clearTimeout(saveDebounce);
       saveDebounce = setTimeout(async () => {
         if (!file) return;
         try {
-          await writeFile(project, file, ytext.toString());
+          await writeFile(project, file, update.state.doc.toString());
           // V0.11 : dispatch an autosave-completed signal so the
           // compile-on-save toggle can fire a recompile. Throttled +
           // language-gated at the listener side, NOT here — the
@@ -1185,10 +1184,12 @@
         // disk. We piggy-back on the same 250 ms debounce as the
         // file write — pre-commit diagnostics are rarely useful.
         if (lspClient) {
-          try { lspClient.didChange('file://' + file, ytext.toString()); } catch { /* ignore */ }
+          try { lspClient.didChange('file://' + file, update.state.doc.toString()); } catch { /* ignore */ }
         }
       }, 250);
     });
+
+    view!.dispatch({ effects: saveCompartment.reconfigure(saveExtension) });
 
     // Compile-time flush : the user expects "Compile" to use what's
     // in the editor RIGHT NOW, not what was last debounced to disk
@@ -1199,10 +1200,10 @@
     // promise to ev.detail.ack so the dispatcher can await it.
     const flushSaves = (e: Event) => {
       const ev = e as CustomEvent<{ ack: Promise<void> | null }>;
-      if (!file || !ydoc) return;
+      if (!file || !view) return;
       ev.detail.ack = (async () => {
         if (saveDebounce) { clearTimeout(saveDebounce); saveDebounce = undefined; }
-        const content = ytext.toString();
+        const content = view.state.doc.toString();
         try {
           await writeFile(project, file, content);
           console.log('[flush-saves] wrote', file, content.length, 'bytes');
@@ -1220,19 +1221,35 @@
     };
   });
 
-  // Reconfigure the authorship Compartment when revisionMode flips.
-  // untrack the view/provider/ydoc reads so the effect's only dep is
-  // revisionMode itself — the other state is captured by closure but
-  // doesn't drive re-runs.
+  // Reconfigure the authorship Compartment when revisionMode flips — and when
+  // the session or the text handle arrives, because the toggle is not the only
+  // thing that can make the extension buildable. This used to depend on
+  // revisionMode alone and rebuild the Yjs extension against a Y.Text nothing
+  // writes to, so the first toggle replaced the working painter with one that
+  // had nothing to read.
   $effect(() => {
     const on = revisionMode;
+    const live = session;
+    const text = collabTextHandle;
     untrack(() => {
-      if (!view || !provider || !ydoc) return;
-      const ytextKey = file && file !== '' ? 'file:' + file : 'codemirror';
-      const ext = on
-        ? authorshipExtension(ydoc.getText(ytextKey), provider.awareness)
-        : [];
+      if (!view) return;
+      const ext = on && live && text ? collabAuthorship(live, text) : [];
       view.dispatch({ effects: authorshipCompartment.reconfigure(ext) });
+    });
+  });
+
+  // And the presence Compartment when the session arrives. identity is read
+  // through the thunk rather than depended on here: a rename republishes
+  // itself, and rebuilding the extension would drop every peer decoration.
+  $effect(() => {
+    const live = session;
+    untrack(() => {
+      if (!view) return;
+      view.dispatch({
+        effects: presenceCompartment.reconfigure(
+          live ? presenceCursors(live, () => presenceMeta(identity)) : [],
+        ),
+      });
     });
   });
 
@@ -1251,19 +1268,15 @@
     // doesn't lose the user's last keystrokes.
     if (saveDebounce) {
       clearTimeout(saveDebounce);
-      if (ydoc && file) {
-        const ytextKey = 'file:' + file;
-        const t = ydoc.getText(ytextKey);
-        // Fire-and-forget : the provider's about to die anyway.
-        writeFile(project, file, t.toString()).catch((err) => {
+      if (collabTextHandle && file) {
+        // Fire-and-forget : this component is going away either way.
+        writeFile(project, file, collabTextHandle.toString()).catch((err) => {
           logError('editor', 'onDestroy-flush', err);
           console.error('editor flush failed', err);
         });
       }
     }
     view?.destroy();
-    provider?.destroy();
-    ydoc?.destroy();
     bib.stop();
     // T8 LSP : send didClose + tear down the WS so the subprocess
     // doesn't leak when the user closes the file.
@@ -1326,7 +1339,7 @@
           return;
         }
         lspClient = c;
-        const text = ydoc?.getText('file:' + file).toString() ?? '';
+        const text = collabTextHandle?.toString() ?? '';
         c.didOpen('file://' + file, slug, text);
         const detach = c.onChange(() => {
           if (view) view.dispatch({ effects: [] });
@@ -1391,26 +1404,37 @@
       <!-- Tool drawers : icon buttons that toggle the side-panels.
            Each dispatches a window event the matching panel listens
            for ; the panels themselves still own their popover state +
-           DOM so this toolbar stays a thin trigger surface. -->
+           DOM so this toolbar stays a thin trigger surface.
+
+           The data-testid on each is the handle two suites had been reaching
+           for since these were floating buttons. Replacing the buttons
+           dropped the attributes and left the suites looking for something
+           that was no longer in the DOM — a test handle is not decoration,
+           and an aria-label is user-facing copy rather than a substitute. -->
       <div class="join mr-2">
         <button class="join-item btn btn-xs btn-ghost"
           onclick={() => window.dispatchEvent(new CustomEvent('weft-loom:toggle-palette'))}
+          data-testid="latex-palette-toggle"
           title="LaTeX symbol palette"
           aria-label="Toggle LaTeX symbol palette">∑</button>
         <button class="join-item btn btn-xs btn-ghost"
           onclick={() => window.dispatchEvent(new CustomEvent('weft-loom:toggle-bib'))}
+          data-testid="bib-toggle"
           title="Bibliography"
           aria-label="Toggle bibliography">📚</button>
         <button class="join-item btn btn-xs btn-ghost"
           onclick={() => window.dispatchEvent(new CustomEvent('weft-loom:toggle-snippets'))}
+          data-testid="snippets-toggle"
           title="Snippets (user-defined + built-in)"
           aria-label="Toggle snippets">✂️</button>
         <button class="join-item btn btn-xs btn-ghost"
           onclick={() => window.dispatchEvent(new CustomEvent('weft-loom:toggle-comments'))}
+          data-testid="comments-toggle"
           title="Comments"
           aria-label="Toggle comments">💬</button>
         <button class="join-item btn btn-xs btn-ghost"
           onclick={() => window.dispatchEvent(new CustomEvent('weft-loom:toggle-words'))}
+          data-testid="words-toggle"
           title="Word count + writing goals"
           aria-label="Toggle word count">🔢</button>
       </div>

@@ -28,6 +28,11 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - name: install web deps
         run: cd web && npm ci
+      # Before the build, not after: vite copies web/public into the bundle the
+      # Go binary embeds. Without it the release ships an editor that loads and
+      # never collaborates.
+      - name: generate the collab client
+        run: ./scripts/gen-collab-wasm.sh
       - name: regenerate openapi + ts client + vite build
         run: |
           go run ./tools/dump-openapi > openapi.json

@@ -75,6 +75,12 @@ func NewPostgresStore(ctx context.Context, dsn, filesRoot string) (*PostgresStor
 // Close drops the connection pool. Safe to call multiple times.
 func (s *PostgresStore) Close() { s.db.Close() }
 
+// Pool is the connection pool this store uses, so that anything else needing
+// the same database uses the same connections rather than opening a second pool
+// beside it. Collaborative editing keeps its documents here; see
+// internal/server/collab.go.
+func (s *PostgresStore) Pool() *pgxpool.Pool { return s.db }
+
 // projectDir composes <filesRoot>/<sanitised-owner>/<sanitised-name>.
 // We sanitise the owner subject (dex subjects can be URLs) for the
 // filesystem ; the database is the authoritative ACL — the filesystem

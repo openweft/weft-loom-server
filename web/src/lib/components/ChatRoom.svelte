@@ -1,6 +1,6 @@
 <script lang="ts">
-  // ChatRoom — real-time chat between co-editors. Backed by a Y.Array
-  // on the same Y.Doc the editor uses, so messages propagate through
+  // ChatRoom — real-time chat between co-editors. Backed by a list part of the
+  // same collab document the editor uses, so messages propagate through
   // the existing y-websocket relay — no separate channel, no extra
   // backend. Each entry is {id, clientID, name, color, avatar, text, ts}.
   //
@@ -9,14 +9,12 @@
   // / weft-block path the editor uses) would write chat to a sidecar
   // file too ; V0.4 follow-up.
   import { onDestroy, untrack } from 'svelte';
-  import * as Y from 'yjs';
-  import type { Awareness } from 'y-protocols/awareness';
+  import { records, encode, watch, type List, type Session } from '../collab';
   import Avatar from './Avatar.svelte';
   import type { Identity } from '../identity';
 
   interface Props {
-    ydoc: Y.Doc | undefined;
-    awareness: Awareness | undefined;
+    session: Session | undefined;
     identity: Identity;
     open: boolean;
     // embedded == true when ChatRoom sits inside another container
@@ -31,11 +29,15 @@
     onToggleCollapsed?: () => void;
   }
 
-  let { ydoc, awareness, identity, open = $bindable(), embedded = false, collapsed = false, onToggleCollapsed }: Props = $props();
+  let { session, identity, open = $bindable(), embedded = false, collapsed = false, onToggleCollapsed }: Props = $props();
 
   interface Message {
     id: string;
-    clientID: number;
+    // Who wrote it. It used to be the awareness clientID, a number; a replica
+    // identity does not fit one, so it travels as the decimal string collab
+    // reports. Old messages carry a number and still render: this is only ever
+    // compared and shown.
+    clientID: string | number;
     name: string;
     color: string;
     avatar?: string;
@@ -77,15 +79,17 @@
     document.addEventListener('mousemove', move);
     document.addEventListener('mouseup', up);
   }
-  let ymsgs: Y.Array<Message> | undefined;
-  let observer: (() => void) | undefined;
+  let ymsgs: List | undefined;
+  // What stops watching when the session changes. A handler left registered on
+  // a session nobody is looking at keeps this component alive with it.
+  let unwatch: (() => void) | undefined;
 
   function refresh() {
     if (!ymsgs) {
       messages = [];
       return;
     }
-    messages = ymsgs.toArray();
+    messages = records<Message>(ymsgs);
     if (open) {
       requestAnimationFrame(() => {
         if (scroll) scroll.scrollTop = scroll.scrollHeight;
@@ -93,46 +97,60 @@
     }
   }
 
-  // Read ydoc as the effect's only reactive dep ; the body's writes
-  // (messages, unreadCount, ymsgs, observer) run untracked so they
-  // don't recursively retrigger the effect. Without untrack the
-  // initial messages=[] write made Svelte queue another effect pass
-  // → effect_update_depth_exceeded → blocked microtask queue → file
-  // list fetch (and every other await) never resolved.
+  // Read the session as the effect's only reactive dep ; the body's writes
+  // (messages, unreadCount, ymsgs) run untracked so they don't recursively
+  // retrigger the effect. Without untrack the initial messages=[] write made
+  // Svelte queue another effect pass → effect_update_depth_exceeded → blocked
+  // microtask queue → file list fetch (and every other await) never resolved.
   $effect(() => {
-    const doc = ydoc;
+    const live = session;
     untrack(() => {
-      if (observer && ymsgs) ymsgs.unobserve(observer);
-      observer = undefined;
-      if (!doc) {
-        ymsgs = undefined;
-        messages = [];
-        return;
-      }
-      ymsgs = doc.getArray<Message>('chat');
-      refresh();
-      observer = () => refresh();
-      ymsgs.observe(observer);
+      unwatch?.();
+      unwatch = undefined;
+      ymsgs = undefined;
+      messages = [];
+      if (!live) return;
+      let stopped = false;
+      unwatch = () => {
+        stopped = true;
+      };
+      void (async () => {
+        const list = await live.list('chat');
+        if (stopped) return;
+        ymsgs = list;
+        refresh();
+        // A list part reports only that it moved, so this reads it back whole.
+        // That is what the views written against one do, and a chat holds
+        // messages rather than the hundreds of thousands of characters a
+        // document holds.
+        const off = await watch(live, {
+          list: (name) => {
+            if (name === 'chat' && !stopped) refresh();
+          },
+        });
+        if (stopped) off();
+        else unwatch = off;
+      })().catch((err) => console.error('collab: chat', err));
     });
   });
 
   onDestroy(() => {
-    if (observer && ymsgs) ymsgs.unobserve(observer);
+    unwatch?.();
   });
 
   function send() {
     const txt = draft.trim();
-    if (!txt || !ymsgs || !awareness) return;
+    if (!txt || !ymsgs || !session) return;
     const msg: Message = {
       id: cryptoRandom(),
-      clientID: awareness.clientID,
+      clientID: session.site,
       name: identity.name,
       color: identity.color,
       avatar: identity.avatar,
       text: txt,
       ts: Date.now(),
     };
-    ymsgs.push([msg]);
+    void ymsgs.append(encode(msg)).catch((err) => console.error('collab: sending', err));
     draft = '';
   }
 

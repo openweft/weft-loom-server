@@ -157,6 +157,9 @@ function loadModule(doc) {
   const mod = { exports: {} };
   // eslint-disable-next-line no-new-func
   new Function('module', 'exports', 'require', wrapped)(mod, mod.exports, (id) => {
+    // The module watches peers through collab now. Nothing below exercises
+    // that path, but the import has to resolve for the module to load at all.
+    if (id === './collab') return { watchPeers: async () => () => {} };
     throw new Error('unexpected require: ' + id);
   });
   return mod.exports;

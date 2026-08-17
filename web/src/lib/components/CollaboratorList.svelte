@@ -1,27 +1,27 @@
 <script lang="ts">
-  // CollaboratorList — render every Yjs awareness state currently in
+  // CollaboratorList — render everybody the session says is currently in
   // the room as a chip with the user's name in their distinctive
   // color. The local user always appears first (with a "(you)"
   // suffix) so they can pick their name out at a glance. Clicking
   // the local chip opens a name-edit popover.
   //
-  // Yjs awareness is the same source y-codemirror.next uses for
+  // The session is the same source the editor paints peer carets from, so
   // remote cursor coloring ; sharing the colors keeps the navbar
   // chips + the in-buffer cursors consistent.
   import { onDestroy } from 'svelte';
-  import type { Awareness } from 'y-protocols/awareness';
+  import { watchPeers, type Session } from '../collab';
   import { saveName, type Identity } from '../identity';
 
   interface Props {
-    awareness: Awareness | undefined;
+    session: Session | undefined;
     self: Identity;
     onRename: (identity: Identity) => void;
   }
 
-  let { awareness, self, onRename }: Props = $props();
+  let { session, self, onRename }: Props = $props();
 
   interface Peer {
-    clientID: number;
+    clientID: string;
     name: string;
     color: string;
     self: boolean;
@@ -32,23 +32,24 @@
   let draftName = $state('');
 
   function snapshot() {
-    if (!awareness) {
+    if (!session) {
       peers = [];
       return;
     }
     const out: Peer[] = [];
-    const states = awareness.getStates();
-    const selfID = awareness.clientID;
-    states.forEach((state, clientID) => {
-      const user = (state as { user?: { name?: string; color?: string } }).user;
-      if (!user || !user.name) return;
+    // peers() includes this participant, where an awareness map excluded it —
+    // and this list wants it, marked as itself and put first.
+    const selfSite = session.site;
+    for (const peer of session.peers()) {
+      const name = peer.meta?.name;
+      if (!name) continue;
       out.push({
-        clientID,
-        name: user.name,
-        color: user.color ?? 'hsl(0, 0%, 60%)',
-        self: clientID === selfID,
+        clientID: peer.site,
+        name,
+        color: peer.meta?.color ?? 'hsl(0, 0%, 60%)',
+        self: peer.site === selfSite,
       });
-    });
+    }
     // Put the local user first ; everyone else alphabetical.
     out.sort((a, b) => {
       if (a.self !== b.self) return a.self ? -1 : 1;
@@ -57,23 +58,29 @@
     peers = out;
   }
 
-  let observer: (() => void) | undefined;
+  let unwatch: (() => void) | undefined;
   $effect(() => {
-    observer = undefined;
-    if (!awareness) return;
+    const live = session;
+    unwatch?.();
+    unwatch = undefined;
+    if (!live) {
+      peers = [];
+      return;
+    }
     snapshot();
-    const a = awareness;
-    const fn = () => snapshot();
-    observer = fn;
-    a.on('change', fn);
+    let stopped = false;
+    void watchPeers(live, snapshot)
+      .then((off) => (stopped ? off() : (unwatch = off)))
+      .catch((err) => console.error('collab: watching who is here', err));
     return () => {
-      a.off('change', fn);
-      if (observer === fn) observer = undefined;
+      stopped = true;
+      unwatch?.();
+      unwatch = undefined;
     };
   });
 
   onDestroy(() => {
-    if (observer && awareness) awareness.off('change', observer);
+    unwatch?.();
   });
 
   function startEdit() {
@@ -112,10 +119,9 @@
       </button>
     {/if}
   {/each}
-  {#if peers.length === 0 && awareness}
-    <!-- "connecting…" only makes sense when a Yjs provider exists but
-         the WS isn't fully up yet. With the editor not mounted at all,
-         awareness is undefined and the chip area stays empty. -->
+  {#if peers.length === 0 && session}
+    <!-- "connecting…" only makes sense once a session exists and nobody has
+         published yet. With no session at all the chip area stays empty. -->
     <span class="text-xs opacity-40 italic">connecting…</span>
   {/if}
 </div>

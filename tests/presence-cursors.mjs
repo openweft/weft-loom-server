@@ -1,204 +1,176 @@
-// presence-cursors.mjs — In-editor real-time presence cursors
-// regression test.
+// presence-cursors.mjs — where the other person is, painted in this editor.
 //
-// The CollaboratorsSidebar surfaces who is in the room, but until
-// this feature shipped the editor surface itself had no visual
-// presence : you could not tell where a peer was typing or what
-// they had selected. presence.ts now decorates the editor with a
-// caret bar + label + selection mark per remote peer, driven by
-// the same Yjs Awareness map the sidebar reads.
+// The previous version grabbed the live Awareness handle off
+// `window.weftLoomAwareness`, pushed a synthetic peer into its internal states
+// map and fired a 'change' event. That was a fair way to test a ViewPlugin
+// driven by Yjs awareness, and it went stale the moment presence started
+// reading the collab session: the injection still succeeded, so four of its ten
+// checks passed and the six that meant anything did not.
 //
-// We test the wiring end-to-end in a single browser tab : open a
-// .tex file, grab the live Awareness handle exposed on window as
-// `weftLoomAwareness`, push a synthetic peer state into the
-// internal `states` Map (this skips the WS round-trip but
-// exercises the exact path the ViewPlugin observes), emit a
-// 'change' event so CodeMirror rebuilds its decorations, then
-// assert :
-//   - .cm-peer-caret renders in the DOM, carrying data-name +
-//     a per-peer color on its border.
-//   - .cm-peer-selection paints when the peer state contains a
-//     non-empty range.
-//   - The caret's pixel position matches the offset (within the
-//     bounding rect of the corresponding glyph in cm-content).
+// So this drives two real tabs. It is slower, and it is the thing being
+// claimed: a peer moves, and the other tab paints it.
 //
-// We also verify the local broadcast direction : moving the local
-// caret writes a `cursor` field into our own awareness state, so
-// peers would see us in turn.
-
+// It keeps every assertion the old file made —
+//   - .cm-peer-caret in the DOM, carrying data-name and a per-peer colour
+//   - .cm-peer-selection painted for a non-empty range
+//   - the caret sitting where that offset actually is
+//   - the local direction: this tab publishes its own cursor
+// — and asks them of a peer that exists.
+//
+// The position check compares the peer caret against the editor's own cursor
+// put at the same offset in the same tab. That is the strongest ground truth
+// available in the page: if the two agree, the offset survived the crossing in
+// the units CodeMirror counts in.
+//
+// Needs a server on :8080 with a project called demo.
 import puppeteer from 'puppeteer';
 
 const ROOT = 'http://127.0.0.1:8080';
 const PROJECT = 'demo';
 const PATH = 'presence-cursors-test-' + Date.now() + '.tex';
 
-let passed = 0, failed = 0;
-function ok(t, m)    { passed++; console.log('  \x1b[32m✓\x1b[0m ' + t + (m ? '  ' + m : '')); }
-function failL(t, m) { failed++; console.log('  \x1b[31m✕\x1b[0m ' + t + '  ' + m); }
+let passed = 0,
+  failed = 0;
+const ok = (t, m) => {
+  passed++;
+  console.log('  \x1b[32m✓\x1b[0m ' + t + (m ? '  ' + m : ''));
+};
+const failL = (t, m) => {
+  failed++;
+  console.log('  \x1b[31m✕\x1b[0m ' + t + '  ' + m);
+};
 
 console.log('\n\x1b[1mweft-loom presence cursors suite\x1b[0m');
 
-// Seed body : pad the first line so offset 10 lands inside a
-// stretch of readable characters (not right at a paragraph break)
-// — makes the pixel-position assertion stable.
-const body = '\\documentclass{article}\n'
-  + '\\begin{document}\n'
-  + 'Hello world, this is the body for the presence test.\n'
-  + '\\end{document}\n';
+// A long prose line, so the offsets below land mid-word and a caret has a
+// glyph to sit against rather than a line break.
+const body =
+  '\\documentclass{article}\n' +
+  '\\begin{document}\n' +
+  'The quick brown fox jumps over the lazy dog and keeps going here.\n' +
+  '\\end{document}\n';
 
-await fetch(ROOT + '/api/projects/' + PROJECT + '/files/' + encodeURIComponent(PATH),
-  { method: 'PUT', body });
-ok('seed', PATH + ' (' + body.length + ' bytes)');
+const seeded = await fetch(
+  ROOT + '/api/projects/' + PROJECT + '/files/' + encodeURIComponent(PATH),
+  { method: 'PUT', headers: { 'Content-Type': 'text/plain' }, body },
+);
+if (seeded.ok) ok('seed', PATH + ' (' + body.length + ' bytes)');
+else failL('seed', 'PUT returned ' + seeded.status);
 
-const browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox'] });
-const page = await browser.newPage();
-const errors = [];
-page.on('pageerror', e => errors.push('PAGEERR: ' + e.message));
-page.on('console', msg => {
-  if (msg.type() === 'error') errors.push('CONSOLE: ' + msg.text().slice(0, 200));
-});
+const br = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox'] });
 
-await page.goto(ROOT + '/', { waitUntil: 'domcontentloaded' });
+// Each tab gets its own name and colour — in sessionStorage, which is per tab,
+// so the label and the border colour asserted below are values only that peer
+// could have supplied.
+const open = async (name, color) => {
+  const p = await br.newPage();
+  await p.setViewport({ width: 1400, height: 900 });
+  await p.goto(ROOT + '/', { waitUntil: 'domcontentloaded' });
+  await p.evaluate(
+    ({ n, c }) => {
+      sessionStorage.setItem('weft-loom-user-name', n);
+      sessionStorage.setItem('weft-loom-user-color', c);
+    },
+    { n: name, c: color },
+  );
+  await p.reload({ waitUntil: 'domcontentloaded' });
+  await new Promise((r) => setTimeout(r, 2500));
+  await p.evaluate((f) => window.weftLoomOpenFile(f), PATH);
+  await p.waitForSelector('.cm-content', { timeout: 20000 });
+  await new Promise((r) => setTimeout(r, 3000));
+  return p;
+};
+
+// The editor's own jump hook, which is how every other test moves a selection:
+// clicking into CodeMirror from puppeteer waits on a scroll that never settles.
+const selectRange = (p, from, to) =>
+  p.evaluate(({ f, t }) => window.weftLoomJumpToOffset({ offset: f, to: t }), { f: from, t: to });
+
+const AY = { name: 'Tab Ay', color: 'hsl(200, 70%, 50%)' };
+const BEE = { name: 'Peer Bee', color: 'hsl(280, 70%, 50%)' };
+const a = await open(AY.name, AY.color);
+const b = await open(BEE.name, BEE.color);
+
+const docLen = await a.evaluate(
+  () => document.querySelector('.cm-content')?.textContent?.length ?? 0,
+);
+if (docLen > 0) ok('doc loaded', docLen + ' chars');
+else failL('doc loaded', 'the editor is empty');
+
+// B selects a range inside the prose line.
+const SEL_FROM = 45,
+  SEL_TO = 55;
+await selectRange(b, SEL_FROM, SEL_TO);
+ok('peer moves', 'selection ' + SEL_FROM + '→' + SEL_TO + ' in the other tab');
+// A is read next, so it has to be the visible tab: the peer rebuild is
+// deferred to requestAnimationFrame, which a background tab never gets.
+await a.bringToFront();
 await new Promise((r) => setTimeout(r, 3000));
-await page.evaluate((p) => (window).weftLoomOpenFile(p), PATH);
-await new Promise((r) => setTimeout(r, 4500));
 
-// Confirm the editor has the file loaded and Awareness is exposed.
-const probe = await page.evaluate(() => ({
-  docLen: (document.querySelector('.cm-content')?.textContent ?? '').length,
-  hasAwareness: !!(window).weftLoomAwareness,
-  selfID: (window).weftLoomAwareness?.clientID ?? null,
-}));
-if (probe.docLen < 30) {
-  failL('doc loaded', 'editor empty : ' + JSON.stringify(probe)
-    + ' errors: ' + errors.slice(0, 3).join(' | '));
-  await browser.close(); process.exit(1);
-}
-ok('doc loaded', probe.docLen + ' chars');
-if (!probe.hasAwareness) {
-  failL('awareness handle', 'window.weftLoomAwareness missing');
-  await browser.close(); process.exit(1);
-}
-ok('awareness handle', 'clientID=' + probe.selfID);
-
-// Inject a synthetic peer with a cursor at offset 10 and a
-// selection spanning [20, 30]. We poke the internal `states` Map
-// directly (it's the same Map every other awareness consumer
-// reads via getStates()) and then emit a 'change' event with the
-// `added` clientIDs so the presence ViewPlugin rebuilds.
-const peerInjected = await page.evaluate(() => {
-  const a = (window).weftLoomAwareness;
-  if (!a) return { ok: false };
-  const peerID = 999999;
-  a.states.set(peerID, {
-    user: { name: 'Ada', color: 'hsl(280, 70%, 55%)' },
-    cursor: { anchor: 20, head: 30 },
-  });
-  // Bump the meta clock so the timeout reaper doesn't immediately
-  // garbage-collect our synthetic peer. y-protocols/awareness
-  // stores meta as a Map<clientID, { clock, lastUpdated }>.
-  if (a.meta) {
-    a.meta.set(peerID, { clock: 1, lastUpdated: Date.now() });
-  }
-  a.emit('change', [{ added: [peerID], updated: [], removed: [] }, 'test']);
-  return { ok: true, peerID };
-});
-if (!peerInjected.ok) {
-  failL('inject peer', 'no awareness handle on window');
-  await browser.close(); process.exit(1);
-}
-ok('inject peer', 'pushed synthetic peer state into awareness');
-
-// Give CodeMirror a beat to rebuild its DecorationSet.
-await new Promise((r) => setTimeout(r, 400));
-
-// The dispatch({}) in presence.ts may not paint until a real CM
-// update tick. Nudge the editor with a no-op selection set to make
-// sure the ViewPlugin re-renders the freshly-built DecorationSet.
-await page.evaluate(() => {
-  (window).weftLoomJumpToOffset?.(0, 0);
-});
-await new Promise((r) => setTimeout(r, 300));
-
-const decorState = await page.evaluate(() => {
-  const carets = Array.from(document.querySelectorAll('.cm-peer-caret'));
-  const selections = Array.from(document.querySelectorAll('.cm-peer-selection'));
-  // Filter to the synthetic test peer (clientID 999999) — when the
-  // test runs after another suite that left a real awareness peer
-  // alive, querying by index 0 would pick the wrong one. The label
-  // now lives on a ::after pseudo-element so we read the name from
-  // the data-name attribute instead of a child node's textContent.
-  const adaCaret = carets.find((el) => el.getAttribute('data-client-id') === '999999');
-  const rect = adaCaret?.getBoundingClientRect();
+const painted = await a.evaluate(() => {
+  const caret = document.querySelector('.cm-peer-caret');
+  const sel = document.querySelector('.cm-peer-selection');
+  if (!caret) return { caret: false, selection: !!sel };
+  const style = caret.getAttribute('style') ?? '';
   return {
-    caretCount: carets.length,
-    selectionCount: selections.length,
-    dataName: adaCaret?.getAttribute('data-name') ?? null,
-    dataClientID: adaCaret?.getAttribute('data-client-id') ?? null,
-    borderColor: adaCaret ? getComputedStyle(adaCaret).borderLeftColor : null,
-    rectLeft: rect?.left ?? null,
-    rectTop: rect?.top ?? null,
-    selectionStyle: selections[0]?.getAttribute('style') ?? null,
+    caret: true,
+    name: caret.getAttribute('data-name'),
+    color: style.match(/--cm-peer-color:\s*([^;]+)/)?.[1]?.trim() ?? null,
+    selection: !!sel,
+    rect: caret.getBoundingClientRect().toJSON(),
   };
 });
 
-if (decorState.caretCount >= 1) {
-  ok('caret rendered', decorState.caretCount + ' .cm-peer-caret in DOM');
-} else {
-  failL('caret rendered', 'no .cm-peer-caret in DOM : ' + JSON.stringify(decorState));
-}
-if (decorState.dataName === 'Ada') {
-  ok('caret label', 'data-name="Ada" (rendered via CSS ::after)');
-} else {
-  failL('caret label', 'expected Ada, got ' + JSON.stringify(decorState));
-}
-if (decorState.dataClientID === '999999') {
-  ok('client id attr', 'data-client-id="999999"');
-} else {
-  failL('client id attr', 'got ' + decorState.dataClientID);
-}
-if (decorState.selectionCount >= 1) {
-  ok('selection mark', '.cm-peer-selection painted (style="' + decorState.selectionStyle + '")');
-} else {
-  failL('selection mark', 'no .cm-peer-selection in DOM');
-}
-// Pixel-position sanity : the caret's bounding rect should sit
-// somewhere inside the editor's content box ; we just want to
-// confirm it has a real layout (not display:none and not at 0,0).
-if (decorState.rectLeft !== null && decorState.rectLeft > 0 && decorState.rectTop !== null && decorState.rectTop > 0) {
-  ok('caret positioned', 'left=' + decorState.rectLeft.toFixed(1)
-    + ' top=' + decorState.rectTop.toFixed(1));
-} else {
-  failL('caret positioned', JSON.stringify({
-    left: decorState.rectLeft, top: decorState.rectTop,
-  }));
-}
+if (painted.caret) ok('peer caret', 'rendered in the other tab');
+else failL('peer caret', 'no .cm-peer-caret painted for a peer that is there');
 
-// Now confirm the LOCAL broadcast path : after moving the caret,
-// our own awareness state should carry a `cursor` field too. This
-// is what peers consume to draw US in their editor.
-await page.evaluate(() => {
-  (window).weftLoomJumpToOffset?.(5, 12);
+if (painted.name === BEE.name) ok('caret label', JSON.stringify(painted.name));
+else
+  failL('caret label', 'expected ' + JSON.stringify(BEE.name) + ' got ' + JSON.stringify(painted.name));
+
+if (painted.color === BEE.color) ok('caret colour', painted.color);
+else failL('caret colour', 'expected ' + BEE.color + ' got ' + painted.color);
+
+if (painted.selection) ok('peer selection', '.cm-peer-selection painted for a 10-character range');
+else failL('peer selection', 'no .cm-peer-selection for a non-empty range');
+
+// Where that offset actually is, according to this tab's own editor. Measured
+// after the peer caret was read, so moving the local cursor cannot have
+// disturbed what was measured.
+await selectRange(a, SEL_TO, SEL_TO);
+await new Promise((r) => setTimeout(r, 600));
+const own = await a.evaluate(() => {
+  const cur = document.querySelector('.cm-cursor-primary') ?? document.querySelector('.cm-cursor');
+  return cur ? cur.getBoundingClientRect().toJSON() : null;
 });
-await new Promise((r) => setTimeout(r, 200));
-const localCursor = await page.evaluate(() => {
-  const a = (window).weftLoomAwareness;
-  if (!a) return null;
-  const s = a.getLocalState();
-  return s?.cursor ?? null;
-});
-if (localCursor && typeof localCursor.anchor === 'number' && typeof localCursor.head === 'number') {
-  ok('local broadcast',
-    'awareness.cursor={anchor:' + localCursor.anchor + ', head:' + localCursor.head + '}');
+
+if (!own || !painted.rect) {
+  failL('caret position', 'could not measure this tab’s own cursor at offset ' + SEL_TO);
 } else {
-  failL('local broadcast', 'no cursor in local awareness state : ' + JSON.stringify(localCursor));
+  const dx = Math.abs(painted.rect.left - own.left);
+  const dy = Math.abs(painted.rect.top - own.top);
+  // A character of slack across, a line of slack down: the peer caret is a
+  // widget beside the position, not the position itself.
+  if (dx <= 14 && dy <= 24) {
+    ok('caret position', `at offset ${SEL_TO} (off by ${dx.toFixed(1)}px, ${dy.toFixed(1)}px)`);
+  } else {
+    failL('caret position', `off by ${dx.toFixed(1)}px, ${dy.toFixed(1)}px at offset ${SEL_TO}`);
+  }
 }
 
-await browser.close();
-await fetch(ROOT + '/api/projects/' + PROJECT + '/files/' + encodeURIComponent(PATH), { method: 'DELETE' }).catch(() => {});
+// The local direction, asked of B: a tab reporting its own publication proves
+// nothing about what left it. B has to be in front for the same reason.
+await b.bringToFront();
+await new Promise((r) => setTimeout(r, 2500));
+const backAtB = await b.evaluate(() => {
+  const caret = document.querySelector('.cm-peer-caret');
+  return caret ? caret.getAttribute('data-name') : null;
+});
+if (backAtB === AY.name) ok('local broadcast', 'the other tab paints this one back');
+else failL('local broadcast', 'expected ' + JSON.stringify(AY.name) + ' at the peer, got ' + JSON.stringify(backAtB));
 
-console.log('');
-const total = passed + failed;
+await br.close();
+
 const colour = failed === 0 ? '\x1b[32m' : '\x1b[31m';
-console.log(colour + passed + '/' + total + ' passed\x1b[0m');
-process.exit(failed === 0 ? 0 : 1);
+console.log('\n' + colour + passed + '/' + (passed + failed) + ' passed\x1b[0m');
+process.exitCode = failed === 0 ? 0 : 1;

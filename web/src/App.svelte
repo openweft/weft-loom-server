@@ -3,8 +3,6 @@
   // the blocker we eliminated those). y-websocket now reaches
   // /sync/default so it doesn't saturate the conn pool any more.
   import { onMount, onDestroy, type Component } from 'svelte';
-  import * as Y from 'yjs';
-  import type { Awareness } from 'y-protocols/awareness';
   import FileExplorer from './lib/components/FileExplorer.svelte';
   import Navbar from './lib/components/Navbar.svelte';
   import MenuBar from './lib/components/MenuBar.svelte';
@@ -37,7 +35,15 @@
   import WordCountPanel from './lib/components/WordCountPanel.svelte';
   import ShortcutHelp from './lib/components/ShortcutHelp.svelte';
   import ScaffoldDialog from './lib/components/ScaffoldDialog.svelte';
-  import { commentsArray, commentFromMap, resolveAnchors, type CommentRecord } from './lib/comments';
+  import {
+    filePart,
+    onCommentWritten,
+    orderPart,
+    readComments,
+    resolveAnchors,
+    type CommentRecord,
+  } from './lib/comments-collab';
+  import { joinProject, tabIdentity, watch, type Session as CollabSession, type Text } from './lib/collab';
   import type { CommentRange } from './lib/commentDecorations';
   import TabBar from './lib/components/TabBar.svelte';
   import NewFileDialog from './lib/components/NewFileDialog.svelte';
@@ -46,7 +52,7 @@
   // ShellPanel / CompileLogPanel are mounted inside BottomPanel
   // (the bottom drawer with the "Compile log" + "Shell" tabs).
   import ChatRoom from './lib/components/ChatRoom.svelte';
-  import { loadIdentity, type Identity } from './lib/identity';
+  import { loadIdentity, presenceMeta, type Identity } from './lib/identity';
   import { applyTheme, loadTheme, languageForPath } from './lib/theme';
 
   let identity = $state<Identity>(loadIdentity());
@@ -577,14 +583,59 @@
     const rm = localStorage.getItem('weft-loom-revision-mode');
     if (rm === '1') revisionMode = true;
   });
+  // What the chat panel quotes as context: the file as the document holds it,
+  // which is the same text the editor is bound to. It is read from the cached
+  // handle rather than awaited, because a caller assembling a prompt cannot
+  // wait — an unopened file gives the empty string, as it did before.
+  let contextText: Text | undefined;
   function getFileContent(): string {
-    // Best-effort : the Editor binds the ytext via onYDoc. We pull
-    // the current file's ytext string for the chat panel context.
-    if (!ydoc || !currentFile) return '';
-    return ydoc.getText('file:' + currentFile).toString();
+    return contextText?.toString() ?? '';
   }
-  let ydoc = $state<Y.Doc | undefined>();
-  let awareness = $state<Awareness | undefined>();
+  $effect(() => {
+    contextText = undefined;
+    const session = collabSession;
+    if (!session || !currentFile) return;
+    let stopped = false;
+    void session
+      .text('file:' + currentFile)
+      .then((t) => {
+        if (!stopped) contextText = t;
+      })
+      .catch((err) => console.error('collab: the chat context', err));
+    return () => {
+      stopped = true;
+    };
+  });
+  // The go-crdt session. It used to live beside a Y.Doc while features moved
+  // across one at a time; nothing reads that document any more.
+  //
+  // One session per project, not per file: a project's text, its comments, its
+  // change log and its chat are parts of one document, so they arrive together
+  // and are saved together.
+  let collabSession = $state<CollabSession | undefined>();
+  $effect(() => {
+    const name = project;
+    if (!name) return;
+    let live = true;
+    let opened: CollabSession | undefined;
+    joinProject(name, tabIdentity())
+      .then((s) => {
+        if (!live) {
+          void s.close();
+          return;
+        }
+        opened = s;
+        collabSession = s;
+      })
+      .catch((err) => console.error('collab: could not join', name, err));
+    return () => {
+      // Switching projects ends the session rather than leaving it open behind
+      // a document nobody is looking at.
+      live = false;
+      collabSession = undefined;
+      if (opened) void opened.close();
+    };
+  });
   let connectionStatus = $state<'connecting' | 'connected' | 'disconnected'>('connecting');
   let ytextTick = $state<number>(0);
   // Cursor / selection / word-count surfaced by the Editor + piped
@@ -897,8 +948,6 @@
   function onSwitch(name: string, _lang: string) {
     project = name;
     currentFile = '';
-    ydoc = undefined;
-    awareness = undefined;
   }
   function onOpenFile(path: string, lang: string) {
     currentFile = path;
@@ -958,23 +1007,23 @@
     // Rebuilds are debounced 50ms so a burst of Y.Map.set calls (e.g.
     // an undo that reinserts many comments, or a fast typer) collapses
     // into a single anchor-resolution pass.
-    let commentArr: Y.Array<Y.Map<unknown>> | null = null;
-    let commentYText: Y.Text | null = null;
-    let commentRebuild: (() => void) | null = null;
+    // What stops watching for this file's comments, once the session hands it
+    // over. One watcher, torn down when the file or the session changes.
+    let commentRebuild: (() => void) | undefined;
     let commentRebuildTimer: ReturnType<typeof setTimeout> | null = null;
-    if (ydoc && currentFile) {
-      const arr = commentsArray(ydoc, currentFile);
-      const ytext = ydoc.getText('file:' + currentFile);
+    if (collabSession && currentFile) {
+      const live = collabSession;
       const file = currentFile;
-      const doRebuild = () => {
-        const comments: CommentRecord[] = [];
+      const doRebuild = async () => {
+        const text = await live.text(filePart(file));
+        const comments = await readComments(live, file);
         const resolved: Record<string, { from: number; to: number } | null> = {};
         const ranges: CommentRange[] = [];
-        for (const m of arr.toArray()) {
-          const c = commentFromMap(m);
-          comments.push(c);
-          const r = resolveAnchors(ydoc!, ytext, c);
-          resolved[c.id] = r;
+        for (const c of comments) {
+          const r = await resolveAnchors(text, c);
+          resolved[c.id] = r ? { from: r.from, to: r.to } : null;
+          // An anchor whose text was deleted still knows where it belonged, so
+          // the comment is placed rather than dropped — a view can fade it.
           if (r) ranges.push({ id: c.id, from: r.from, to: r.to, resolved: c.resolved });
         }
         // 1) Editor decoration sink — paints the dotted-underline marks.
@@ -982,9 +1031,8 @@
           weftLoomSetCommentRanges?: (r: CommentRange[]) => void;
         }).weftLoomSetCommentRanges;
         if (typeof setRanges === 'function') setRanges(ranges);
-        // 2) CommentsPanel sink — store the snapshot on window + fire
-        //    an event so CommentsPanel can refresh its list without
-        //    re-running ytext.observe / arr.observeDeep itself.
+        // 2) CommentsPanel sink — the snapshot on window plus an event, so the
+        //    panel refreshes without resolving every anchor a second time.
         (window as unknown as {
           weftLoomCommentRanges?: {
             file: string;
@@ -1003,20 +1051,37 @@
         if (commentRebuildTimer != null) return; // already pending
         commentRebuildTimer = setTimeout(() => {
           commentRebuildTimer = null;
-          doRebuild();
+          void doRebuild().catch((err) => console.error('collab: comment anchors', err));
         }, 50);
       };
-      // Initial population is synchronous — first-paint shouldn't wait
-      // for the debounce window.
-      doRebuild();
-      // observeDeep so toggleResolved (cmap.set('resolved', …) inside
-      // CommentsPanel) re-fires the editor's anchor decoration rebuild.
-      // arr.observe() alone misses nested Y.Map field mutations.
-      arr.observeDeep(rebuild);
-      ytext.observe(rebuild);
-      commentArr = arr;
-      commentYText = ytext;
-      commentRebuild = rebuild;
+      void doRebuild().catch((err) => console.error('collab: comment anchors', err));
+      // The text moving changes where every anchor resolves; a comment part
+      // changing changes what there is to resolve. Both come through the one
+      // handler the session has, shared out in lib/collab.
+      // A local write announces itself: collab reports only what peers did,
+      // and this panel's content is assembled by re-reading after a change,
+      // so without this the tab that writes a comment is the one tab that
+      // does not list it.
+      const stopLocal = onCommentWritten(rebuild);
+      void watch(live, {
+        text: (name) => {
+          if (name === filePart(file)) rebuild();
+        },
+        map: (name) => {
+          if (name.startsWith('comment:')) rebuild();
+        },
+        list: (name) => {
+          if (name === orderPart(file)) rebuild();
+        },
+      })
+        .then((off) => (commentRebuild = () => {
+          off();
+          stopLocal();
+        }))
+        .catch((err) => {
+          console.error('collab: watching comments', err);
+          commentRebuild = stopLocal;
+        });
     }
     // T5b SyncTeX backward : PDF click (page + x + y in synctex sp)
     // → source file + line. The hook OPENS the source file (via
@@ -1115,14 +1180,13 @@
       try { return await r.json(); } catch { return null; }
     };
     return () => {
-      if (commentArr && commentRebuild) commentArr.unobserveDeep(commentRebuild);
-      if (commentYText && commentRebuild) commentYText.unobserve(commentRebuild);
+      commentRebuild?.();
       if (commentRebuildTimer != null) {
         clearTimeout(commentRebuildTimer);
         commentRebuildTimer = null;
       }
       // Drop the snapshot so a stale window hook can't feed the panel
-      // when the user navigates to a file with no ydoc.
+      // when the user navigates to a file with no document.
       delete (window as unknown as { weftLoomCommentRanges?: unknown }).weftLoomCommentRanges;
     };
   });
@@ -1150,25 +1214,21 @@
   }
   function onRename(next: Identity) {
     identity = next;
-    if (!awareness) return;
-    // Re-broadcast the full user payload (name + color + colorLight).
-    // setLocalStateField replaces the named field entirely, so we must
-    // include colorLight here too — otherwise y-codemirror.next loses
-    // the selection-bg tint after the first rename + remote peers see
-    // only the old highlight color.
-    //
-    // colorLight format : HSL → HSLA with 28 % alpha, falls back to
-    // the hex+alpha shorthand for hex inputs the picker emits.
-    const colorLight = next.color.startsWith('hsl(')
-      ? next.color.replace('hsl(', 'hsla(').replace(')', ', 0.28)')
-      : next.color + '47';
-    awareness.setLocalStateField('user', {
-      name: next.name,
-      color: next.color,
-      colorLight,
-      avatar: next.avatar,
-    });
+    const session = collabSession;
+    if (!session) return;
+    // A session publishes the cursor and the meta together, so republishing
+    // the new name means republishing where the caret already is — read back
+    // from this replica's own peer entry rather than guessed, which would
+    // otherwise move everybody else's view of this caret to the top of the
+    // file. Nothing published yet means nothing to correct: the first publish
+    // will carry the new name.
+    const self = session.peers().find((p) => p.site === session.site);
+    if (!self) return;
+    void session
+      .setCursor(self.cursor, presenceMeta(next))
+      .catch((err) => console.error('collab: republishing a name', err));
   }
+
 </script>
 
 <div class="flex h-screen flex-col bg-base-200 weft-loom-shell">
@@ -1320,7 +1380,7 @@
         />
       {:else if sidebarView === 'collab'}
         <CollaboratorsSidebar
-          {awareness}
+          session={collabSession}
           self={identity}
           bind:revisionMode
           onRename={onRename}
@@ -1373,7 +1433,7 @@
                      DOMParser ; the grid is contenteditable cells. -->
                 {#key project + '|ods|' + currentFile}
                   {#if LazySpreadsheetEditor}
-                    <LazySpreadsheetEditor {project} file={currentFile} />
+                    <LazySpreadsheetEditor {project} file={currentFile} session={collabSession} />
                   {:else}
                     <div class="flex-1 flex items-center justify-center text-base-content/50">Loading spreadsheet editor…</div>
                   {/if}
@@ -1399,6 +1459,8 @@
                     <LazyLatexWysiwygEditor
                       {project}
                       file={currentFile}
+                      session={collabSession}
+                      {identity}
                       onCursorStats={(s: { line: number; col: number; selectionLen: number; words: number }) => { cursorLine = s.line; cursorCol = s.col; selectionLen = s.selectionLen; wordCount = s.words; }}
                     />
                   {:else}
@@ -1422,15 +1484,14 @@
                         {revisionMode}
                         {jumpToLine}
                         onStatus={(s) => (connectionStatus = s)}
-                        onYDoc={(d) => (ydoc = d)}
-                        onAwareness={(a) => (awareness = a)}
+                        session={collabSession}
                         onYTextTick={(n) => (ytextTick = n)}
                         onCursorStats={(s: { line: number; col: number; selectionLen: number; words: number }) => { cursorLine = s.line; cursorCol = s.col; selectionLen = s.selectionLen; wordCount = s.words; }}
                       />
                     </div>
                     <div class="flex-1 min-w-0 overflow-hidden">
                       {#if LazyLatexWysiwygEditor}
-                        <LazyLatexWysiwygEditor {project} file={currentFile} />
+                        <LazyLatexWysiwygEditor {project} file={currentFile} session={collabSession} {identity} />
                       {:else}
                         <div class="flex-1 flex items-center justify-center text-base-content/50">Loading LaTeX WYSIWYG editor…</div>
                       {/if}
@@ -1447,8 +1508,7 @@
                     {revisionMode}
                     {jumpToLine}
                     onStatus={(s) => (connectionStatus = s)}
-                    onYDoc={(d) => (ydoc = d)}
-                    onAwareness={(a) => (awareness = a)}
+                    session={collabSession}
                     onYTextTick={(n) => (ytextTick = n)}
                     onCursorStats={(s) => { cursorLine = s.line; cursorCol = s.col; selectionLen = s.selectionLen; wordCount = s.words; }}
                   />
@@ -1470,7 +1530,7 @@
                   visible={language === 'latex' || language === 'markdown' || language === 'plaintext'}
                 />
                 <CommentsPanel
-                  {ydoc}
+                  session={collabSession}
                   {project}
                   file={currentFile}
                   {identity}
@@ -1538,7 +1598,7 @@
         ></div>
         {#if LazyPreviewPane}
           <LazyPreviewPane
-            {ydoc} {language} {project}
+            session={collabSession} {language} {project}
             file={currentFile}
             pdfURL={artifactURL}
             width={previewWidth}
@@ -1615,8 +1675,7 @@
           style={chatCollapsed || !aiCollapsed ? (chatCollapsed ? '' : `height: ${chatPaneHeight}px`) : ''}
         >
           <ChatRoom
-            {ydoc}
-            {awareness}
+            session={collabSession}
             {identity}
             bind:open={chatOpen}
             embedded={true}

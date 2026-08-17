@@ -33,15 +33,32 @@ tasks:
     cmds: [npm install]
     status: [test -d node_modules]
 
+  gen-collab-wasm:
+    desc: Build the collaborative editing client into web/public
+    # The commands live in scripts/gen-collab-wasm.sh rather than here, because
+    # CI's web-check and the release lane have to run exactly the same ones —
+    # and when they did not, svelte-check could not resolve './collab.d' and a
+    # release would have shipped an SPA with no collab.wasm beside it.
+    cmds:
+      - ./scripts/gen-collab-wasm.sh
+    sources:
+      - go.mod
+      - go.sum
+      - scripts/gen-collab-wasm.sh
+    generates:
+      - web/public/collab.wasm
+      - web/public/wasm_exec.js
+      - web/src/lib/collab.d.ts
+
   web-build:
     desc: Build the SPA into internal/web/dist (read by //go:embed)
-    deps: [web-deps, gen-api]
+    deps: [web-deps, gen-api, gen-collab-wasm]
     dir: web
     cmds: [npm run build]
 
   web-check:
     desc: TypeScript + Svelte lint
-    deps: [web-deps, gen-api]
+    deps: [web-deps, gen-api, gen-collab-wasm]
     dir: web
     cmds: [npm run check]
 
