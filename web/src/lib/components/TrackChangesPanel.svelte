@@ -21,7 +21,7 @@
   // live, the same way CommentsPanel updates without a polling tick.
 
   import { onMount, onDestroy } from 'svelte';
-  import type { ChangeLog, ChangeRecord } from '../wysiwygAuthorship';
+  import type { ChangeLog, ChangeRecord } from '../changelog-collab';
   import { diffStrings, renderDiffHtml, type DiffSegment } from '../diffRender';
 
   interface Props {
@@ -32,26 +32,25 @@
 
   let pending = $state<ChangeRecord[]>([]);
 
-  // refresh : re-pull the pending list from the log. Cheap (O(N) walk
-  // of the Y.Array) ; called on mount + on every observeDeep tick.
+  // refresh : re-pull the pending list from the log. Cheap (O(N) walk of the
+  // list part) ; called on mount and on every change to it.
   function refresh() {
     pending = log.pending();
   }
 
-  // observeDeep fires for both top-level array changes (push/delete)
-  // AND inner Y.Map flips (status set, etc). Single channel keeps
-  // local-vs-remote irrelevant : either way the list re-renders.
-  function onArrayEvent() {
-    refresh();
-  }
+  // One channel for both, which keeps local-vs-remote irrelevant: either way
+  // the list re-renders. There is no deep variant to ask for any more — a
+  // record is written whole and never edited, so a change to this log is a
+  // change to the list.
+  let unsubscribe: (() => void) | undefined;
 
   onMount(() => {
     refresh();
-    log.yarray.observeDeep(onArrayEvent);
+    unsubscribe = log.subscribe(refresh);
   });
 
   onDestroy(() => {
-    log.yarray.unobserveDeep(onArrayEvent);
+    unsubscribe?.();
   });
 
   // relativeTime : "2 min ago" / "just now" / "3 h ago" — same
@@ -103,12 +102,12 @@
   }
 
   function onAccept(rec: ChangeRecord) {
-    log.accept(rec.id);
+    void log.accept(rec.id);
     refresh();
   }
 
   function onReject(rec: ChangeRecord) {
-    log.reject(rec.id);
+    void log.reject(rec.id);
     refresh();
   }
 

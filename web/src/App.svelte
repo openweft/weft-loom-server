@@ -1443,6 +1443,7 @@
                     <LazyLatexWysiwygEditor
                       {project}
                       file={currentFile}
+                      session={collabSession}
                       onCursorStats={(s: { line: number; col: number; selectionLen: number; words: number }) => { cursorLine = s.line; cursorCol = s.col; selectionLen = s.selectionLen; wordCount = s.words; }}
                     />
                   {:else}
@@ -1475,7 +1476,7 @@
                     </div>
                     <div class="flex-1 min-w-0 overflow-hidden">
                       {#if LazyLatexWysiwygEditor}
-                        <LazyLatexWysiwygEditor {project} file={currentFile} />
+                        <LazyLatexWysiwygEditor {project} file={currentFile} session={collabSession} />
                       {:else}
                         <div class="flex-1 flex items-center justify-center text-base-content/50">Loading LaTeX WYSIWYG editor…</div>
                       {/if}

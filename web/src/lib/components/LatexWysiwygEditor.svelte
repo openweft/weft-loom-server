@@ -28,7 +28,8 @@
   import TrackChangesPanel from './TrackChangesPanel.svelte';
   import { wireWysiwygPresence, type PresenceWiring } from '../wysiwygPresence';
   import { wireSpellFilter } from '../wysiwygSpellFilter';
-  import { attachChangeLog, type ChangeLog } from '../wysiwygAuthorship';
+  import { attachChangeLog, type ChangeLog } from '../changelog-collab';
+  import type { Session } from '../collab';
   import {
     snapshotFormatting,
     applyFormatting,
@@ -46,8 +47,16 @@
     project: string;
     file: string;
     onCursorStats?: (s: { line: number; col: number; selectionLen: number; words: number }) => void;
+    /**
+     * The project's collab session. The change log lives on it, so the log is
+     * on the server's disk rather than in this component's Y.Doc — which is
+     * why it survives a reload. The document itself has not moved yet, so
+     * everything else here is still Yjs; without a session the editor works
+     * and only the log is absent.
+     */
+    session?: Session;
   }
-  let { project, file, onCursorStats }: Props = $props();
+  let { project, file, onCursorStats, session }: Props = $props();
 
   // svelte-ignore non_reactive_update -- bind:this populates this; we only read it in handlers after onMount has fired.
   let editorEl: HTMLDivElement;
@@ -173,7 +182,9 @@
     // Record the edit in the change log so peers can review +
     // accept/reject. Skip on initial seed (prev === '').
     if (changeLog && lastSnapshot !== '' && lastSnapshot !== newSource) {
-      changeLog.recordChange(ydoc.clientID, identityName, identityColor, lastSnapshot, newSource);
+      void changeLog
+        .recordChange(session!.site, identityName, identityColor, lastSnapshot, newSource)
+        .catch((err) => console.error('collab: recording a change', err));
     }
     lastSnapshot = newSource;
   }
@@ -552,7 +563,9 @@
         localClientID,
       ).destroy;
       spellDestroy = wireSpellFilter(editorEl);
-      changeLog = attachChangeLog(ydoc, file ?? '');
+      if (session) {
+        changeLog = await attachChangeLog(session, file ?? '');
+      }
       lastSnapshot = ytext.toString();
 
       status = 'ready';
