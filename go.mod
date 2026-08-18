@@ -15,9 +15,9 @@ require (
 
 require (
 	github.com/creack/pty v1.1.24
-	github.com/go-crdt/collab v0.15.0
-	github.com/go-crdt/collab/pgstore v0.0.0-20260818070929-39e33f10e53f
-	github.com/go-crdt/crdt v0.17.0
+	github.com/go-crdt/collab v0.16.0
+	github.com/go-crdt/collab/pgstore v0.0.0-20260818105406-223c9f11bb22
+	github.com/go-crdt/crdt v0.18.0
 	github.com/nats-io/nats-server/v2 v2.14.2
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/tetratelabs/wazero v1.12.0
@@ -25,6 +25,7 @@ require (
 )
 
 require (
+	github.com/andybalholm/brotli v1.2.2 // indirect
 	github.com/antithesishq/antithesis-sdk-go v0.7.0-default-no-op // indirect
 	github.com/google/go-tpm v0.9.8 // indirect
 	github.com/minio/highwayhash v1.0.4 // indirect
