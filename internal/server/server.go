@@ -398,7 +398,7 @@ func (s *Server) routes() {
 	// SPA — fall-through on every other GET. The static FS is rooted
 	// at the dist/ directory the build emits.
 	if s.opts.Static != nil {
-		s.mux.Handle("GET /", http.FileServer(http.FS(s.opts.Static)))
+		s.mux.Handle("GET /", compressStatic(http.FileServer(http.FS(s.opts.Static))))
 	}
 }
 
