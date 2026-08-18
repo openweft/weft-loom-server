@@ -298,8 +298,22 @@ loop:
 	// → fails fast). The deterministic assertion is below.
 
 	// Second cancel after the goroutine cleared its slot : false.
-	if svc.Cancel(id) {
-		t.Errorf("Cancel(%q) after completion = true ; want false", id)
+	//
+	// Waited for rather than assumed. The loop above ends when the event
+	// stream does, and the run goroutine clears its slot after that — so
+	// asking immediately is asking before, and the answer is whichever way the
+	// scheduler went. It passed here and failed on CI, which is what that kind
+	// of assertion does.
+	cleared := false
+	for wait := time.Now().Add(5 * time.Second); time.Now().Before(wait); {
+		if !svc.Cancel(id) {
+			cleared = true
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !cleared {
+		t.Errorf("Cancel(%q) still reports a running compile five seconds after it finished", id)
 	}
 	if svc.Cancel("nope") {
 		t.Errorf("Cancel(nope) = true ; want false")
