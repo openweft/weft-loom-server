@@ -15,9 +15,9 @@ require (
 
 require (
 	github.com/creack/pty v1.1.24
-	github.com/go-crdt/collab v0.14.0
-	github.com/go-crdt/collab/pgstore v0.0.0-20260817205751-1a9b45b5a851
-	github.com/go-crdt/crdt v0.15.0
+	github.com/go-crdt/collab v0.15.0
+	github.com/go-crdt/collab/pgstore v0.0.0-20260818070929-39e33f10e53f
+	github.com/go-crdt/crdt v0.17.0
 	github.com/nats-io/nats-server/v2 v2.14.2
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/tetratelabs/wazero v1.12.0
