@@ -178,6 +178,43 @@ rather than a new one that says the same thing.
 4. Run it against the real store.
 5. Deploy the new build.
 
+## Upgrading the store's own framing (collab v0.50.0 and later)
+
+**This one is not a migration.** It is here because the section above is, and
+the two look alike from the outside: both change what is on disk.
+
+From `collab` v0.50.0 the Postgres store writes each row with a checksum and a
+compressed body rather than the bare snapshot, so a row that rots is refused
+instead of served as a document nobody wrote. The reason it needed doing is that
+PostgreSQL checksums its own pages only when it was told to: `initdb` with no
+flags leaves `Data page checksum version: 0` up to and including PostgreSQL 17,
+and `1` from 18. A cluster made before 18, or upgraded in place from one, has
+none unless somebody ran `pg_checksums --enable`.
+
+### Going forward: nothing to do
+
+Rows written before the change are read exactly as they are, and gain the frame
+the next time their document is saved. Measured, not assumed:
+
+    a new build reading an old row: reads it unchanged
+
+So deploy it like any other build. There is no step, no downtime beyond the
+restart, and no order of operations.
+
+### Going back: only before the first save
+
+The direction that is not free is the rollback. Once the new build has saved a
+document, a build with `collab` older than v0.50.0 hands that row straight to
+`crdt`, which does not know what it is:
+
+    an old build reading a new row: crdt: malformed encoding
+
+That is per document and it takes effect at its first save, so a rollback in the
+first minutes costs nothing and a rollback the next day costs every document
+that has been touched. If you may want to go back, keep the backup from before
+the deployment and restore it rather than downgrading over a store the new build
+has written to.
+
 ## Backup recommendations
 
 The LocalStore root is the source of truth in single-replica mode. The
