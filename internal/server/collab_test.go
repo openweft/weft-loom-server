@@ -8,8 +8,11 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/go-crdt/collab"
+	"github.com/go-crdt/crdt"
 	"github.com/openweft/weft-loom-server/internal/auth"
 	"github.com/openweft/weft-loom-server/internal/project"
+	"log/slog"
 )
 
 // The relay this replaces kept nothing. A room was dropped when its last client
@@ -151,4 +154,40 @@ func TestTheDocumentsFollowTheProjects(t *testing.T) {
 			t.Fatal("a project store with neither a database nor a disk was accepted")
 		}
 	})
+}
+
+// The server refuses operations a session did not make.
+//
+// Nothing on the wire distinguishes a participant from a federation link, so
+// collab cannot refuse another site's work by default -- a link legitimately
+// carries thousands of sites. This server does not federate: nothing here calls
+// Server.Follow, so every session speaks for itself, and the policy costs it
+// nothing.
+//
+// What is checked is the wiring. collab tests the policy itself; without this,
+// nothing here would say the server was built with it.
+func TestASessionMayNotWriteAsAnotherSite(t *testing.T) {
+	cfg := collabConfig(collab.NewMemoryStore(), fakeProjects{}, slog.New(slog.DiscardHandler))
+	if cfg.AuthorizeOperations == nil {
+		t.Fatal("the server takes any site's operations from any session")
+	}
+
+	made := func(site crdt.SiteID) []crdt.PartOps {
+		t.Helper()
+		c := crdt.NewComposite(site)
+		body, err := c.Text("body")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := body.Insert(0, "some words"); err != nil {
+			t.Fatal(err)
+		}
+		return c.OpsSince(nil)
+	}
+	if err := cfg.AuthorizeOperations(t.Context(), "thesis:default", 7, made(7)); err != nil {
+		t.Errorf("a session's own operations were refused: %v", err)
+	}
+	if err := cfg.AuthorizeOperations(t.Context(), "thesis:default", 7, made(8)); err == nil {
+		t.Error("a session wrote as another site")
+	}
 }
