@@ -159,18 +159,34 @@ func newCollabServer(ctx context.Context, projects project.Store, logger *slog.L
 	if err != nil {
 		return nil, nil, err
 	}
-	return collab.NewServer(collab.Config{
+	return collab.NewServer(collabConfig(store, projects, logger)), db, nil
+}
+
+// collabConfig is what the server is built with, apart from the constructor so
+// that a test can read the decisions rather than infer them from behaviour.
+func collabConfig(store collab.Store, projects project.Store, logger *slog.Logger) collab.Config {
+	return collab.Config{
 		Store:        store,
 		PersistEvery: collabPersistEvery,
 		EvictAfter:   collabEvictAfter,
 		Authorize:    authorizeDocument(projects),
+		// A session may hand the server operations another site made, and with
+		// no policy the server applies them. This server does not federate --
+		// nothing here calls Server.Follow -- so every session speaks for
+		// itself and nothing legitimately carries another site's work.
+		//
+		// It is not only attribution. A site identity is half of an operation's
+		// name, so a forger and the real owner of that site produce different
+		// characters with the same ID, and replicas that saw both diverge
+		// silently and permanently. See collab.OwnSiteOnly.
+		AuthorizeOperations: collab.OwnSiteOnly,
 		OnEvictError: func(document string, err error) {
 			// Nobody is left to return this to, and it is the one failure that
 			// loses what somebody wrote. It goes to the log at the level that
 			// wakes people.
 			logger.Error("collab.evict.save.failed", "document", document, "err", err.Error())
 		},
-	}), db, nil
+	}
 }
 
 // documentStore puts the documents where the projects are. The database handle
