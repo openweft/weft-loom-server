@@ -117,6 +117,67 @@ still live alongside content under `.weft-loom/`. All three replicas
 see the same FS view ; the broker (NATS) carries the cross-replica
 invalidation events.
 
+## Upgrading across a snapshot-format change
+
+**Read this before deploying a build that moves `github.com/go-crdt/crdt` past
+v0.41.0.** Documents this server has already stored are not readable by it, and
+the upgrade is a migration rather than a restart.
+
+### What happens if you skip it
+
+The server refuses to open the affected documents and says why:
+
+```
+crdt: malformed encoding: format version this build does not know:
+found version 5, this build reads up to 9
+```
+
+It is a refusal, not a corruption: nothing is overwritten, and the remedy is to
+put the old build back, migrate, and come forward again. But the documents are
+unavailable until you do.
+
+### Why
+
+crdt keeps a version byte in every snapshot and drops readers for formats
+nobody is expected to hold any more. This server pinned crdt v0.31.0, which
+writes **format 5**; crdt v0.46.0 reads **formats 8 and 9 only**. The store's
+own layout has not changed — a v0.39.0 `DirStore` reads a v0.25.0 directory,
+document names with colons and accents included — so it is the snapshots inside
+it that have to move, not the files around them.
+
+### How
+
+`github.com/go-crdt/collab/migrate` is a module of its own, pinned to a crdt
+that still reads the old formats, and it rewrites each document in place into
+one a current build reads. Run it as its own binary, against a **copy** of the
+store first, while the old server is stopped.
+
+⚠ **Do not import it into this server.** Go resolves one version of crdt per
+build, so vendoring `migrate` alongside the new collab gives it the crdt that
+cannot read format 5 — and it refuses at run time rather than quietly doing
+nothing:
+
+```
+migrate: this build cannot read the format it exists to move: text format 6
+```
+
+Measured end to end on a store written by the versions this server pins today:
+two documents of three moved (the third was empty, so it had no text part to
+move), none failed, and afterwards the current build read all three. The check
+that matters is not that the words survived but that the **document** did — the
+version vector, the tombstone count and the operation batches were identical
+before and after, which is what makes a migrated document the same document
+rather than a new one that says the same thing.
+
+### Order of operations
+
+1. Stop the server.
+2. Back up the store (see *Backup recommendations* below).
+3. Run `migrate` against the backup and confirm the new build opens every
+   document.
+4. Run it against the real store.
+5. Deploy the new build.
+
 ## Backup recommendations
 
 The LocalStore root is the source of truth in single-replica mode. The
