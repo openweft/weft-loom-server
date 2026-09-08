@@ -161,22 +161,128 @@ nothing:
 migrate: this build cannot read the format it exists to move: text format 6
 ```
 
-Measured end to end on a store written by the versions this server pins today:
-two documents of three moved (the third was empty, so it had no text part to
-move), none failed, and afterwards the current build read all three. The check
-that matters is not that the words survived but that the **document** did — the
-version vector, the tombstone count and the operation batches were identical
-before and after, which is what makes a migrated document the same document
-rather than a new one that says the same thing.
+#### The store here is a Postgres table
+
+This deployment sets `postgres.dsn`, so the project store is Postgres and the
+documents live beside it in **`collab_documents`** — one row per document, the
+snapshot in a `bytea`. Migrating means rewriting those rows, not files.
+
+`collab/migrate` is a library and ships no command, so the binary is written
+once, in a scratch directory, with the pins that make it able to read what the
+store holds:
+
+```
+# go.mod — its own module, NOT this repository's
+module loom-collab-migrate
+go 1.26.4
+require (
+    github.com/go-crdt/collab/migrate v0.1.1
+    github.com/go-crdt/collab/pgstore v0.2.0   // the version this server ran
+    github.com/jackc/pgx/v5 v5.10.0
+)
+```
+
+`go mod tidy` then resolves `collab v0.39.0` and `crdt v0.41.0` as indirect —
+the pins that make this binary able to read what the store holds. Written
+exactly as above, in an empty directory, it builds.
+
+```go
+package main
+
+import (
+    "context"; "database/sql"; "flag"; "fmt"; "os"
+    "github.com/go-crdt/collab/migrate"
+    "github.com/go-crdt/collab/pgstore"
+    _ "github.com/jackc/pgx/v5/stdlib"
+)
+
+func main() {
+    dry := flag.Bool("dry-run", false, "say what would move and change nothing")
+    flag.Parse()
+    db, err := sql.Open("pgx", os.Getenv("LOOM_DSN")) // never on the command line
+    if err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(1) }
+    defer db.Close()
+    store, err := pgstore.New(db)
+    if err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(1) }
+    ctx := context.Background()
+    names, err := store.Documents(ctx)
+    if err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(1) }
+    fmt.Printf("%d documents in the table\n", len(names))
+    if *dry { for _, n := range names { fmt.Printf("  would consider %q\n", n) }; return }
+    res, err := migrate.Rewrite(ctx, store, names)
+    if err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(1) }
+    fmt.Printf("moved:   %v\ncurrent: %v\nfailed:  %v\n", res.Moved, res.Current, res.Failed)
+    if len(res.Failed) > 0 { os.Exit(1) }
+}
+```
+
+The DSN goes in `LOOM_DSN` in the environment of that one command and nowhere
+else — not on a command line, where it would reach the shell history and every
+process listing.
+
+#### Rehearsed, against a real PostgreSQL
+
+On a table seeded by the exact versions this server pins today (collab v0.25.0,
+crdt v0.31.0, pgstore v0.2.0), holding four documents — including one with an
+accent and a colon in its name, one empty, and three carrying deletions.
+
+Before, the current build refuses what it cannot read:
+
+```
+read    "empty:default"              ""
+REFUSED "projet:défaut"              crdt: malformed encoding: format version this
+                                     build does not know: found version 5, this
+                                     build reads up to 9
+REFUSED "thesis:default"             (same)
+REFUSED "thesis:ods:chapitre un.ods" (same)
+1 read, 3 refused
+```
+
+The migration:
+
+```
+4 documents in the table
+moved:   [projet:défaut thesis:default thesis:ods:chapitre un.ods]
+current: [empty:default]
+failed:  map[]
+```
+
+After:
+
+```
+4 read, 0 refused
+```
+
+The check that matters is not that the words survived but that the **document**
+did. Every part, every version-vector entry and every tombstone count, dumped by
+the old build before and the new build after, compared byte for byte:
+
+```
+IDENTICAL — every part, every version vector, every tombstone survived
+```
+
+`empty:default` appears under `current` rather than `moved` because it has no
+text part, so there was nothing in it at the old format.
+
+#### The rows stay unframed until the server writes them
+
+The migration uses the pgstore this server ran, so the rows it writes are bare
+snapshots (`crdtc…`). From `pgstore` v0.9.0 the store frames each row with a
+checksum, and rows gain that frame **the next time their document is saved** —
+nothing to run, and covered by the section below on the framing upgrade.
 
 ### Order of operations
 
-1. Stop the server.
-2. Back up the store (see *Backup recommendations* below).
-3. Run `migrate` against the backup and confirm the new build opens every
-   document.
-4. Run it against the real store.
-5. Deploy the new build.
+1. Stop the server. A migration that runs while it is up rewrites rows under a
+   process that is reading them.
+2. Back up the database (see *Backup recommendations* below). This is the step
+   that makes every later one reversible.
+3. Restore that backup into a scratch database and run the tool there
+   `--dry-run` first, then for real. Confirm the new build opens every document
+   and that the identity dump matches.
+4. Run it against the real database.
+5. Deploy the new build, and read its startup log: a `found version 5` there
+   means a document was missed.
 
 ## Upgrading the store's own framing (collab v0.50.0 and later)
 
