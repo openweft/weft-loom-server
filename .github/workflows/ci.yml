@@ -29,7 +29,20 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: go vet ./...
-      - run: go test -count=1 -race ./...
+      # internal/lintchktex exists to wrap the chktex binary and parse its
+      # output. Without the binary, the two tests that check that parse against
+      # what chktex actually prints do not run -- and an output format is
+      # exactly the kind of thing a hand-written fixture gets subtly wrong.
+      #
+      # chktex is a standalone package, not all of TeX Live; the skip message
+      # in lint_test.go already says `apt-get install chktex`.
+      - name: chktex, so the parser is tested against real output
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq chktex
+      - name: test
+        env:
+          # A skip here would look exactly like a pass.
+          LOOM_REQUIRE_CHKTEX: "1"
+        run: go test -count=1 -race ./...
 
   cross-build:
     runs-on: ubuntu-latest

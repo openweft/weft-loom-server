@@ -2,6 +2,7 @@ package lintchktex
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -15,6 +16,12 @@ import (
 func requireChktex(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("chktex"); err != nil {
+		// A skipped judge reads exactly like a passing one. The lane that
+		// installs chktex sets this: without the binary, nothing checks our
+		// parser against what chktex actually prints.
+		if os.Getenv("LOOM_REQUIRE_CHKTEX") != "" {
+			t.Fatalf("LOOM_REQUIRE_CHKTEX is set but chktex is not installed: %v", err)
+		}
 		t.Skip("chktex not installed (apt-get install chktex / brew install chktex) — skipping")
 	}
 }
