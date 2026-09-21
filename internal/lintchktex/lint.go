@@ -90,16 +90,25 @@ func RunChktex(ctx context.Context, content []byte) ([]Diagnostic, error) {
 	// -q : quiet (no banner)
 	// -f : format spec ; "%f:%l:%c:%n:%m\n" puts everything we need
 	//      on a single line so the parser is a one-shot split.
-	// "-" : filename arg → chktex reads stdin instead of opening a file.
-	cmd := exec.CommandContext(ctx, bin, "-q", "-f", "%f:%l:%c:%n:%m\n", "-")
+	//
+	// NO filename argument. chktex reads stdin only when it is given none; it
+	// does NOT read "-" as stdin. Handed "-" it looks for a file of that name,
+	// does not find one, and says so --
+	//
+	//	chktex: WARNING -- Unable to open the TeX file `-'.
+	//
+	// -- while exiting ZERO. This package passed "-" for as long as it
+	// existed, so RunChktex never read the content given to it and /lint
+	// always answered with an empty diagnostics list. The %f field now reads
+	// "stdin" rather than "-"; parseChktexOutput ignores that field.
+	cmd := exec.CommandContext(ctx, bin, "-q", "-f", "%f:%l:%c:%n:%m\n")
 	cmd.Stdin = bytes.NewReader(content)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	// chktex returns non-zero when it found warnings — that's the
-	// *expected* path here, not a failure. We only surface errors
-	// when stdout is empty AND something useful is on stderr.
+	// *expected* path here, not a failure.
 	if err := cmd.Run(); err != nil {
 		// ExitError with stdout content = warnings were found ; not
 		// a process failure. Any other error (spawn failure, context
@@ -108,9 +117,15 @@ func RunChktex(ctx context.Context, content []byte) ([]Diagnostic, error) {
 		if !errors.As(err, &exitErr) {
 			return nil, fmt.Errorf("chktex: run: %w", err)
 		}
-		if stdout.Len() == 0 && stderr.Len() > 0 {
-			return nil, fmt.Errorf("chktex: %s", strings.TrimSpace(stderr.String()))
-		}
+	}
+
+	// Checked OUTSIDE the error branch, deliberately. chktex can fail while
+	// exiting zero — "Unable to open the TeX file" is exactly that — so a
+	// check reachable only on a non-zero status cannot see it. That is how the
+	// "-" above stayed invisible for the life of the package: the diagnosis
+	// was printed on every single call, onto a stderr nothing ever read.
+	if stdout.Len() == 0 && stderr.Len() > 0 {
+		return nil, fmt.Errorf("chktex: %s", strings.TrimSpace(stderr.String()))
 	}
 
 	return parseChktexOutput(stdout.Bytes()), nil

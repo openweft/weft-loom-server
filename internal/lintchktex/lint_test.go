@@ -124,10 +124,14 @@ Hello world.
 // chktex-format contract is covered even when the binary isn't
 // installed on the host.
 func TestParseChktexOutput(t *testing.T) {
-	in := []byte(`-:3:7:24:Use \. to end sentences before capital letters.
--:5:1:1:Command terminated with space.
+	// The %f field reads "stdin" — what chktex prints when given no filename
+	// argument. It used to read "-" here, matching an invocation that produced
+	// no output whatsoever: a fixture in agreement with a bug, which is the
+	// one thing a fixture must never be.
+	in := []byte(`stdin:3:7:24:Use \. to end sentences before capital letters.
+stdin:5:1:1:Command terminated with space.
 not-a-valid-line
--:bad:1:1:bad line
+stdin:bad:1:1:bad line
 `)
 	got := parseChktexOutput(in)
 	if len(got) != 2 {
