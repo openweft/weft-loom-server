@@ -117,6 +117,46 @@ still live alongside content under `.weft-loom/`. All three replicas
 see the same FS view ; the broker (NATS) carries the cross-replica
 invalidation events.
 
+### One replica per document, and why the HA shape does not give you that
+
+**A collaborative document must be served by one replica at a time.** The HA shape
+above does not arrange that, and nothing in this server or in the load balancer
+does it for you.
+
+Each replica builds its own `collab.Server` over the shared store — pgstore when
+`postgres.dsn` is set, a `DirStore` under `storage_root/.collab` otherwise. A
+server holds the document in memory while it serves it, and `collab.Store.Save`
+**replaces**. So two replicas serving one document at the same time each save their
+own replica of it, and the later save carries away whatever only the earlier one
+held. There is no error anywhere: every piece did exactly what it documents.
+
+Measured upstream, in `collab`'s own
+`TestTwoServersOverOneStoreLoseTheEarlierSave`: one writes `AAAA`, the other
+`BBBB`, and the store ends holding `BBBB` alone.
+
+It is the **sequential** case that works, and it is what makes this easy to miss.
+A rolling restart loses nothing — the departing replica saves, the arriving one
+loads. A failover to a cold standby loses nothing. What loses is two of them
+serving the same document at once, which is what a round-robin balancer does with
+the second editor who opens it.
+
+Until this server routes a document to one replica, the choices are:
+
+* **Run one replica for `/collab`.** The rest of the API scales out; the
+  WebSocket endpoint does not. This is the honest configuration today.
+* **Pin sessions by document at the balancer.** A consistent hash over the
+  document name in the WebSocket path sends every editor of one document to one
+  replica. It has to be the document, not the client address or a cookie: two
+  editors of one document from different networks must land together.
+* **Do not share the store between replicas at all** and federate instead —
+  `collab.Server.Follow` makes one server a participant in another's document, so
+  each keeps its own store and the operations travel. That costs both replicas
+  being up and reachable from each other.
+
+`storage_root` being mounted on every replica is what makes the first two
+necessary rather than optional: the FS view is shared, so the store is shared, and
+the store is where the loss happens.
+
 ## Upgrading across a snapshot-format change
 
 **Read this before deploying a build that moves `github.com/go-crdt/crdt` past
