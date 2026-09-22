@@ -7,18 +7,18 @@ require (
 	github.com/danielgtaylor/huma/v2 v2.38.0
 	github.com/go-git/go-git/v5 v5.19.1
 	github.com/hashicorp/hcl/v2 v2.23.0
-	github.com/jackc/pgx/v5 v5.10.0
+	github.com/jackc/pgx/v5 v5.11.0
 	github.com/openweft/weft-microvm-agent v0.0.0-00010101000000-000000000000
 	github.com/openweft/weft-slognats v0.3.0
 	github.com/spf13/cobra v1.10.2
 )
 
 require (
-	github.com/andybalholm/brotli v1.2.3
+	github.com/andybalholm/brotli v1.2.4
 	github.com/creack/pty v1.1.24
-	github.com/go-crdt/collab v0.54.0
-	github.com/go-crdt/collab/pgstore v0.9.0
-	github.com/go-crdt/crdt v0.46.0
+	github.com/go-crdt/collab v0.60.0
+	github.com/go-crdt/collab/pgstore v0.14.0
+	github.com/go-crdt/crdt v0.47.0
 	github.com/nats-io/nats-server/v2 v2.14.2
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/tetratelabs/wazero v1.12.0
@@ -32,8 +32,8 @@ require (
 	github.com/nats-io/jwt/v2 v2.8.2 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
-	google.golang.org/grpc v1.83.2 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260706201446-f0a921348800 // indirect
+	google.golang.org/grpc v1.84.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 )
 
