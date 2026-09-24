@@ -151,11 +151,78 @@ Until this server routes a document to one replica, the choices are:
 * **Do not share the store between replicas at all** and federate instead —
   `collab.Server.Follow` makes one server a participant in another's document, so
   each keeps its own store and the operations travel. That costs both replicas
-  being up and reachable from each other.
+  being up and reachable from each other, **and a change to this server's
+  operation policy** — see the next section, because as configured today the link
+  would be refused.
 
 `storage_root` being mounted on every replica is what makes the first two
 necessary rather than optional: the FS view is shared, so the store is shared, and
 the store is where the loss happens.
+
+### Federating requires replacing OwnSiteOnly
+
+This server installs `AuthorizeOperations: collab.OwnSiteOnly`, which refuses any
+batch naming a site other than the one the session joined as. That is the right
+policy for what this server does today: nothing here calls `Server.Follow`, so
+every session speaks for itself.
+
+A link is a session too, and it is *meant* to carry other sites — one server
+following another relays the work of everyone on it. So the side that breaks under
+`OwnSiteOnly` is the **follower**: what arrives over its link names sites it never
+authorised, the policy refuses them, and the link's session ends. Measured in
+collab's `TestALinkCarryingOtherSitesMeetsOwnSiteOnly`. Federating with
+`OwnSiteOnly` left in place does not half-work; it does not work.
+
+**Between replicas you run yourself**, the change is small: the two ends hand out
+site identities, so a site is as trustworthy as the deployment, and the follower
+can simply drop the policy — or keep it and be the followed side only.
+
+**Between servers run by different operators**, dropping it is not enough, because
+a link is then trusted for every site it carries. Two rules make that safe, and
+collab v0.61.0 documents them with a worked example (`gitstore`'s
+`federation_example_test.go`) and an end-to-end test
+(`TestAScopedPolicyStopsALinkSpeakingForOurOwnUsers`):
+
+1. **Scope the site identity** so two operators cannot mint the same one. Derive
+   it from a scoped identifier — `ada@paris.example.ac`, not `ada` — because only
+   the home organisation issues inside its own scope. `crdt.DeriveSiteID` is a
+   function of the name, so a bare `ada` is the same replica on every instance in
+   the world, and two operators each with an `ada` would silently share one.
+2. **Write `AuthorizeOperations` about the relation**: for every batch, which
+   sites it carries, and whether the session carrying them may speak for those.
+   Every *kind* of operation, not only the text — a policy that reads one kind is
+   stepped around by writing to another part of the document. And **never list
+   your own scope** among the scopes a link may carry: that is how a link comes to
+   be allowed to write as one of your own users, which is the whole attack. Your
+   own users need no entry in any register, because a session may always speak for
+   the site it joined as.
+
+Two limits remain, and they are properties of this shape rather than gaps in it.
+Trust is hop by hop: if you follow B and B follows C, B relays C's sites, so you
+grant B the union and thereby trust B about C — which is how mail and Matrix
+federation trust. And an operation carries no signature, so a link is believed
+about the attribution of everything it relays; what a server can check is which
+sites a link may speak for, not that a site really said this.
+
+If the policy refuses, it refuses loudly: the link's session ends at once and the
+error names the site it may not speak for, rather than leaving a link that retries
+for ever and a document that never fills.
+
+#### What happens without the policy
+
+A peer claiming one of your users produces a document that existed on neither
+server — your user's genuine prefix with the tail of a forged sequence, every
+character attributed to that user — and **both replicas then report the same
+version vector**, so each believes it is completely caught up with the other and
+neither ever asks for anything again. Nothing returns an error, because the
+operations are well formed and the merge converged on what it was told. Measured
+in collab's `TestAFederatedPeerCanSpeakAsAnotherServersUser`.
+
+Since crdt v0.48.0 the narrower case is audible: an operation wearing the name of
+one this replica has already applied, and saying something else, comes back as
+`crdt.ErrCollidingID`. Treat it as an alarm and not a defence — it names a
+collision it is offered, and it does not stop one that arrives as operations past
+this replica's own count, which is what a forged tail is.
 
 ## Upgrading across a snapshot-format change
 
