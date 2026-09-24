@@ -16,9 +16,9 @@ require (
 require (
 	github.com/andybalholm/brotli v1.2.4
 	github.com/creack/pty v1.1.24
-	github.com/go-crdt/collab v0.61.0
+	github.com/go-crdt/collab v0.62.0
 	github.com/go-crdt/collab/pgstore v0.15.0
-	github.com/go-crdt/crdt v0.48.0
+	github.com/go-crdt/crdt v0.49.0
 	github.com/nats-io/nats-server/v2 v2.14.2
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/tetratelabs/wazero v1.12.0

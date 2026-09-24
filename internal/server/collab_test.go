@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -189,5 +190,66 @@ func TestASessionMayNotWriteAsAnotherSite(t *testing.T) {
 	}
 	if err := cfg.AuthorizeOperations(t.Context(), "thesis:default", 7, made(8)); err == nil {
 		t.Error("a session wrote as another site")
+	}
+}
+
+// captured is the log a test reads back, because the level is part of the
+// decision and not decoration.
+type captured struct {
+	records []slog.Record
+}
+
+func (c *captured) Enabled(context.Context, slog.Level) bool { return true }
+func (c *captured) Handle(_ context.Context, r slog.Record) error {
+	c.records = append(c.records, r.Clone())
+	return nil
+}
+func (c *captured) WithAttrs([]slog.Attr) slog.Handler { return c }
+func (c *captured) WithGroup(string) slog.Handler      { return c }
+
+func (c *captured) last() (string, slog.Level, map[string]string) {
+	if len(c.records) == 0 {
+		return "", 0, nil
+	}
+	r := c.records[len(c.records)-1]
+	attrs := map[string]string{}
+	r.Attrs(func(a slog.Attr) bool { attrs[a.Key] = a.Value.String(); return true })
+	return r.Message, r.Level, attrs
+}
+
+// A refusal has to reach the operator, and a collision has to be louder than a
+// client writing as somebody else.
+//
+// Without the hook a refusal is reported to the session that caused it and to
+// nobody else. That is the right and sufficient answer for a client sending
+// rubbish. It is the wrong room for crdt.ErrCollidingID: two replicas chose the
+// same site, and if that was not deliberate then the identities this deployment
+// hands out are not unique -- which nothing inside a session can discover.
+//
+// The level is asserted, not just the call. A warning that should have been an
+// error is a line nobody reads.
+func TestAnOperatorIsToldWhenABatchIsRefused(t *testing.T) {
+	log := &captured{}
+	cfg := collabConfig(collab.NewMemoryStore(), fakeProjects{}, slog.New(log))
+	if cfg.OnOperationsRefused == nil {
+		t.Fatal("a refused batch is reported to the offending session and to nobody else")
+	}
+
+	cfg.OnOperationsRefused("thesis:default", 7, errors.New("a session of site 7 sent an operation made by site 8"))
+	msg, level, attrs := log.last()
+	if msg != "collab.operations.refused" || level != slog.LevelWarn {
+		t.Errorf("an ordinary refusal logged %q at %v, want collab.operations.refused at WARN", msg, level)
+	}
+	if attrs["document"] != "thesis:default" || attrs["site"] != "7" {
+		t.Errorf("the line carries %v, want the document and the session's site", attrs)
+	}
+
+	cfg.OnOperationsRefused("thesis:default", 7, fmt.Errorf("collab: operations refused: %w", crdt.ErrCollidingID))
+	msg, level, attrs = log.last()
+	if msg != "collab.site.collision" || level != slog.LevelError {
+		t.Errorf("a collision logged %q at %v, want collab.site.collision at ERROR", msg, level)
+	}
+	if attrs["document"] != "thesis:default" {
+		t.Errorf("the collision line carries %v, want the document", attrs)
 	}
 }

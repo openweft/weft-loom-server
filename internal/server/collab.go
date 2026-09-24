@@ -180,6 +180,25 @@ func collabConfig(store collab.Store, projects project.Store, logger *slog.Logge
 		// characters with the same ID, and replicas that saw both diverge
 		// silently and permanently. See collab.OwnSiteOnly.
 		AuthorizeOperations: collab.OwnSiteOnly,
+		// A refusal otherwise reaches the session that caused it and nobody
+		// else, and two of the three reasons for one are not that session's
+		// business. The policy above refusing is a client writing as somebody
+		// else. crdt.ErrCollidingID is worse and quieter: two replicas chose the
+		// same site, so if it was not deliberate then the identities handed out
+		// here are not unique, and nothing inside a session can discover that.
+		//
+		// Two levels on purpose. A refused write is a client misbehaving and the
+		// server is fine, so it is a warning. A collision says something about
+		// this deployment rather than about one client, so it goes to the level
+		// that gets looked at.
+		OnOperationsRefused: func(document string, from crdt.SiteID, err error) {
+			msg, level := "collab.operations.refused", slog.LevelWarn
+			if errors.Is(err, crdt.ErrCollidingID) {
+				msg, level = "collab.site.collision", slog.LevelError
+			}
+			logger.Log(context.Background(), level, msg,
+				"document", document, "site", uint64(from), "err", err.Error())
+		},
 		OnEvictError: func(document string, err error) {
 			// Nobody is left to return this to, and it is the one failure that
 			// loses what somebody wrote. It goes to the log at the level that

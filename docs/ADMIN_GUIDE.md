@@ -496,6 +496,16 @@ find $WEFT_LOOM_STORAGE_ROOT -path '*/.weft-loom/public-share.json' -delete
   who connects over WS can in principle still publish CRDT updates ;
   enforce read-only at the SPA today. Server-side hard enforcement is
   on the roadmap.
+- **Refused CRDT batches are logged, and one of the two lines is worth an
+  alert.** A refusal otherwise reaches only the session that caused it.
+  * `collab.operations.refused` at **WARN** — a session tried to write as another
+    site and `collab.OwnSiteOnly` refused it. One client misbehaving; the server
+    is fine. Attributes: `document`, `site` (the *session's* site), `err`.
+  * `collab.site.collision` at **ERROR** — `crdt.ErrCollidingID`: an operation
+    wore the name of one the replica had already applied and said something else.
+    Two replicas chose the same site. If that was not somebody forging, then **the
+    site identities this deployment hands out are not unique**, and nothing inside
+    a session can discover that. Alert on this one.
 - **Public share tokens** are 32-byte URL-safe random. They are stored
   hashed-at-rest. Loss = full project read access until revoked.
 - **CSRF** : huma handlers require either `Authorization: Bearer …`
