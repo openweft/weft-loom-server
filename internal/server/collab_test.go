@@ -253,3 +253,42 @@ func TestAnOperatorIsToldWhenABatchIsRefused(t *testing.T) {
 		t.Errorf("the collision line carries %v, want the document", attrs)
 	}
 }
+
+// A save this server cannot make has to reach the log, and a save that was REFUSED
+// has to be told apart from one that failed.
+//
+// Without OnPersistError collab is explicit about what happens: the saves go on being
+// attempted and go on failing, participants go on editing and are told nothing, and
+// the work is there until the process stops and then is not. This server had no such
+// hook until now, so a full disk looked exactly like a working server.
+//
+// The two cases are separated because the action is: collab.ErrChanged means another
+// server wrote the document since this one read it — which pgstore refuses rather than
+// clobbering — and the answer is to stop two replicas serving one document. Anything
+// else is the store not writing at all, and the answer is the disk or the database.
+func TestAnOperatorIsToldWhenASaveCannotBeMade(t *testing.T) {
+	log := &captured{}
+	cfg := collabConfig(collab.NewMemoryStore(), fakeProjects{}, slog.New(log))
+	if cfg.OnPersistError == nil {
+		t.Fatal("a periodic save that fails is silent: nothing is told about it")
+	}
+
+	cfg.OnPersistError("thesis:default", fmt.Errorf("saving: %w", collab.ErrChanged))
+	msg, level, attrs := log.last()
+	if msg != "collab.save.refused" || level != slog.LevelError {
+		t.Errorf("a refused save logged %q at %v, want collab.save.refused at ERROR", msg, level)
+	}
+	if attrs["document"] != "thesis:default" {
+		t.Errorf("the line carries %v, want the document", attrs)
+	}
+	if attrs["do"] == "" {
+		t.Error("the line does not say what to do about it, which is the whole difference " +
+			"between this and a save that merely failed")
+	}
+
+	cfg.OnPersistError("thesis:default", errors.New("no space left on device"))
+	msg, level, _ = log.last()
+	if msg != "collab.persist.failed" || level != slog.LevelError {
+		t.Errorf("a failed save logged %q at %v, want collab.persist.failed at ERROR", msg, level)
+	}
+}

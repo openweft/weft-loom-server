@@ -135,10 +135,11 @@ Measured upstream, in `collab`'s own
 `BBBB`, and the store ends holding `BBBB` alone.
 
 It is the **sequential** case that works, and it is what makes this easy to miss.
-A rolling restart loses nothing — the departing replica saves, the arriving one
-loads. A failover to a cold standby loses nothing. What loses is two of them
-serving the same document at once, which is what a round-robin balancer does with
-the second editor who opens it.
+A rolling restart with no overlap loses nothing — the departing replica saves, the
+arriving one loads; with an overlap the departing save is now refused rather than
+clobbering, which the next section takes up. A failover to a cold standby loses
+nothing. What loses is two of them serving the same document at once, which is what
+a round-robin balancer does with the second editor who opens it.
 
 Until this server routes a document to one replica, the choices are:
 
@@ -158,6 +159,65 @@ Until this server routes a document to one replica, the choices are:
 `storage_root` being mounted on every replica is what makes the first two
 necessary rather than optional: the FS view is shared, so the store is shared, and
 the store is where the loss happens.
+
+### Saves are conditional now, and a refusal is addressed to you
+
+Since pgstore v0.16.0 a save is **conditional**. The store keeps a version per
+document; this server reads a token alongside the document and hands it back when
+it writes; a write whose token no longer matches is **refused** with
+`collab.ErrChanged` rather than replacing what is there.
+
+Nothing had to change here to turn that on, which is worth knowing. This server
+passes its store to `collab` as a `collab.Store`, and `collab` asks at open
+whether the value it was handed also satisfies `collab.ConditionalStore`. pgstore
+now does. So the behaviour arrived with a dependency bump, and what it introduces
+is a *refusal where there used to be silent success*.
+
+That is the right trade — the old behaviour was the loss described above, with no
+error anywhere — but it moves the loss rather than removing it, and it only helps
+if somebody reads the log.
+
+**Four lines report it, and they are not the same event.**
+
+| line | level | what happened |
+|---|---|---|
+| `collab.save.refused` | ERROR | a periodic save was refused: another server wrote this document since this one read it |
+| `collab.persist.failed` | ERROR | a periodic save failed for another reason — full disk, expired credential, database gone |
+| `collab.evict.save.failed` | ERROR | the **last** save of an idle document failed, and there is nobody left to tell |
+| `collab: saving on shutdown failed` | ERROR | the save in `Shutdown` failed; `collab.Server.Close` is given its error to handle rather than going through the hooks, so a refusal on the way out appears here and in none of the three above |
+
+A refused save keeps the work: the document goes back to unsaved and stays in
+memory. It does **not** re-read the token, so every later save of that document is
+refused the same way — the line repeats every five seconds and no retry will clear
+it. The document is dropped 15 minutes after its last participant leaves, and that
+is where the work actually dies, under `collab.evict.save.failed`.
+
+So `collab.save.refused` is not a transient. It is the shared-store topology
+reporting itself — two replicas are serving one document — and the fix is the
+routing, per the section above.
+
+#### What a rolling restart looks like now
+
+A rolling restart **without overlap** is unchanged and still loses nothing: the
+departing replica's `Shutdown` calls `collab.Server.Close`, which saves everything
+written since the last five-second interval, and the arriving replica loads it.
+
+With an **overlap** — both replicas up and serving the same document, which is
+what a round-robin balancer produces — the departing replica's final save is now
+refused, and `collab: saving on shutdown failed` names `collab.ErrChanged`. Read
+it like this:
+
+* The surviving replica's state stands. Previously the departing replica's late
+  save **replaced** it, which was the worse outcome and was silent.
+* Work the departing replica held unsaved is not in the store, and for a
+  participant still connected that is recovered rather than lost: it reconnects to
+  the surviving replica, is told that replica's version, and pushes what is
+  missing from it — a client is a replica too, which is the whole point of a CRDT
+  here. What is genuinely gone is work whose author had already left.
+
+So the line is expected during an overlapping restart and does not mean a damaged
+store. What it does mean is that the overlap is real — which is the thing the
+section above asks you not to have.
 
 ### Federating requires replacing OwnSiteOnly
 
