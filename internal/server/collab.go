@@ -199,6 +199,31 @@ func collabConfig(store collab.Store, projects project.Store, logger *slog.Logge
 			logger.Log(context.Background(), level, msg,
 				"document", document, "site", uint64(from), "err", err.Error())
 		},
+		// Without this a server that cannot write is silent about it, which is
+		// collab's own warning on the field: the saves go on being attempted and
+		// go on failing, participants go on editing and are told nothing, and the
+		// work is there until the process stops and then is not. A disk that
+		// filled up looks exactly like a server that is working.
+		//
+		// Two messages rather than two levels, because both are urgent and the
+		// ACTION differs. collab.ErrChanged means another server wrote this
+		// document since this one read it -- pgstore v0.16.0 and later refuse that
+		// rather than carrying the other's work away -- so the answer is to stop
+		// two servers from serving one document, and this server is holding work it
+		// cannot save until somebody does. Anything else is the store refusing to
+		// write at all, and the answer is the disk, the credentials or the
+		// database.
+		OnPersistError: func(document string, err error) {
+			if errors.Is(err, collab.ErrChanged) {
+				logger.Error("collab.save.refused",
+					"document", document,
+					"why", "another server wrote this document since this one read it",
+					"do", "serve each document from one replica; this one is holding unsaved work",
+					"err", err.Error())
+				return
+			}
+			logger.Error("collab.persist.failed", "document", document, "err", err.Error())
+		},
 		OnEvictError: func(document string, err error) {
 			// Nobody is left to return this to, and it is the one failure that
 			// loses what somebody wrote. It goes to the log at the level that
