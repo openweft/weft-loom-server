@@ -188,13 +188,26 @@ func collabConfig(store collab.Store, projects project.Store, logger *slog.Logge
 		// here are not unique, and nothing inside a session can discover that.
 		//
 		// Two levels on purpose. A refused write is a client misbehaving and the
-		// server is fine, so it is a warning. A collision says something about
-		// this deployment rather than about one client, so it goes to the level
+		// server is fine, so it is a warning. The other two say something about
+		// this deployment rather than about one client, so they go to the level
 		// that gets looked at.
+		//
+		// Three cases since collab v0.70.0, and the third is not a variant of the
+		// second. crdt.ErrCollidingID is caught ON AN OPERATION: a forged one
+		// arrived wearing a name this replica had already applied. collab
+		// ErrDiverged is caught on a COMPARISON, when nothing arrived at all --
+		// the peer had nothing to send, because what it would send is selected by
+		// name and the names matched, so the two replicas were about to part
+		// believing they agreed. Same conclusion for an operator, different
+		// evidence, and a message that named only one of them would send somebody
+		// looking for an operation that does not exist.
 		OnOperationsRefused: func(document string, from crdt.SiteID, err error) {
 			msg, level := "collab.operations.refused", slog.LevelWarn
-			if errors.Is(err, crdt.ErrCollidingID) {
+			switch {
+			case errors.Is(err, crdt.ErrCollidingID):
 				msg, level = "collab.site.collision", slog.LevelError
+			case errors.Is(err, collab.ErrDiverged):
+				msg, level = "collab.replicas.diverged", slog.LevelError
 			}
 			logger.Log(context.Background(), level, msg,
 				"document", document, "site", uint64(from), "err", err.Error())

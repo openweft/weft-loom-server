@@ -252,6 +252,20 @@ func TestAnOperatorIsToldWhenABatchIsRefused(t *testing.T) {
 	if attrs["document"] != "thesis:default" {
 		t.Errorf("the collision line carries %v, want the document", attrs)
 	}
+
+	// The third case, which arrives through the same hook since collab v0.70.0
+	// and is NOT a variant of the second. A collision is caught on an operation
+	// that arrived; a divergence is caught on a comparison when nothing arrived
+	// at all, because the peer had nothing to send. Logging it as a collision
+	// would send somebody looking for an operation that does not exist.
+	cfg.OnOperationsRefused("thesis:default", 9001, fmt.Errorf("collab: link: %w", collab.ErrDiverged))
+	msg, level, attrs = log.last()
+	if msg != "collab.replicas.diverged" || level != slog.LevelError {
+		t.Errorf("a divergence logged %q at %v, want collab.replicas.diverged at ERROR", msg, level)
+	}
+	if attrs["site"] != "9001" {
+		t.Errorf("the divergence line carries %v, want the link's site", attrs)
+	}
 }
 
 // A save this server cannot make has to reach the log, and a save that was REFUSED

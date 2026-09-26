@@ -566,6 +566,15 @@ find $WEFT_LOOM_STORAGE_ROOT -path '*/.weft-loom/public-share.json' -delete
     Two replicas chose the same site. If that was not somebody forging, then **the
     site identities this deployment hands out are not unique**, and nothing inside
     a session can discover that. Alert on this one.
+  * `collab.replicas.diverged` at **ERROR** — `collab.ErrDiverged`: this replica
+    and the peer on a link report the **same version vector** and hold **different
+    documents**. Same conclusion as the line above, different evidence, and the
+    difference matters when you go looking: a collision is caught on an operation
+    that *arrived*, and a divergence is caught on a comparison when **nothing
+    arrived** — the peer had nothing to send, because what it would send is
+    selected by name and the names matched. Both replicas were about to part
+    believing they agreed, which is the state no later exchange repairs, because
+    neither will ever ask again. The link is ended. Alert on this one too.
 - **Public share tokens** are 32-byte URL-safe random. They are stored
   hashed-at-rest. Loss = full project read access until revoked.
 - **CSRF** : huma handlers require either `Authorization: Bearer …`
