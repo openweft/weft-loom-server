@@ -248,14 +248,30 @@ collab v0.61.0 documents them with a worked example (`gitstore`'s
    the home organisation issues inside its own scope. `crdt.DeriveSiteID` is a
    function of the name, so a bare `ada` is the same replica on every instance in
    the world, and two operators each with an `ada` would silently share one.
-2. **Write `AuthorizeOperations` about the relation**: for every batch, which
-   sites it carries, and whether the session carrying them may speak for those.
-   Every *kind* of operation, not only the text — a policy that reads one kind is
-   stepped around by writing to another part of the document. And **never list
-   your own scope** among the scopes a link may carry: that is how a link comes to
-   be allowed to write as one of your own users, which is the whole attack. Your
-   own users need no entry in any register, because a session may always speak for
-   the site it joined as.
+2. **Install `collab.SpeaksFor`** and answer its one question: may this session
+   hand over work that site made? It takes a predicate
+
+   ```go
+   AuthorizeOperations: collab.SpeaksFor(
+       func(ctx context.Context, document string, session, carried crdt.SiteID) bool {
+           return scopeOf(carried) == "lyon.example.ac" // the peers you federate with
+       }),
+   ```
+
+   and it exists because writing this by hand has two traps, **both of which it
+   already gets right**:
+
+   * it walks every *kind* of operation, not only the text. A hand-written policy
+     that reads one kind is stepped around by writing to another part of the
+     document — which happened twice in collab's own example before
+     `collab.Sites` was exported as that walk.
+   * a session's **own** site is allowed without the predicate being consulted at
+     all, so your own scope is never something you list. Listing it is how a link
+     comes to be allowed to write as one of your own users, which is the whole
+     attack rather than a refinement of it.
+
+   So the predicate names only the scopes you federate *with*, and a scope you
+   forget is a link refused rather than a door left open.
 
 Two limits remain, and they are properties of this shape rather than gaps in it.
 Trust is hop by hop: if you follow B and B follows C, B relays C's sites, so you
@@ -281,8 +297,21 @@ in collab's `TestAFederatedPeerCanSpeakAsAnotherServersUser`.
 Since crdt v0.48.0 the narrower case is audible: an operation wearing the name of
 one this replica has already applied, and saying something else, comes back as
 `crdt.ErrCollidingID`. Treat it as an alarm and not a defence — it names a
-collision it is offered, and it does not stop one that arrives as operations past
+collision it is *offered*, and it cannot see one that arrives as operations past
 this replica's own count, which is what a forged tail is.
+
+**Since collab v0.70.0 that other half is caught too, and by a different
+mechanism.** A server puts a digest of the document beside the version vector in
+its welcome, and a link that catches up to exactly that version compares. Equal
+version vectors and different digests is the failure above, stated rather than
+inferred: the link ends and this server logs `collab.replicas.diverged` at ERROR
+(see *Security notes*). It compares **only** when the two versions are equal —
+every honest catch-up passes through a state where they differ — so it is silent
+on a peer that is merely behind, and it cannot see a side that is merely ahead.
+
+It still does not *attribute* anything. What it removes is the part with no
+remedy: two replicas each concluding they are finished with the other while
+holding different documents, after which neither ever asks again.
 
 ## Upgrading across a snapshot-format change
 
