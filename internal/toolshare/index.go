@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	mediaTypeOCIIndex          = "application/vnd.oci.image.index.v1+json"
+	mediaTypeOCIIndex           = "application/vnd.oci.image.index.v1+json"
 	mediaTypeDockerManifestList = "application/vnd.docker.distribution.manifest.list.v2+json"
 )
 

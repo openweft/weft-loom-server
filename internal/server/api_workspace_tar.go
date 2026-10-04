@@ -87,7 +87,7 @@ func (s *Server) handleWorkspaceTar(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.events.Publish(eventbus.Event{
 			Source: "server", Component: "workspace", Verb: "tar.unknown_vmid",
-			Level:  "warn", Fields: map[string]any{"vmid": vmid, "err": err.Error()},
+			Level: "warn", Fields: map[string]any{"vmid": vmid, "err": err.Error()},
 		})
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return

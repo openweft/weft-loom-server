@@ -46,8 +46,8 @@ const (
 // (mounts.Subscriber dedups by ID). One Publisher per loom-server,
 // shared across all workspace VMs.
 type Publisher struct {
-	Conn  *nats.Conn
-	mu    sync.Mutex
+	Conn *nats.Conn
+	mu   sync.Mutex
 	// outstanding maps vmID → set of mount IDs we've published, so
 	// teardown can unmount them all when the VM is stopped.
 	outstanding map[string]map[string]struct{}

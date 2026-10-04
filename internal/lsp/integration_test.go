@@ -72,8 +72,8 @@ func TestBridgeEndToEnd(t *testing.T) {
 
 	// 1) initialize
 	send(1, "initialize", map[string]any{
-		"processId": nil,
-		"rootUri":   "file:///proj",
+		"processId":    nil,
+		"rootUri":      "file:///proj",
 		"capabilities": map[string]any{},
 	})
 	got := read()
@@ -145,9 +145,9 @@ func toString(v any) string {
 }
 
 // findFakeLSPBinary locates the fake-lsp binary. Build path priority :
-//   1. WEFT_LOOM_LSP_FAKE env var (already-built binary)
-//   2. ~/.weft-loom/bin/fake-lsp (the loom-start helper builds here)
-//   3. `go build` on-the-fly into a temp file
+//  1. WEFT_LOOM_LSP_FAKE env var (already-built binary)
+//  2. ~/.weft-loom/bin/fake-lsp (the loom-start helper builds here)
+//  3. `go build` on-the-fly into a temp file
 func findFakeLSPBinary(t *testing.T) string {
 	if v := os.Getenv("WEFT_LOOM_LSP_FAKE"); v != "" {
 		if st, err := os.Stat(v); err == nil && !st.IsDir() {

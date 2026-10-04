@@ -31,7 +31,6 @@ import (
 	"time"
 )
 
-
 // arxivUpstream is the base URL for the arXiv query endpoint. Tests
 // flip this to an httptest.Server. Production points at the public
 // API.
@@ -184,4 +183,3 @@ func collapseWhitespace(s string) string {
 	out := b.String()
 	return strings.TrimSpace(out)
 }
-

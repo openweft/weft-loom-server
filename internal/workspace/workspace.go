@@ -6,17 +6,17 @@
 // Two backends share the same Provisioner interface :
 //
 //   - Local : the dev-mode QEMU/TCG path. Boots an actual microVM
-//             via the standard weft-microvm-kernel + workspace
-//             image on the loom-server host (Mac with Apple-VZ-
-//             disabled QEMU is the canonical dev box). Slow cold
-//             boot (~10s) but the VM is reused across SPA reloads
-//             so the cost is paid once.
+//     via the standard weft-microvm-kernel + workspace
+//     image on the loom-server host (Mac with Apple-VZ-
+//     disabled QEMU is the canonical dev box). Slow cold
+//     boot (~10s) but the VM is reused across SPA reloads
+//     so the cost is paid once.
 //
 //   - Agent : the prod path. Talks to a weft-agent on a hypervisor
-//             host and asks for a workspace VM to be placed there.
-//             The shell + compile traffic still flows through NATS
-//             (weft.exec.<vmID>.<sid>.{in,out}) — the loom-server
-//             is a thin router in both cases.
+//     host and asks for a workspace VM to be placed there.
+//     The shell + compile traffic still flows through NATS
+//     (weft.exec.<vmID>.<sid>.{in,out}) — the loom-server
+//     is a thin router in both cases.
 //
 // In dev mode (no WEFT_AGENT_URL + no WEFT_NATS_URL) the workspace
 // falls back to the legacy local-pty path in api_shell.go : the
@@ -123,10 +123,10 @@ type Registry struct {
 }
 
 type ensureResult struct {
-	once  sync.Once
-	vm    *VM
-	err   error
-	dead  bool // set true when the VM exited ; next Ensure re-spawns
+	once sync.Once
+	vm   *VM
+	err  error
+	dead bool // set true when the VM exited ; next Ensure re-spawns
 }
 
 // NewRegistry wraps p in a per-identity memoiser.

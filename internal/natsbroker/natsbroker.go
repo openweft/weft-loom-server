@@ -51,13 +51,13 @@ func Start(opts Options) (*Embedded, error) {
 		opts.StoreDir = filepath.Join("/tmp", "weft-loom-nats")
 	}
 	srvOpts := &server.Options{
-		Host:                   opts.Host,
-		Port:                   opts.Port,
-		ServerName:             "weft-loom-embedded",
-		JetStream:              true,
-		StoreDir:               opts.StoreDir,
-		DisableShortFirstPing:  true,
-		NoSigs:                 true, // we own signal handling
+		Host:                  opts.Host,
+		Port:                  opts.Port,
+		ServerName:            "weft-loom-embedded",
+		JetStream:             true,
+		StoreDir:              opts.StoreDir,
+		DisableShortFirstPing: true,
+		NoSigs:                true, // we own signal handling
 	}
 	srv, err := server.NewServer(srvOpts)
 	if err != nil {

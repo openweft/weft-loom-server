@@ -44,15 +44,15 @@ var (
 	// `$${...}` escape — has to be unwrapped after substitution.
 	reEscape = regexp.MustCompile(`\$\$\{([^{}]*)\}`)
 
-	reMathConst       = regexp.MustCompile(`^Math\.(PI|E|LN2|LN10|LOG2E|LOG10E|SQRT2)$`)
-	reMathFunc        = regexp.MustCompile(`^Math\.(round|floor|ceil|abs|sqrt|log|exp|sin|cos|tan)\(\s*(-?[\d.]+)\s*\)$`)
-	reMathPow         = regexp.MustCompile(`^Math\.pow\(\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\)$`)
-	reDateMethod      = regexp.MustCompile(`^new\s+Date\(\)\.(getFullYear|getMonth|getDate|getDay|getHours|getMinutes|getSeconds)\(\)$`)
-	reDateMethodPlus  = regexp.MustCompile(`^new\s+Date\(\)\.(getMonth|getDate)\(\)\s*\+\s*1$`)
-	reDateString      = regexp.MustCompile(`^new\s+Date\(\)\.(toISOString|toDateString|toLocaleDateString|toLocaleTimeString|toLocaleString)\(\s*\)$`)
-	reDateStringArg   = regexp.MustCompile(`^new\s+Date\(\)\.(toLocaleDateString|toLocaleTimeString|toLocaleString)\(\s*['"]([a-zA-Z-]+)['"]\s*\)$`)
-	reNumberToFixed   = regexp.MustCompile(`^(.+)\.toFixed\(\s*(\d+)\s*\)$`)
-	reSimpleArith     = regexp.MustCompile(`^(-?[\d.]+)\s*([+\-*/])\s*(-?[\d.]+)$`)
+	reMathConst      = regexp.MustCompile(`^Math\.(PI|E|LN2|LN10|LOG2E|LOG10E|SQRT2)$`)
+	reMathFunc       = regexp.MustCompile(`^Math\.(round|floor|ceil|abs|sqrt|log|exp|sin|cos|tan)\(\s*(-?[\d.]+)\s*\)$`)
+	reMathPow        = regexp.MustCompile(`^Math\.pow\(\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\)$`)
+	reDateMethod     = regexp.MustCompile(`^new\s+Date\(\)\.(getFullYear|getMonth|getDate|getDay|getHours|getMinutes|getSeconds)\(\)$`)
+	reDateMethodPlus = regexp.MustCompile(`^new\s+Date\(\)\.(getMonth|getDate)\(\)\s*\+\s*1$`)
+	reDateString     = regexp.MustCompile(`^new\s+Date\(\)\.(toISOString|toDateString|toLocaleDateString|toLocaleTimeString|toLocaleString)\(\s*\)$`)
+	reDateStringArg  = regexp.MustCompile(`^new\s+Date\(\)\.(toLocaleDateString|toLocaleTimeString|toLocaleString)\(\s*['"]([a-zA-Z-]+)['"]\s*\)$`)
+	reNumberToFixed  = regexp.MustCompile(`^(.+)\.toFixed\(\s*(\d+)\s*\)$`)
+	reSimpleArith    = regexp.MustCompile(`^(-?[\d.]+)\s*([+\-*/])\s*(-?[\d.]+)$`)
 )
 
 // reFrontMatter matches a YAML front-matter block at the top of the

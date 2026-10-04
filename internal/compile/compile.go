@@ -367,6 +367,7 @@ func (s *Service) run(ctx context.Context, ident auth.Identity, id string, spec 
 //   - "lualatex"      → lualatex (Lua scripting, modern font handling)
 //   - "xelatex"       → xelatex  (Unicode + system fonts)
 //   - "gotex"         → gotex    (pure-Go, FROM-scratch image, WASM-capable)
+//
 // Anything else is normalised to pdflatex.
 func resolveLatexEngine(choice string, emit func(Event)) string {
 	switch choice {
@@ -404,6 +405,7 @@ func resolveBibEngine(choice string, emit func(Event)) string {
 // bibTrigger inspects scratchDir for the file the bib engine consumes :
 //   - biber  : `<base>.bcf`  (produced by biblatex with backend=biber)
 //   - bibtex : `<base>.aux`  containing a `\bibdata{}` line
+//
 // Returns the base name (without extension) when a bib run is wanted,
 // or "" when no bibliography was referenced.
 func bibTrigger(scratchDir, base, engine string) string {
@@ -431,8 +433,9 @@ func bibTrigger(scratchDir, base, engine string) string {
 // between the two passes.
 //
 // Dispatch path :
-//   WEFT_LOOM_BACKEND=microvm → microvm.go (weft-loom-texlive image)
-//   otherwise                → host subprocess (dev fallback)
+//
+//	WEFT_LOOM_BACKEND=microvm → microvm.go (weft-loom-texlive image)
+//	otherwise                → host subprocess (dev fallback)
 //
 // Engine selection : spec.Engine picks pdflatex/lualatex/xelatex ;
 // spec.BibEngine picks bibtex/biber. Unknown / missing binaries

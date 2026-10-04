@@ -241,4 +241,3 @@ func parseImageRef(ref string) (registry, repo, tag string) {
 	}
 	return
 }
-

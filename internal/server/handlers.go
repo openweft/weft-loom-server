@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 
-
 	"github.com/openweft/weft-loom-server/internal/auth"
 	loomlsp "github.com/openweft/weft-loom-server/internal/lsp"
 	"github.com/openweft/weft-loom-server/internal/synctex"
@@ -143,7 +142,6 @@ func (s *Server) handleLSP(w http.ResponseWriter, r *http.Request) {
 	loomlsp.HandleWS(w, r.WithContext(ctx), r.PathValue("lang"), s.opts.Logger, s.wsAcceptOpts())
 }
 
-
 // handleSyncTeX answers SyncTeX queries against the .synctex.gz
 // stream pdflatex produced alongside the PDF.
 //
@@ -249,4 +247,3 @@ func (s *Server) handleCompileStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
-

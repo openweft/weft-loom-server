@@ -784,7 +784,6 @@ func mountGitAPI(api huma.API, s *Server) {
 	})
 }
 
-
 // autoCommit stages every tracked + untracked change and commits if
 // the tree is dirty. No-op when the tree is clean. Used by the push
 // handler so the user doesn't have to remember to commit before

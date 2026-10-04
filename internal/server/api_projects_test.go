@@ -99,12 +99,12 @@ func TestRenameProject_InvalidName(t *testing.T) {
 	seedProject(t, store, "p1", "main.tex", "x")
 
 	for _, bad := range []string{
-		`{"newName":""}`,            // empty
-		`{"newName":"foo/bar"}`,     // path separator
-		`{"newName":".weft-loom"}`,  // reserved
-		`{"newName":".dotfile"}`,    // leading dot
-		`{"newName":"with space"}`,  // sanitise() strips → mismatch
-		`{"newName":"héllo"}`,       // non-ASCII → sanitise mismatch
+		`{"newName":""}`,           // empty
+		`{"newName":"foo/bar"}`,    // path separator
+		`{"newName":".weft-loom"}`, // reserved
+		`{"newName":".dotfile"}`,   // leading dot
+		`{"newName":"with space"}`, // sanitise() strips → mismatch
+		`{"newName":"héllo"}`,      // non-ASCII → sanitise mismatch
 	} {
 		resp, err := http.Post(srv.URL+"/api/projects/p1/rename", "application/json", strings.NewReader(bad))
 		if err != nil {

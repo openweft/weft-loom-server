@@ -80,8 +80,8 @@ func (s *Server) prespawnOne(subject string) {
 	s.events.Publish(eventbus.Event{
 		Source: "server", Component: "workspace", Verb: "prespawn.ready",
 		Fields: map[string]any{
-			"subject":  subject,
-			"vm_id":    vm.VMID,
+			"subject":    subject,
+			"vm_id":      vm.VMID,
 			"elapsed_ms": time.Since(start).Milliseconds(),
 		},
 	})

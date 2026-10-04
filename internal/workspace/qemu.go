@@ -277,10 +277,11 @@ func (p *QEMUProvisioner) Ensure(ctx context.Context, ident Identity) (*VM, erro
 // vmID        : stable workspace handle
 // natsURL     : URL the in-guest agent dials for exec sessions
 // userStorage : host path mounted at /workspace inside the guest
-//               via virtio-9p (the user's project files). The boot
-//               must mount the user's actual files there — tooling
-//               comes from OCI containers the agent pulls, never
-//               from a host bind.
+//
+//	via virtio-9p (the user's project files). The boot
+//	must mount the user's actual files there — tooling
+//	comes from OCI containers the agent pulls, never
+//	from a host bind.
 func (p *QEMUProvisioner) boot(ctx context.Context, dir, vmID, natsURL, userStorage string) error {
 	kernel := p.KernelImage
 	if kernel == "" {

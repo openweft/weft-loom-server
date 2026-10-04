@@ -135,12 +135,12 @@ func lspAcquire(subject string) (func(), func(), error) {
 // is a one-line change here ; the handler dispatches by the URL
 // path's lang parameter.
 var Servers = map[string]LanguageServer{
-	"latex":  {Lang: "latex",  Binary: "texlab",                    EnvOverride: "WEFT_LOOM_LSP_TEXLAB"},
-	"go":     {Lang: "go",     Binary: "gopls",                     EnvOverride: "WEFT_LOOM_LSP_GOPLS", Args: []string{"serve"}},
-	"python": {Lang: "python", Binary: "pyright-langserver",        EnvOverride: "WEFT_LOOM_LSP_PYRIGHT", Args: []string{"--stdio"}},
+	"latex":      {Lang: "latex", Binary: "texlab", EnvOverride: "WEFT_LOOM_LSP_TEXLAB"},
+	"go":         {Lang: "go", Binary: "gopls", EnvOverride: "WEFT_LOOM_LSP_GOPLS", Args: []string{"serve"}},
+	"python":     {Lang: "python", Binary: "pyright-langserver", EnvOverride: "WEFT_LOOM_LSP_PYRIGHT", Args: []string{"--stdio"}},
 	"typescript": {Lang: "typescript", Binary: "typescript-language-server", EnvOverride: "WEFT_LOOM_LSP_TS", Args: []string{"--stdio"}},
 	"javascript": {Lang: "javascript", Binary: "typescript-language-server", EnvOverride: "WEFT_LOOM_LSP_TS", Args: []string{"--stdio"}},
-	"rust":   {Lang: "rust", Binary: "rust-analyzer", EnvOverride: "WEFT_LOOM_LSP_RUSTANALYZER"},
+	"rust":       {Lang: "rust", Binary: "rust-analyzer", EnvOverride: "WEFT_LOOM_LSP_RUSTANALYZER"},
 	// "fake" : deterministic LSP stub bundled as cmd/fake-lsp ; only
 	// wired through when WEFT_LOOM_LSP_FAKE points at a built binary.
 	// Used by tests so the full WS→subprocess→WS round-trip can run
