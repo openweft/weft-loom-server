@@ -122,9 +122,9 @@ func mountLintAPI(api huma.API, s *Server) {
 				Source: "server", Component: "lint", Verb: "chktex",
 				Project: in.Project,
 				Fields: map[string]any{
-					"bytes":      len(in.Body.Content),
+					"bytes":       len(in.Body.Content),
 					"diagnostics": len(out.Body.Diagnostics),
-					"subject":    ident.Subject,
+					"subject":     ident.Subject,
 				},
 			})
 		}

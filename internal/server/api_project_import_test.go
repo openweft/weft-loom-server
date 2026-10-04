@@ -297,10 +297,10 @@ func TestProjectImport_SkipExportPaths(t *testing.T) {
 func TestProjectImport_NeverWritesInternalPaths(t *testing.T) {
 	s, store := newImportTestServer(t)
 	zipBytes := buildZip(t, map[string]string{
-		"paper.tex":                        "legit\n",
-		".weft-loom/owner":                 "attacker\n",
-		".weft-loom/sharing.json":          "{}\n",
-		".weft-loom/public-share.json":     "{\"token\":\"forged\"}\n",
+		"paper.tex":                    "legit\n",
+		".weft-loom/owner":             "attacker\n",
+		".weft-loom/sharing.json":      "{}\n",
+		".weft-loom/public-share.json": "{\"token\":\"forged\"}\n",
 	})
 
 	rec := httptest.NewRecorder()

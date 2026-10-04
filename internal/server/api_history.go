@@ -55,7 +55,7 @@ func (s *Server) snapshotAfterWrite(ident auth.Identity, project, file string, c
 	if err != nil {
 		s.events.Publish(eventbus.Event{
 			Source: "server", Component: "history", Verb: "snapshot.error",
-			Level:  "warn", Project: project,
+			Level: "warn", Project: project,
 			Fields: map[string]any{"file": file, "err": err.Error()},
 		})
 		return

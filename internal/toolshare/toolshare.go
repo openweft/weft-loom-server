@@ -43,9 +43,9 @@ import (
 // Manager owns the per-image unpack lifecycle. One per loom-server.
 // Concurrent Ensure for the same ref is deduped via a per-image WG.
 type Manager struct {
-	Root string
-	mu       sync.Mutex
-	pulling  map[string]*sync.WaitGroup
+	Root    string
+	mu      sync.Mutex
+	pulling map[string]*sync.WaitGroup
 }
 
 // New returns a Manager backed by root (auto-created on first Ensure).

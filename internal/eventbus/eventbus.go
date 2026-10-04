@@ -24,13 +24,13 @@ import (
 // + the action ; level matches slog ; Fields holds the structured
 // payload (anything JSON-serialisable).
 type Event struct {
-	TS        time.Time              `json:"ts"`
-	Source    string                 `json:"source"` // "server" or "client"
-	Component string                 `json:"component"`
-	Verb      string                 `json:"verb"`
-	Level     string                 `json:"level"` // "debug" | "info" | "warn" | "error"
-	Message   string                 `json:"message,omitempty"`
-	Fields    map[string]any         `json:"fields,omitempty"`
+	TS        time.Time      `json:"ts"`
+	Source    string         `json:"source"` // "server" or "client"
+	Component string         `json:"component"`
+	Verb      string         `json:"verb"`
+	Level     string         `json:"level"` // "debug" | "info" | "warn" | "error"
+	Message   string         `json:"message,omitempty"`
+	Fields    map[string]any `json:"fields,omitempty"`
 	// Project identifies the project the event relates to ; the
 	// doctor UI filters on this so two operators in different
 	// projects don't drown each other.

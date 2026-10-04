@@ -142,11 +142,11 @@ func execNotebookCell(ctx context.Context, vm *workspace.VM, bin, src string) (n
 	openSubject := execsession.SubjectOpen(vm.VMID)
 
 	var (
-		mu       sync.Mutex
-		stdout   strings.Builder
-		stderr   strings.Builder
-		exitVal  uint32
-		exited   bool
+		mu      sync.Mutex
+		stdout  strings.Builder
+		stderr  strings.Builder
+		exitVal uint32
+		exited  bool
 	)
 	done := make(chan struct{})
 
@@ -220,7 +220,7 @@ func execNotebookCell(ctx context.Context, vm *workspace.VM, bin, src string) (n
 }
 
 // shellQuote produces a single-quoted POSIX shell argument that
-// preserves the source byte-for-byte (' becomes '\'').
+// preserves the source byte-for-byte (' becomes '\”).
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
@@ -238,4 +238,3 @@ func newSID() string {
 	}
 	return fmt.Sprintf("%x", b)
 }
-

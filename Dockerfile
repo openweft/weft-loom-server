@@ -12,7 +12,7 @@
 # and runs it as a microVM bound to the per-DC service mesh.
 
 # --- Stage 1 : openapi.json (Go-side huma spec dump) ----------------
-FROM golang:1.26-bookworm AS gen
+FROM golang:1.27.1-bookworm AS gen
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
@@ -35,7 +35,7 @@ COPY --from=gen /build/openapi.json ./openapi.json
 RUN cd web && npm run gen-api && npm run build
 
 # --- Stage 3 : Go binary --------------------------------------------
-FROM golang:1.26-bookworm AS go
+FROM golang:1.27.1-bookworm AS go
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download

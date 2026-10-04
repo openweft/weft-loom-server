@@ -34,8 +34,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/openweft/weft-microvm-init/pkg/pod"
 	execsession "github.com/openweft/weft-microvm-agent/pkg/execsession"
+	"github.com/openweft/weft-microvm-init/pkg/pod"
 )
 
 // resolveVMForCompile asks the workspace resolver for the user's

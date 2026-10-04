@@ -85,17 +85,17 @@ func useMicroVM() bool {
 // returns the PDF path under scratchDir.
 //
 // Flow :
-//   1. `weft microvm run` boots the language's OCI image (weft-loom-
-//      texlive, weft-loom-markdown — published from the openweft/
-//      repos) with two virtio-fs bind mounts :
-//        -v <workDir>:/workspace          (project working tree)
-//        -v <scratchDir>:/workspace/.build  (artefact output)
-//   2. The compile command (pdflatex / marp / pandoc) runs inside the
-//      VM with /workspace/.build as the output target.
-//   3. weft-init in the guest mounts both shares before the container
-//      starts and bind-mounts them into the container rootfs at the
-//      same paths.
-//   4. When the VM exits, scratchDir on the host contains the PDF.
+//  1. `weft microvm run` boots the language's OCI image (weft-loom-
+//     texlive, weft-loom-markdown — published from the openweft/
+//     repos) with two virtio-fs bind mounts :
+//     -v <workDir>:/workspace          (project working tree)
+//     -v <scratchDir>:/workspace/.build  (artefact output)
+//  2. The compile command (pdflatex / marp / pandoc) runs inside the
+//     VM with /workspace/.build as the output target.
+//  3. weft-init in the guest mounts both shares before the container
+//     starts and bind-mounts them into the container rootfs at the
+//     same paths.
+//  4. When the VM exits, scratchDir on the host contains the PDF.
 //
 // The -v flag was added to `weft microvm run` in weft-microvm 0.2 ;
 // weft-init 0.2 parses the matching `weft.mount=virtiofs:tag:guest[:ro]`
