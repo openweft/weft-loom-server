@@ -17,6 +17,17 @@ jobs:
         goarch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v7
+      # go.mod has `replace` directives pointing at sibling
+      # workspace dirs (../weft-microvm-init, ../weft-microvm-agent).
+      # Clone them at the expected relative path, exactly as ci.yml
+      # does; without them `go run ./tools/dump-openapi` and the build
+      # stop at "replacement directory ... does not exist".
+      - name: fetch sibling repos referenced by go.mod replace
+        run: |
+          set -euo pipefail
+          cd ..
+          git clone --depth=1 https://github.com/openweft/weft-microvm-init.git
+          git clone --depth=1 https://github.com/openweft/weft-microvm-agent.git
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod

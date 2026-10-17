@@ -11,13 +11,31 @@
 # it on each DC via `weft microvm pull` (or autopull from cluster.hcl)
 # and runs it as a microVM bound to the per-DC service mesh.
 
+# go.mod `replace`s two sibling modules with ../ paths, outside this
+# build context. They come in as named build contexts and land where
+# ../ resolves from /build, so a build needs them passed explicitly:
+#
+#   docker buildx build \
+#     --build-context weft-microvm-init=../weft-microvm-init \
+#     --build-context weft-microvm-agent=../weft-microvm-agent .
+#
+# (.github/workflows/release-oci.yml does this through `build-contexts`.)
+
 # --- Stage 1 : openapi.json (Go-side huma spec dump) ----------------
 FROM golang:1.27.2-bookworm AS gen
+ENV GOTOOLCHAIN=local
 WORKDIR /build
+COPY --from=weft-microvm-init . /weft-microvm-init
+COPY --from=weft-microvm-agent . /weft-microvm-agent
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN go run ./tools/dump-openapi > openapi.json
+# The collaborative editing client (web/public/collab.wasm +
+# wasm_exec.js, and web/src/lib/collab.d.ts). Not checked in; without
+# it the image ships an editor that loads and never collaborates. See
+# scripts/gen-collab-wasm.sh.
+RUN ./scripts/gen-collab-wasm.sh
 
 # --- Stage 2 : SPA build (Node 22) ----------------------------------
 FROM node:22-bookworm-slim AS spa
@@ -32,11 +50,16 @@ RUN cd web && npm ci --no-audit --no-fund
 COPY web ./web
 COPY internal/web ./internal/web
 COPY --from=gen /build/openapi.json ./openapi.json
+COPY --from=gen /build/web/public/collab.wasm /build/web/public/wasm_exec.js ./web/public/
+COPY --from=gen /build/web/src/lib/collab.d.ts ./web/src/lib/collab.d.ts
 RUN cd web && npm run gen-api && npm run build
 
 # --- Stage 3 : Go binary --------------------------------------------
 FROM golang:1.27.2-bookworm AS go
+ENV GOTOOLCHAIN=local
 WORKDIR /build
+COPY --from=weft-microvm-init . /weft-microvm-init
+COPY --from=weft-microvm-agent . /weft-microvm-agent
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
