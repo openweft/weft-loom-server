@@ -98,7 +98,7 @@ func TestRealSecretsourceFileAndMissingFile(t *testing.T) {
 	}
 	t.Setenv("Z_KEY_FROM", "file:"+filepath.Join(dir, "absent"))
 	err := Resolve(context.Background(), nil, "Z_KEY")
-	if err == nil || !strings.Contains(err.Error(), "Z_KEY_FROM") {
+	if err == nil || !strings.Contains(err.Error(), "Z_KEY_FROM") || errors.Is(err, errEmpty) {
 		t.Fatalf("err = %v", err)
 	}
 	if Get("Z_KEY") != "" {
