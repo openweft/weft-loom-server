@@ -44,6 +44,7 @@ import (
 	"sync"
 
 	"github.com/nats-io/nats.go"
+	"github.com/openweft/weft-loom-server/internal/natsbroker"
 )
 
 // QEMUBackendSelected reports whether the operator picked the QEMU
@@ -105,8 +106,12 @@ func sanitiseSubject(s string) string {
 // `127.0.0.1`, so the guest needs `nats://10.0.2.2:4222` even
 // when the loom-server itself uses `nats://127.0.0.1:4222`.
 type QEMUProvisioner struct {
-	NATSURL        string
-	GuestNATSURL   string
+	NATSURL      string
+	GuestNATSURL string
+	// GuestAuth, when set, returns a per-VM broker credential that is
+	// embedded in the URL given to the guest, and a revoke func called
+	// when the VM exits.
+	GuestAuth      func(vmID string) (user, pass string, revoke func(), err error)
 	QEMUBinary     string
 	KernelImage    string
 	WorkspaceImage string
@@ -156,7 +161,7 @@ func (p *QEMUProvisioner) Ensure(ctx context.Context, ident Identity) (*VM, erro
 		return nil, fmt.Errorf("qemu binary %q not on PATH (install with `pkgx qemu`)", p.qemuBin())
 	}
 
-	nc, err := nats.Connect(p.NATSURL, nats.Name("weft-loom-qemu-workspace="+vmID))
+	nc, err := nats.Connect(p.NATSURL, append([]nats.Option{nats.Name("weft-loom-qemu-workspace=" + vmID)}, natsbroker.ClientOptions()...)...)
 	if err != nil {
 		return nil, fmt.Errorf("nats connect: %w", err)
 	}
@@ -180,6 +185,22 @@ func (p *QEMUProvisioner) Ensure(ctx context.Context, ident Identity) (*VM, erro
 	guestURL := p.GuestNATSURL
 	if guestURL == "" {
 		guestURL = p.NATSURL
+	}
+	// With the embedded broker the guest gets its own credential,
+	// scoped to this VM's subjects; revoked when the VM is gone.
+	revokeGuest := func() {}
+	if p.GuestAuth != nil {
+		user, pass, revoke, aerr := p.GuestAuth(vmID)
+		if aerr != nil {
+			_ = nc.Drain()
+			return nil, fmt.Errorf("guest nats credential: %w", aerr)
+		}
+		gu, uerr := natsbroker.GuestURL(guestURL, user, pass)
+		if uerr != nil {
+			_ = nc.Drain()
+			return nil, fmt.Errorf("guest nats url: %w", uerr)
+		}
+		guestURL, revokeGuest = gu, revoke
 	}
 	// Per-user storage on the host. This is what the loom-server's
 	// project store layout puts under <storage_root>/<user>/. We
@@ -237,6 +258,7 @@ func (p *QEMUProvisioner) Ensure(ctx context.Context, ident Identity) (*VM, erro
 		defer func() {
 			_ = hbSub.Unsubscribe()
 			_ = nc.Drain()
+			revokeGuest()
 		}()
 		if err := p.boot(context.Background(), dir, vmID, guestURL, userStorage); err != nil {
 			if p.Logger != nil {

@@ -26,6 +26,7 @@ import (
 	"github.com/openweft/weft-loom-server/internal/compile"
 	"github.com/openweft/weft-loom-server/internal/config"
 	"github.com/openweft/weft-loom-server/internal/email"
+	"github.com/openweft/weft-loom-server/internal/natsbroker"
 	"github.com/openweft/weft-loom-server/internal/project"
 	"github.com/openweft/weft-loom-server/internal/secretenv"
 	"github.com/openweft/weft-loom-server/internal/server"
@@ -97,7 +98,7 @@ func serve(ctx context.Context, cfg config.Config) error {
 	// Secrets given as NAME_FROM=<secretsource ref> (or, deprecated, as
 	// plaintext NAME) are read once and removed from the environment so
 	// children (compilers, shells) do not inherit them.
-	if err := secretenv.Resolve(ctx, os.Stderr, "WEFT_CUBEFS_SECRET_KEY", "WEFT_CUBEFS_ACCESS_KEY", "ANTHROPIC_API_KEY", "WEFT_LOOM_SMTP_PASS"); err != nil {
+	if err := secretenv.Resolve(ctx, os.Stderr, "WEFT_CUBEFS_SECRET_KEY", "WEFT_CUBEFS_ACCESS_KEY", "ANTHROPIC_API_KEY", "WEFT_LOOM_SMTP_PASS", natsbroker.EnvSeed); err != nil {
 		return fmt.Errorf("secrets: %w", err)
 	}
 

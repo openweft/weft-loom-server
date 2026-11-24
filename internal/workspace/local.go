@@ -27,6 +27,7 @@ import (
 	"sync"
 
 	"github.com/nats-io/nats.go"
+	"github.com/openweft/weft-loom-server/internal/natsbroker"
 )
 
 // LocalProvisioner is the unified entry point for the two dev-mode
@@ -101,10 +102,10 @@ func (p *LocalProvisioner) Ensure(ctx context.Context, ident Identity) (vm *VM, 
 	// NATS is wired ; dial the broker so the shell + compile
 	// handlers can publish on weft.exec.<vmID>.<sid>.* without
 	// each handler dialling independently.
-	nc, err := nats.Connect(p.NATSURL,
-		nats.Name("weft-loom-server workspace="+VMIDForIdentity(ident)),
+	nc, err := nats.Connect(p.NATSURL, append([]nats.Option{
+		nats.Name("weft-loom-server workspace=" + VMIDForIdentity(ident)),
 		nats.MaxReconnects(-1),
-	)
+	}, natsbroker.ClientOptions()...)...)
 	if err != nil {
 		return nil, fmt.Errorf("nats connect %s: %w", p.NATSURL, err)
 	}
