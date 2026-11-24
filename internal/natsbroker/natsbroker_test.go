@@ -63,7 +63,7 @@ func TestStartRefusesWithoutAuth(t *testing.T) {
 
 func TestStartRejectsBadSeed(t *testing.T) {
 	_, err := Start(Options{Port: -1, StoreDir: filepath.Join(t.TempDir(), "n"), NkeySeed: "nope"})
-	if err == nil || !strings.Contains(err.Error(), "valid nkey seed") {
+	if err == nil || !strings.Contains(err.Error(), "valid nkey user seed") {
 		t.Fatalf("err = %v", err)
 	}
 	if strings.Contains(err.Error(), "nope") {
@@ -281,5 +281,115 @@ func TestGuestURL(t *testing.T) {
 	}
 	if got, _ := GuestURL("nats://h:1", "", ""); got != "nats://h:1" {
 		t.Fatalf("open broker URL changed: %q", got)
+	}
+}
+
+func TestUserPublicKey(t *testing.T) {
+	seed := newSeed(t)
+	if pub := userPublicKey(seed); !nkeys.IsValidPublicUserKey(pub) {
+		t.Fatalf("pub = %q", pub)
+	}
+	acct, _ := nkeys.CreateAccount()
+	as, _ := acct.Seed()
+	for _, bad := range []string{"", "nope", string(as)} {
+		if pub := userPublicKey(bad); pub != "" {
+			t.Errorf("userPublicKey(%q) = %q, want empty", bad, pub)
+		}
+	}
+}
+
+func TestBadSignatureRefused(t *testing.T) {
+	seed := newSeed(t)
+	e := start(t, Options{NkeySeed: seed})
+	pub := userPublicKey(seed)
+	if _, err := nats.Connect(e.URL, nats.Nkey(pub, func([]byte) ([]byte, error) { return []byte("garbage"), nil })); err == nil {
+		t.Fatal("loom public key with a bad signature accepted")
+	}
+	other, _ := nkeys.CreateUser()
+	if _, err := nats.Connect(e.URL, nats.Nkey(pub, func(n []byte) ([]byte, error) { return other.Sign(n) })); err == nil {
+		t.Fatal("loom public key signed by another key accepted")
+	}
+}
+
+func TestOpenBrokerIssuesNoGuestCredentials(t *testing.T) {
+	t.Setenv(EnvAllowNoAuth, "1")
+	e := start(t, Options{})
+	u, p, err := e.AddGuest("vmaaa")
+	if err != nil || u != "" || p != "" {
+		t.Fatalf("AddGuest on an open broker = %q %q %v", u, p, err)
+	}
+	if len(e.guests) != 0 {
+		t.Fatal("guest recorded on an open broker")
+	}
+}
+
+func TestStoreDirErrors(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(f, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Start(Options{Port: -1, NkeySeed: newSeed(t), StoreDir: filepath.Join(f, "nats")}); err == nil {
+		t.Fatal("a store dir under a regular file was accepted")
+	}
+
+	t.Setenv(EnvStoreDir, "/srv/nats")
+	if d, err := DefaultStoreDir(); err != nil || d != "/srv/nats" {
+		t.Fatalf("env override: %q %v", d, err)
+	}
+	t.Setenv(EnvStoreDir, "")
+	t.Setenv("STATE_DIRECTORY", "")
+	old := userCacheDir
+	t.Cleanup(func() { userCacheDir = old })
+	userCacheDir = func() (string, error) { return "", errors.New("no home") }
+	if d, err := DefaultStoreDir(); err == nil {
+		t.Fatalf("no cache dir yet DefaultStoreDir = %q", d)
+	}
+	userCacheDir = func() (string, error) { return "/home/u/.cache", nil }
+	if d, _ := DefaultStoreDir(); d != "/home/u/.cache/weft-loom/nats" {
+		t.Fatalf("cache default = %q", d)
+	}
+}
+
+func TestConflictingExistingStreamRefusesStart(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "nats")
+	t.Setenv(EnvAllowNoAuth, "1")
+	e := start(t, Options{StoreDir: dir})
+	nc, _ := nats.Connect(e.URL)
+	js, _ := nc.JetStream()
+	if _, err := js.UpdateStream(&nats.StreamConfig{
+		Name: "weft-mounts", Subjects: []string{"weft.mounts.*"}, MaxMsgsPerSubject: 7, Storage: nats.FileStorage,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	nc.Close()
+	e.Shutdown()
+	if _, err := Start(Options{Port: -1, StoreDir: dir}); err == nil {
+		t.Fatal("start accepted a store whose stream config differs")
+	}
+}
+
+func TestEnsureStreamsOnDeadBroker(t *testing.T) {
+	e := start(t, Options{NkeySeed: newSeed(t)})
+	e.Shutdown()
+	if err := e.ensureStreams(""); err == nil {
+		t.Fatal("ensureStreams succeeded against a stopped broker")
+	}
+}
+
+func TestGuestURLBad(t *testing.T) {
+	if _, err := GuestURL("nats://bad host%zz:1", "u", "p"); err == nil {
+		t.Fatal("bad base URL accepted")
+	}
+}
+
+func TestClientOptions(t *testing.T) {
+	if o := clientOptionsFor(""); o != nil {
+		t.Fatal("options without a seed")
+	}
+	if o := clientOptionsFor("nope"); o != nil {
+		t.Fatal("options from an invalid seed")
+	}
+	if o := clientOptionsFor(newSeed(t)); len(o) != 1 {
+		t.Fatalf("len(options) = %d", len(o))
 	}
 }

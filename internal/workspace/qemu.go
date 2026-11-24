@@ -138,6 +138,29 @@ type QEMUProvisioner struct {
 	Logger    *slog.Logger
 }
 
+// guestURLFor adds the VM's broker credential (GuestAuth) to base and
+// returns the func that revokes it.
+func (p *QEMUProvisioner) guestURLFor(base, vmID string) (string, func(), error) {
+	if p.GuestAuth == nil {
+		return base, func() {}, nil
+	}
+	user, pass, revoke, err := p.GuestAuth(vmID)
+	if err != nil {
+		return "", nil, fmt.Errorf("guest nats credential: %w", err)
+	}
+	u, err := natsbroker.GuestURL(base, user, pass)
+	if err != nil {
+		if revoke != nil {
+			revoke()
+		}
+		return "", nil, fmt.Errorf("guest nats url: %w", err)
+	}
+	if revoke == nil {
+		revoke = func() {}
+	}
+	return u, revoke, nil
+}
+
 // Ensure boots (or returns a cached handle for) the user's
 // workspace microVM. The current impl validates the host has the
 // needed tools available + materialises the per-user directory ; the
@@ -188,19 +211,10 @@ func (p *QEMUProvisioner) Ensure(ctx context.Context, ident Identity) (*VM, erro
 	}
 	// With the embedded broker the guest gets its own credential,
 	// scoped to this VM's subjects; revoked when the VM is gone.
-	revokeGuest := func() {}
-	if p.GuestAuth != nil {
-		user, pass, revoke, aerr := p.GuestAuth(vmID)
-		if aerr != nil {
-			_ = nc.Drain()
-			return nil, fmt.Errorf("guest nats credential: %w", aerr)
-		}
-		gu, uerr := natsbroker.GuestURL(guestURL, user, pass)
-		if uerr != nil {
-			_ = nc.Drain()
-			return nil, fmt.Errorf("guest nats url: %w", uerr)
-		}
-		guestURL, revokeGuest = gu, revoke
+	guestURL, revokeGuest, gerr := p.guestURLFor(guestURL, vmID)
+	if gerr != nil {
+		_ = nc.Drain()
+		return nil, gerr
 	}
 	// Per-user storage on the host. This is what the loom-server's
 	// project store layout puts under <storage_root>/<user>/. We

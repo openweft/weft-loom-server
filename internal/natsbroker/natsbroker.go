@@ -81,6 +81,8 @@ type Options struct {
 	AllowNoAuth bool
 }
 
+var userCacheDir = os.UserCacheDir // replaced by tests
+
 // DefaultStoreDir is the state directory used when none is configured:
 // $WEFT_LOOM_NATS_STORE_DIR, else the first $STATE_DIRECTORY entry
 // (systemd StateDirectory=) + /nats, else <user cache dir>/weft-loom/nats.
@@ -93,7 +95,7 @@ func DefaultStoreDir() (string, error) {
 		first, _, _ := strings.Cut(sd, ":")
 		return filepath.Join(first, "nats"), nil
 	}
-	c, err := os.UserCacheDir()
+	c, err := userCacheDir()
 	if err != nil {
 		return "", fmt.Errorf("embedded nats: no state directory (set %s): %w", EnvStoreDir, err)
 	}
@@ -134,14 +136,9 @@ func Start(opts Options) (*Embedded, error) {
 		}
 		e.Open = true
 	} else {
-		kp, err := nkeys.FromSeed([]byte(seed))
-		if err != nil {
-			return nil, errors.New("embedded nats: " + EnvSeed + " is not a valid nkey seed")
-		}
-		defer kp.Wipe()
-		pub, err := kp.PublicKey()
-		if err != nil || !nkeys.IsValidPublicUserKey(pub) {
-			return nil, errors.New("embedded nats: " + EnvSeed + " must be a user (SU...) seed")
+		pub := userPublicKey(seed)
+		if pub == "" {
+			return nil, errors.New("embedded nats: " + EnvSeed + " is not a valid nkey user seed (SU...)")
 		}
 		e.loomPub = pub
 	}
@@ -191,12 +188,27 @@ func Start(opts Options) (*Embedded, error) {
 	return e, nil
 }
 
+// userPublicKey returns the public key of a user seed, "" when seed is
+// not a valid user seed.
+func userPublicKey(seed string) string {
+	pub := ""
+	if kp, err := nkeys.FromSeed([]byte(seed)); err == nil {
+		pub, _ = kp.PublicKey()
+		kp.Wipe()
+	}
+	if !nkeys.IsValidPublicUserKey(pub) {
+		return ""
+	}
+	return pub
+}
+
 // ensurePrivateDir creates dir (0700) or tightens an existing one.
 func ensurePrivateDir(dir string) error {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("embedded nats: store dir: %w", err)
+	err := os.MkdirAll(dir, 0o700)
+	if err == nil {
+		err = os.Chmod(dir, 0o700)
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
+	if err != nil {
 		return fmt.Errorf("embedded nats: store dir: %w", err)
 	}
 	return nil
@@ -210,10 +222,7 @@ func (e *Embedded) ensureStreams(seed string) error {
 		return fmt.Errorf("embed nats: stream setup connect: %w", err)
 	}
 	defer nc.Close()
-	js, err := nc.JetStream()
-	if err != nil {
-		return fmt.Errorf("embed nats: jetstream: %w", err)
-	}
+	js, _ := nc.JetStream() // errors only on invalid options; none are given
 	for name, prefix := range streams {
 		_, err := js.AddStream(&nats.StreamConfig{
 			Name:              name,
@@ -232,27 +241,19 @@ func (e *Embedded) ensureStreams(seed string) error {
 // Check implements server.Authentication.
 func (e *Embedded) Check(c server.ClientAuthentication) bool {
 	o := c.GetOpts()
-	if o == nil {
-		return false
-	}
 	acc := e.srv.GlobalAccount()
 	if o.Nkey != "" {
 		if subtle.ConstantTimeCompare([]byte(o.Nkey), []byte(e.loomPub)) != 1 {
 			return false
 		}
-		sig, err := base64.RawURLEncoding.DecodeString(o.Sig)
-		if err != nil {
-			return false
-		}
-		pk, err := nkeys.FromPublicKey(o.Nkey)
-		if err != nil || pk.Verify(c.GetNonce(), sig) != nil {
+		// A malformed signature decodes to bytes that fail Verify.
+		sig, _ := base64.RawURLEncoding.DecodeString(o.Sig)
+		pk, _ := nkeys.FromPublicKey(o.Nkey) // o.Nkey == e.loomPub, a valid key
+		if pk.Verify(c.GetNonce(), sig) != nil {
 			return false
 		}
 		c.RegisterUser(&server.User{Username: "weft-loom", Account: acc})
 		return true
-	}
-	if o.Username == "" {
-		return false
 	}
 	e.mu.RLock()
 	g, ok := e.guests[o.Username]
@@ -306,12 +307,8 @@ func (e *Embedded) AddGuest(vmID string) (user, pass string, err error) {
 	if !vmIDRe.MatchString(vmID) {
 		return "", "", fmt.Errorf("embedded nats: invalid vm id %q", vmID)
 	}
-	var raw [24]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return "", "", err
-	}
 	user = "vm-" + vmID
-	pass = base64.RawURLEncoding.EncodeToString(raw[:])
+	pass = rand.Text() // 128 bits from the system CSPRNG
 	e.mu.Lock()
 	e.guests[user] = guest{pass: []byte(pass), perm: GuestPermissions(vmID)}
 	e.mu.Unlock()
@@ -352,10 +349,7 @@ func clientOptionsFor(seed string) []nats.Option {
 	if err != nil {
 		return nil
 	}
-	pub, err := kp.PublicKey()
-	if err != nil {
-		return nil
-	}
+	pub, _ := kp.PublicKey()
 	return []nats.Option{nats.Nkey(pub, func(nonce []byte) ([]byte, error) { return kp.Sign(nonce) })}
 }
 
