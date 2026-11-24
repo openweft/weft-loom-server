@@ -109,19 +109,20 @@ type Server struct {
 	// collabDB is the handle it borrows from the projects' pool. Both are nil
 	// when the projects are kept somewhere without a database, which is what a
 	// test with an in-memory store looks like: the route is simply not mounted.
-	collab     *collab.Server
-	collabDB   *sql.DB
-	mux        *http.ServeMux
-	git        *gitState
-	seedClaims *seedClaimRegistry
-	ociProber  *ociProber
-	events     *eventbus.Hub
-	workspaces *workspace.Registry
-	natsBroker *natsbroker.Embedded
-	warmups    *warmupState
-	toolshare  *toolshare.Manager
-	shares     *shares.Publisher
-	history    *history.Store
+	collab      *collab.Server
+	collabDB    *sql.DB
+	mux         *http.ServeMux
+	git         *gitState
+	seedClaims  *seedClaimRegistry
+	ociProber   *ociProber
+	events      *eventbus.Hub
+	workspaces  *workspace.Registry
+	natsBroker  *natsbroker.Embedded
+	natsCallout *natsbroker.Callout
+	warmups     *warmupState
+	toolshare   *toolshare.Manager
+	shares      *shares.Publisher
+	history     *history.Store
 
 	// Rate limiters for the public + abuse-prone endpoints. Built
 	// lazily by ensureRateLimiters() on first route registration so
@@ -215,6 +216,21 @@ func New(opts Options) (*Server, error) {
 					s.shares = shares.New(nc)
 				} else {
 					opts.Logger.Warn("share publisher: nats.Connect failed", "err", ncErr)
+				}
+			}
+		}
+		if qemuProv.NATSURL != "" && s.natsBroker == nil {
+			// External broker (weft-nats): per-VM credentials are
+			// answered through its auth callout.
+			if seed := natsbroker.CalloutSeedFromEnv(); seed == "" {
+				opts.Logger.Warn("external nats: no " + natsbroker.EnvCalloutSeed + "_FROM, guests get no per-VM credential (works only against an open broker)")
+			} else if co, coErr := natsbroker.StartCallout(qemuProv.NATSURL, seed, ""); coErr != nil {
+				opts.Logger.Error("external nats: callout not started", "err", coErr)
+			} else {
+				s.natsCallout = co
+				qemuProv.GuestAuth = func(vmID string) (string, string, func(), error) {
+					u, p, err := co.AddGuest(vmID)
+					return u, p, func() { co.RemoveGuest(vmID) }, err
 				}
 			}
 		}
