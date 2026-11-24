@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/openweft/weft-loom-server/internal/eventbus"
+	"github.com/openweft/weft-loom-server/internal/secretenv"
 	"github.com/openweft/weft-loom-server/internal/shares"
 	"github.com/openweft/weft-loom-server/internal/workspace"
 )
@@ -156,6 +157,6 @@ func sharesCubeFSFromEnv() *shares.CubeFSConfig {
 		Masters:   masters,
 		Owner:     os.Getenv("WEFT_CUBEFS_OWNER"),
 		AccessKey: os.Getenv("WEFT_CUBEFS_ACCESS_KEY"),
-		SecretKey: os.Getenv("WEFT_CUBEFS_SECRET_KEY"),
+		SecretKey: secretenv.Get("WEFT_CUBEFS_SECRET_KEY"),
 	}
 }

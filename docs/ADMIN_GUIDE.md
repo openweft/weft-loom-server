@@ -63,6 +63,22 @@ mention POSTs. Check effective config via `GET /api/admin/email/config`
 | `WEFT_LOOM_TOOLS_PATH`         | Host path holding shared toolchain bundles.                          |
 | `WEFT_LOOM_TOOLS`              | CSV `<logical>=<ref>` toolchain pairs.                               |
 
+### Secrets by reference (`<VAR>_FROM`)
+
+| Variable                  | Reference variable             | Purpose                                         |
+| ------------------------- | ------------------------------ | ----------------------------------------------- |
+| `WEFT_CUBEFS_SECRET_KEY`  | `WEFT_CUBEFS_SECRET_KEY_FROM`  | CubeFS secret key published to the guest mounts |
+| `ANTHROPIC_API_KEY`       | `ANTHROPIC_API_KEY_FROM`       | Anthropic key for the AI chat panel             |
+
+Set `<VAR>_FROM` to a [secretsource](https://github.com/go-authn/secretsource)
+reference (`systemd-creds:NAME`, `keychain:…`, `keepassxc:…`, `file:/path`).
+The secret is read once at `serve` start-up and the plaintext variable is
+removed from the process environment, so compilers and shells spawned by the
+server do not inherit it. The plaintext `<VAR>` still works for one more
+release but prints a deprecation warning on stderr; setting both is an error,
+as is a reference that does not resolve (the message never contains the
+value).
+
 ### LSP overrides
 
 | Variable                       | Default                          | Purpose                                |

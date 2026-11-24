@@ -27,6 +27,7 @@ import (
 	"github.com/openweft/weft-loom-server/internal/config"
 	"github.com/openweft/weft-loom-server/internal/email"
 	"github.com/openweft/weft-loom-server/internal/project"
+	"github.com/openweft/weft-loom-server/internal/secretenv"
 	"github.com/openweft/weft-loom-server/internal/server"
 	"github.com/openweft/weft-loom-server/internal/web"
 )
@@ -92,6 +93,13 @@ func serve(ctx context.Context, cfg config.Config) error {
 
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// Secrets given as NAME_FROM=<secretsource ref> (or, deprecated, as
+	// plaintext NAME) are read once and removed from the environment so
+	// children (compilers, shells) do not inherit them.
+	if err := secretenv.Resolve(ctx, os.Stderr, "WEFT_CUBEFS_SECRET_KEY", "ANTHROPIC_API_KEY"); err != nil {
+		return fmt.Errorf("secrets: %w", err)
+	}
 
 	if err := os.MkdirAll(cfg.StorageRoot, 0o755); err != nil {
 		return fmt.Errorf("storage_root mkdir: %w", err)
