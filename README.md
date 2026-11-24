@@ -145,6 +145,8 @@ services:
     environment:
       WEFT_LOOM_STORAGE_ROOT: /var/lib/weft-loom
       WEFT_NATS_URL:          nats://nats:4222
+      WEFT_LOOM_NATS_NKEY_SEED_FROM:   file:/run/secrets/loom_nkey_seed
+      WEFT_LOOM_NATS_CALLOUT_SEED_FROM: file:/run/secrets/loom_callout_seed
       WEFT_LOOM_SMTP_HOST:    smtp.example.org
       WEFT_LOOM_SMTP_PORT:    "587"
       WEFT_LOOM_SMTP_USER:    notify@example.org
@@ -152,15 +154,32 @@ services:
       WEFT_LOOM_SMTP_FROM:    "weft-loom <notify@example.org>"
     volumes:
       - loom-data:/var/lib/weft-loom
+    secrets: [loom_nkey_seed, loom_callout_seed]
     depends_on: [nats]
 
-  nats:
-    image: ghcr.io/openweft/weft-nats:latest
-    command: ["-js"]
+  nats:                       # holds public keys only; see openweft/weft-nats
+    image: ghcr.io/openweft/weft-nats:v2.12.15
+    volumes:
+      - nats-data:/data
+    secrets:
+      - source: weft_nats_keys
+        target: /etc/weft-nats/keys.conf
+
+secrets:
+  loom_nkey_seed:    { file: ./secrets/loom.seed }     # mode 0600
+  loom_callout_seed: { file: ./secrets/callout.seed }  # mode 0600
+  weft_nats_keys:    { file: ./secrets/keys.conf }
 
 volumes:
   loom-data:
+  nats-data:
 ```
+
+The external broker has no anonymous user. loom-server connects with its nkey and
+answers the broker's auth callout, so each workspace VM gets its own credential
+limited to its own subjects. The two seeds are generated once (`nk -gen user`,
+`nk -gen account`); setup in the
+[weft-nats README](https://github.com/openweft/weft-nats#readme).
 
 ### systemd
 
@@ -175,6 +194,10 @@ Type=simple
 ExecStart=/usr/local/bin/weft-loom serve --config /etc/weft-loom/config.hcl
 Environment=WEFT_LOOM_STORAGE_ROOT=/var/lib/weft-loom
 Environment=WEFT_NATS_URL=nats://127.0.0.1:4222
+Environment=WEFT_LOOM_NATS_NKEY_SEED_FROM=systemd-creds:loom-nkey-seed
+Environment=WEFT_LOOM_NATS_CALLOUT_SEED_FROM=systemd-creds:loom-callout-seed
+LoadCredentialEncrypted=loom-nkey-seed
+LoadCredentialEncrypted=loom-callout-seed
 EnvironmentFile=-/etc/weft-loom/smtp.env
 Restart=on-failure
 User=weft-loom

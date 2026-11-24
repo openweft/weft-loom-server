@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.6.0
+
+### Security
+- External broker (`WEFT_NATS_URL`, the weft-nats image): loom-server now
+  serves the broker's auth callout when `WEFT_LOOM_NATS_CALLOUT_SEED_FROM` is
+  set. Workspace VMs get a generated per-VM credential limited to their own
+  subjects, as on the embedded broker; anonymous or unknown clients are
+  refused. loom-server also creates the `weft-mounts` and `weft-containers`
+  streams there. Requires weft-nats v2.12.15 or later.
+
 ## v0.5.0
 
 ### Security

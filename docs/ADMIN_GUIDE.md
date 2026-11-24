@@ -75,6 +75,7 @@ mention POSTs. Check effective config via `GET /api/admin/email/config`
 | `ANTHROPIC_API_KEY`       | `ANTHROPIC_API_KEY_FROM`       | Anthropic key for the AI chat panel             |
 | `WEFT_LOOM_SMTP_PASS`     | `WEFT_LOOM_SMTP_PASS_FROM`     | SMTP PLAIN auth password                        |
 | `WEFT_LOOM_NATS_NKEY_SEED` | `WEFT_LOOM_NATS_NKEY_SEED_FROM` | nkey user seed (`SU...`) for the NATS broker; reference only, no plaintext form is advised |
+| `WEFT_LOOM_NATS_CALLOUT_SEED` | `WEFT_LOOM_NATS_CALLOUT_SEED_FROM` | External broker (weft-nats): nkey account seed (`SA...`) that signs the per-VM user JWTs answered to the broker's auth callout. Its public key is the broker's `CALLOUT_ISSUER_KEY`. Unset = guests get no per-VM credential. `WEFT_LOOM_NATS_CALLOUT_ACCOUNT` names the broker account (default `WEFT`). |
 
 Set `<VAR>_FROM` to a [secretsource](https://github.com/go-authn/secretsource)
 reference (`systemd-creds:NAME`, `keychain:…`, `keepassxc:…`, `file:/path`).

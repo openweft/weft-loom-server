@@ -222,6 +222,12 @@ func (e *Embedded) ensureStreams(seed string) error {
 		return fmt.Errorf("embed nats: stream setup connect: %w", err)
 	}
 	defer nc.Close()
+	return createStreams(nc)
+}
+
+// createStreams adds the streams on the broker nc is connected to
+// (idempotent).
+func createStreams(nc *nats.Conn) error {
 	js, _ := nc.JetStream() // errors only on invalid options; none are given
 	for name, prefix := range streams {
 		_, err := js.AddStream(&nats.StreamConfig{

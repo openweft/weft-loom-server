@@ -32,6 +32,9 @@ func (s *Server) Shutdown(ctx context.Context) {
 	if s.workspaces != nil {
 		s.workspaces.Close(ctx)
 	}
+	if s.natsCallout != nil {
+		s.natsCallout.Close()
+	}
 	if s.natsBroker != nil {
 		s.natsBroker.Shutdown()
 	}
