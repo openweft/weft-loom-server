@@ -94,30 +94,33 @@ func StartCallout(url, seed, account string) (*Callout, error) {
 
 // handle answers one request.
 func (c *Callout) handle(m *nats.Msg) {
-	req, err := jwt.DecodeAuthorizationRequestClaims(string(m.Data))
-	if err != nil {
-		return // not from the server: no answer
+	if tok, ok := c.answer(m.Data); ok {
+		_ = m.Respond([]byte(tok))
 	}
-	co := req.ConnectOptions
-	g, ok := c.lookup(co.Username, co.Password)
-	if !ok {
-		c.respond(m, req, "", "unauthorized")
-		return
-	}
-	uc := jwt.NewUserClaims(req.UserNkey)
-	uc.Audience = c.account
-	uc.Permissions = jwtPermissions(g.perm.Publish.Allow, g.perm.Subscribe.Allow)
-	token, _ := uc.Encode(c.issuer) // fails only for a non-account signing key, refused at start
-	c.respond(m, req, token, "")
 }
 
-func (c *Callout) respond(m *nats.Msg, req *jwt.AuthorizationRequestClaims, userJWT, errMsg string) {
+// answer returns the signed response to one authorization request, or
+// false when the payload is not a request (no answer at all).
+func (c *Callout) answer(data []byte) (string, bool) {
+	req, err := jwt.DecodeAuthorizationRequestClaims(string(data))
+	if err != nil || req.UserNkey == "" {
+		return "", false
+	}
+	co := req.ConnectOptions
+	userJWT, errMsg := "", "unauthorized"
+	if g, ok := c.lookup(co.Username, co.Password); ok {
+		uc := jwt.NewUserClaims(req.UserNkey)
+		uc.Audience = c.account
+		uc.Permissions = jwtPermissions(g.perm.Publish.Allow, g.perm.Subscribe.Allow)
+		userJWT, _ = uc.Encode(c.issuer) // fails only for a non-account key, refused at start
+		errMsg = ""
+	}
 	rsp := jwt.NewAuthorizationResponseClaims(req.UserNkey)
 	rsp.Audience = req.Server.ID
 	rsp.Jwt = userJWT
 	rsp.Error = errMsg
 	tok, _ := rsp.Encode(c.issuer)
-	_ = m.Respond([]byte(tok))
+	return tok, true
 }
 
 func jwtPermissions(pub, sub []string) jwt.Permissions {

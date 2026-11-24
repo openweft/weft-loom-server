@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
@@ -162,11 +163,6 @@ func proveCallout(t *testing.T, url, calloutSeed string) {
 		t.Fatalf("guest A got %v, %v", m, err)
 	}
 
-	// A payload that is not a server request gets no answer.
-	if _, err := loom.Request(calloutSubject, []byte("garbage"), 500*time.Millisecond); err == nil {
-		t.Fatal("garbage request was answered")
-	}
-
 	// Revoked: no new connection.
 	co.RemoveGuest("vmA")
 	if nc, err := nats.Connect(url, nats.UserInfo(userA, passA), nats.Timeout(2*time.Second)); err == nil {
@@ -218,6 +214,66 @@ func TestStartCalloutNeedsJetStream(t *testing.T) {
 	_, err = StartCallout(srv.ClientURL(), string(aseed), "")
 	if err == nil || !strings.Contains(err.Error(), "stream") {
 		t.Fatalf("err = %v, want a stream error", err)
+	}
+}
+
+func TestCalloutAnswer(t *testing.T) {
+	as, _ := nkeys.CreateAccount()
+	c := &Callout{issuer: as, account: "WEFT", guests: map[string]guest{}}
+	user, pass, _ := c.AddGuest("vmA")
+	ukp, _ := nkeys.CreateUser()
+	userPub, _ := ukp.PublicKey()
+
+	if _, ok := c.answer([]byte("garbage")); ok {
+		t.Fatal("a payload that is not a request was answered")
+	}
+
+	// A request without the user's nkey is no request.
+	noKey := jwt.NewAuthorizationRequestClaims(userPub)
+	skp, _ := nkeys.CreateServer()
+	enc, _ := noKey.Encode(skp)
+	if _, ok := c.answer([]byte(enc)); ok {
+		t.Fatal("a request without user_nkey was answered")
+	}
+
+	ask := func(u, p string) *jwt.AuthorizationResponseClaims {
+		t.Helper()
+		req := jwt.NewAuthorizationRequestClaims(userPub)
+		req.Server.ID = "SRV1"
+		req.UserNkey = userPub
+		req.ConnectOptions.Username, req.ConnectOptions.Password = u, p
+		kp, _ := nkeys.CreateServer()
+		enc, err := req.Encode(kp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tok, ok := c.answer([]byte(enc))
+		if !ok {
+			t.Fatal("request not answered")
+		}
+		rsp, err := jwt.DecodeAuthorizationResponseClaims(tok)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rsp.Audience != "SRV1" || rsp.Subject != userPub {
+			t.Fatalf("response for %q/%q", rsp.Audience, rsp.Subject)
+		}
+		return rsp
+	}
+
+	if r := ask(user, "wrong"); r.Jwt != "" || r.Error != "unauthorized" {
+		t.Fatalf("wrong password: %+v", r.AuthorizationResponse)
+	}
+	r := ask(user, pass)
+	if r.Error != "" {
+		t.Fatalf("good credential refused: %s", r.Error)
+	}
+	uc, err := jwt.DecodeUserClaims(r.Jwt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if uc.Audience != "WEFT" || !uc.Sub.Allow.Contains("weft.mounts.vmA") || uc.Sub.Allow.Contains("weft.mounts.>") {
+		t.Fatalf("permissions: %+v", uc.Permissions)
 	}
 }
 
