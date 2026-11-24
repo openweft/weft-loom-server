@@ -184,8 +184,20 @@ func (p *QEMUProvisioner) Ensure(ctx context.Context, ident Identity) (*VM, erro
 		return nil, fmt.Errorf("qemu binary %q not on PATH (install with `pkgx qemu`)", p.qemuBin())
 	}
 
+	// With the embedded broker the guest gets its own credential,
+	// scoped to this VM's subjects; revoked when the VM is gone.
+	guestBase := p.GuestNATSURL
+	if guestBase == "" {
+		guestBase = p.NATSURL
+	}
+	guestURL, revokeGuest, err := p.guestURLFor(guestBase, vmID)
+	if err != nil {
+		return nil, err
+	}
+
 	nc, err := nats.Connect(p.NATSURL, append([]nats.Option{nats.Name("weft-loom-qemu-workspace=" + vmID)}, natsbroker.ClientOptions()...)...)
 	if err != nil {
+		revokeGuest()
 		return nil, fmt.Errorf("nats connect: %w", err)
 	}
 
@@ -198,6 +210,7 @@ func (p *QEMUProvisioner) Ensure(ctx context.Context, ident Identity) (*VM, erro
 	})
 	if err != nil {
 		_ = nc.Drain()
+		revokeGuest()
 		return nil, fmt.Errorf("subscribe heartbeat: %w", err)
 	}
 
@@ -205,17 +218,6 @@ func (p *QEMUProvisioner) Ensure(ctx context.Context, ident Identity) (*VM, erro
 	// lifecycle ; we surface the PID to loom-doctor + tear down on
 	// loom-server shutdown via the registered cancel.
 	ready := make(chan struct{})
-	guestURL := p.GuestNATSURL
-	if guestURL == "" {
-		guestURL = p.NATSURL
-	}
-	// With the embedded broker the guest gets its own credential,
-	// scoped to this VM's subjects; revoked when the VM is gone.
-	guestURL, revokeGuest, gerr := p.guestURLFor(guestURL, vmID)
-	if gerr != nil {
-		_ = nc.Drain()
-		return nil, gerr
-	}
 	// Per-user storage on the host. This is what the loom-server's
 	// project store layout puts under <storage_root>/<user>/. We
 	// pass it to boot so virtio-9p exposes the user's actual files

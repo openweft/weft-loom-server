@@ -342,9 +342,6 @@ func ClientOptions() []nats.Option {
 }
 
 func clientOptionsFor(seed string) []nats.Option {
-	if seed == "" {
-		return nil
-	}
 	kp, err := nkeys.FromSeed([]byte(seed))
 	if err != nil {
 		return nil

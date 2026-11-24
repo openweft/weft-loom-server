@@ -1,7 +1,11 @@
 package workspace
 
 import (
+	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -45,5 +49,30 @@ func TestGuestURLFor(t *testing.T) {
 		t.Fatal(err)
 	} else {
 		rev()
+	}
+}
+
+func TestEnsureGuestCredentialErrorsAndRevocation(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "fake-qemu")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WEFT_LOOM_WORKSPACE_DIR", t.TempDir())
+	id := Identity{Subject: "alice"}
+
+	p := &QEMUProvisioner{NATSURL: "nats://127.0.0.1:1", QEMUBinary: bin}
+	p.GuestAuth = func(string) (string, string, func(), error) { return "", "", nil, errors.New("boom") }
+	if _, err := p.Ensure(context.Background(), id); err == nil || !strings.Contains(err.Error(), "guest nats credential") {
+		t.Fatalf("err = %v", err)
+	}
+
+	// The broker is unreachable: the credential just issued is revoked.
+	revoked := 0
+	p.GuestAuth = func(string) (string, string, func(), error) { return "u", "p", func() { revoked++ }, nil }
+	if _, err := p.Ensure(context.Background(), id); err == nil || !strings.Contains(err.Error(), "nats connect") {
+		t.Fatalf("err = %v", err)
+	}
+	if revoked != 1 {
+		t.Fatalf("credential revoked %d times after a failed Ensure, want 1", revoked)
 	}
 }

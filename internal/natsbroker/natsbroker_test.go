@@ -328,8 +328,11 @@ func TestStoreDirErrors(t *testing.T) {
 	if err := os.WriteFile(f, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Start(Options{Port: -1, NkeySeed: newSeed(t), StoreDir: filepath.Join(f, "nats")}); err == nil {
-		t.Fatal("a store dir under a regular file was accepted")
+	if _, err := Start(Options{Port: -1, NkeySeed: newSeed(t), StoreDir: filepath.Join(f, "nats")}); err == nil || !strings.Contains(err.Error(), "store dir") {
+		t.Fatalf("a store dir under a regular file: err = %v", err)
+	}
+	if err := ensurePrivateDir(filepath.Join(f, "x")); err == nil || !strings.Contains(err.Error(), "store dir") {
+		t.Fatalf("ensurePrivateDir under a file: err = %v", err)
 	}
 
 	t.Setenv(EnvStoreDir, "/srv/nats")
@@ -343,6 +346,9 @@ func TestStoreDirErrors(t *testing.T) {
 	userCacheDir = func() (string, error) { return "", errors.New("no home") }
 	if d, err := DefaultStoreDir(); err == nil {
 		t.Fatalf("no cache dir yet DefaultStoreDir = %q", d)
+	}
+	if _, err := Start(Options{Port: -1, NkeySeed: newSeed(t)}); err == nil || !strings.Contains(err.Error(), "no home") {
+		t.Fatalf("Start without a resolvable store dir: err = %v", err)
 	}
 	userCacheDir = func() (string, error) { return "/home/u/.cache", nil }
 	if d, _ := DefaultStoreDir(); d != "/home/u/.cache/weft-loom/nats" {
