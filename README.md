@@ -206,6 +206,11 @@ weft_agent_socket = "/run/weft-agent.sock"
 Most runtime knobs (SMTP, NATS, workspace backend, LSP overrides) are
 env vars — see [`docs/ADMIN_GUIDE.md`](docs/ADMIN_GUIDE.md).
 
+Secrets (`WEFT_CUBEFS_SECRET_KEY`, `ANTHROPIC_API_KEY`) are taken by
+reference: set `<VAR>_FROM=systemd-creds:<name>` (or `keychain:`,
+`keepassxc:`, `file:`) instead of the plaintext variable, which is
+deprecated and warns on stderr.
+
 ## License
 
 BSD 3-Clause — see LICENSE.

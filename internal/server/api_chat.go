@@ -30,6 +30,8 @@ import (
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+
+	"github.com/openweft/weft-loom-server/internal/secretenv"
 )
 
 type chatMessage struct {
@@ -146,7 +148,7 @@ func pickAIProvider(ctx context.Context) string {
 	if ollamaReachable(ctx) {
 		return "ollama"
 	}
-	if os.Getenv("ANTHROPIC_API_KEY") != "" {
+	if secretenv.Get("ANTHROPIC_API_KEY") != "" {
 		return "anthropic"
 	}
 	return ""
@@ -274,7 +276,7 @@ func streamAnthropic(w http.ResponseWriter, r *http.Request, req chatRequest) {
 		return
 	}
 	hreq.Header.Set("Content-Type", "application/json")
-	hreq.Header.Set("x-api-key", os.Getenv("ANTHROPIC_API_KEY"))
+	hreq.Header.Set("x-api-key", secretenv.Get("ANTHROPIC_API_KEY"))
 	hreq.Header.Set("anthropic-version", "2023-06-01")
 	resp, err := http.DefaultClient.Do(hreq)
 	if err != nil {
