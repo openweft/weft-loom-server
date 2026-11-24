@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/openweft/weft-loom-server/internal/natsbroker"
 	"github.com/openweft/weft-microvm-init/pkg/pod"
 )
 
@@ -52,12 +53,12 @@ func natsURL() string {
 // that publishes thousands of mounts per minute we'd want a shared
 // pool ; loom-server's compile rate is well under that.
 func publishCubeFSMount(ctx context.Context, vmID string, mount pod.ShareMount) error {
-	nc, err := nats.Connect(natsURL(),
+	nc, err := nats.Connect(natsURL(), append([]nats.Option{
 		nats.Name("weft-loom-server-dispatch"),
-		nats.Timeout(5*time.Second),
-		nats.ReconnectWait(1*time.Second),
+		nats.Timeout(5 * time.Second),
+		nats.ReconnectWait(1 * time.Second),
 		nats.MaxReconnects(3),
-	)
+	}, natsbroker.ClientOptions()...)...)
 	if err != nil {
 		return fmt.Errorf("nats connect %s: %w", natsURL(), err)
 	}

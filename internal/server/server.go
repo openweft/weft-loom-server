@@ -192,9 +192,13 @@ func New(opts Options) (*Server, error) {
 		if qemuProv.NATSURL == "" && !workspace.EmbeddedNATSDisabled() {
 			broker, brokerErr := natsbroker.Start(natsbroker.Options{})
 			if brokerErr != nil {
-				opts.Logger.Warn("embedded nats: start failed", "err", brokerErr)
+				opts.Logger.Error("embedded nats: not started", "err", brokerErr)
 			} else {
-				opts.Logger.Info("embedded nats: started (for QEMU guest)", "url", broker.URL)
+				logEmbeddedNATS(opts.Logger, broker, "for QEMU guest")
+				qemuProv.GuestAuth = func(vmID string) (string, string, func(), error) {
+					u, p, err := broker.AddGuest(vmID)
+					return u, p, func() { broker.RemoveGuest(vmID) }, err
+				}
 				// loom-server → 127.0.0.1:4222 (broker.URL).
 				// guest agent → 10.0.2.2:4222 (SLIRP gateway →
 				// host loopback). Distinct strings for the same
@@ -207,7 +211,7 @@ func New(opts Options) (*Server, error) {
 				// boot. Dev uses backend=virtio9p (observability only),
 				// prod uses backend=cubefs (agent's mounts.Subscriber
 				// calls cfs-client).
-				if nc, ncErr := nats.Connect(broker.URL); ncErr == nil {
+				if nc, ncErr := nats.Connect(broker.URL, natsbroker.ClientOptions()...); ncErr == nil {
 					s.shares = shares.New(nc)
 				} else {
 					opts.Logger.Warn("share publisher: nats.Connect failed", "err", ncErr)
@@ -230,9 +234,9 @@ func New(opts Options) (*Server, error) {
 	if prov.NATSURL == "" && !workspace.EmbeddedNATSDisabled() {
 		broker, brokerErr := natsbroker.Start(natsbroker.Options{})
 		if brokerErr != nil {
-			opts.Logger.Warn("embedded nats: start failed — workspace VM disabled", "err", brokerErr)
+			opts.Logger.Error("embedded nats: not started — workspace VM disabled", "err", brokerErr)
 		} else {
-			opts.Logger.Info("embedded nats: started", "url", broker.URL)
+			logEmbeddedNATS(opts.Logger, broker, "dev")
 			prov.SetNATSURL(broker.URL)
 			s.natsBroker = broker
 			// When the broker is local + embedded, spin up the

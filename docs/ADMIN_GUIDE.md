@@ -18,6 +18,9 @@ secrets.
 | `WEFT_LOOM_PUBLIC_URL`                | derived from `Host` | Base URL used when minting public-share links + email bodies.          |
 | `WEFT_NATS_URL`                       | empty → embedded   | NATS broker URL. Unset = embedded broker (dev mono-binary).            |
 | `WEFT_LOOM_DISABLE_EMBEDDED_NATS`     | unset              | Set to `1` to refuse embedded-NATS fallback (forces external broker).  |
+| `WEFT_LOOM_NATS_NKEY_SEED_FROM`       | unset              | Embedded broker: nkey user seed of loom-server, by reference (below). Also used to authenticate to an external broker that trusts its public key. |
+| `WEFT_LOOM_NATS_ALLOW_NOAUTH`         | unset              | `1` lets the embedded broker start with no authorization. Development only. |
+| `WEFT_LOOM_NATS_STORE_DIR`            | `$STATE_DIRECTORY/nats`, else `<user cache>/weft-loom/nats` | JetStream store of the embedded broker; created or tightened to mode 0700, never under `/tmp`. |
 | `WEFT_AGENT_URL`                      | unset              | weft-agent gRPC endpoint for prod microVM dispatch.                    |
 | `WEFT_LOOM_BACKEND`                   | unset              | `microvm` forces real microVM compile (requires weft CLI on PATH).     |
 | `WEFT_LOOM_SHELL`                     | `bash`             | Default shell exposed to the in-editor terminal.                       |
@@ -71,6 +74,7 @@ mention POSTs. Check effective config via `GET /api/admin/email/config`
 | `WEFT_CUBEFS_ACCESS_KEY`  | `WEFT_CUBEFS_ACCESS_KEY_FROM`  | CubeFS access key published to the guest mounts |
 | `ANTHROPIC_API_KEY`       | `ANTHROPIC_API_KEY_FROM`       | Anthropic key for the AI chat panel             |
 | `WEFT_LOOM_SMTP_PASS`     | `WEFT_LOOM_SMTP_PASS_FROM`     | SMTP PLAIN auth password                        |
+| `WEFT_LOOM_NATS_NKEY_SEED` | `WEFT_LOOM_NATS_NKEY_SEED_FROM` | nkey user seed (`SU...`) for the NATS broker; reference only, no plaintext form is advised |
 
 Set `<VAR>_FROM` to a [secretsource](https://github.com/go-authn/secretsource)
 reference (`systemd-creds:NAME`, `keychain:…`, `keepassxc:…`, `file:/path`).

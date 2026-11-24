@@ -117,8 +117,13 @@ cat > config.dev.hcl <<EOF
 listen       = ":8080"
 storage_root = "./tmp-projects"
 EOF
-go run ./cmd/weft-loom serve --config ./config.dev.hcl
+WEFT_LOOM_NATS_ALLOW_NOAUTH=1 go run ./cmd/weft-loom serve --config ./config.dev.hcl
 ```
+
+The embedded NATS broker requires authorization: give loom-server an nkey user
+seed by reference (`WEFT_LOOM_NATS_NKEY_SEED_FROM=<ref>`), or, for development
+only, set `WEFT_LOOM_NATS_ALLOW_NOAUTH=1` (logged as an error at start-up).
+See the admin guide.
 
 Open <http://localhost:8080>. Two browser tabs on the same project =
 collab editing. The SPA is embedded via `//go:embed` ; no Vite proxy

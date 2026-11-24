@@ -16,6 +16,7 @@ require (
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/nats-io/nats-server/v2 v2.14.2
 	github.com/nats-io/nats.go v1.52.0
+	github.com/nats-io/nkeys v0.4.16
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/openweft/weft-microvm-agent v0.0.0-00010101000000-000000000000
 	github.com/openweft/weft-microvm-init v0.2.4
@@ -58,7 +59,6 @@ require (
 	github.com/minio/highwayhash v1.0.4 // indirect
 	github.com/mitchellh/go-wordwrap v0.0.0-20150314170334-ad45545899c7 // indirect
 	github.com/nats-io/jwt/v2 v2.8.2 // indirect
-	github.com/nats-io/nkeys v0.4.16 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/pjbgf/sha1cd v0.6.0 // indirect
