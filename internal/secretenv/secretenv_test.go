@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -71,8 +73,36 @@ func TestUnresolvableRefNeverEchoesTheValue(t *testing.T) {
 	stub(t, func(string) ([]byte, error) { return nil, errors.New("no such credential") })
 	t.Setenv("X_KEY_FROM", "systemd-creds:"+sentinel)
 	err := Resolve(context.Background(), nil, "X_KEY")
-	if err == nil || !strings.Contains(err.Error(), "X_KEY_FROM") {
+	if err == nil || !strings.Contains(err.Error(), "X_KEY_FROM") || !strings.Contains(err.Error(), "no such credential") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestRealSecretsourceFileAndMissingFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("secretsource file: refuses a temp file whose inherited DACL grants a non-owner")
+	}
+	reset()
+	t.Cleanup(reset)
+	dir := t.TempDir()
+	p := filepath.Join(dir, "key")
+	if err := os.WriteFile(p, []byte(sentinel+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("X_KEY_FROM", "file:"+p)
+	if err := Resolve(context.Background(), nil, "X_KEY"); err != nil {
+		t.Fatal(err)
+	}
+	if Get("X_KEY") != sentinel {
+		t.Fatalf("Get = %q", Get("X_KEY"))
+	}
+	t.Setenv("Z_KEY_FROM", "file:"+filepath.Join(dir, "absent"))
+	err := Resolve(context.Background(), nil, "Z_KEY")
+	if err == nil || !strings.Contains(err.Error(), "Z_KEY_FROM") {
+		t.Fatalf("err = %v", err)
+	}
+	if Get("Z_KEY") != "" {
+		t.Fatal("a failed reference stored a value")
 	}
 }
 
