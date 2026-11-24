@@ -162,6 +162,11 @@ func proveCallout(t *testing.T, url, calloutSeed string) {
 		t.Fatalf("guest A got %v, %v", m, err)
 	}
 
+	// A payload that is not a server request gets no answer.
+	if _, err := loom.Request(calloutSubject, []byte("garbage"), 500*time.Millisecond); err == nil {
+		t.Fatal("garbage request was answered")
+	}
+
 	// Revoked: no new connection.
 	co.RemoveGuest("vmA")
 	if nc, err := nats.Connect(url, nats.UserInfo(userA, passA), nats.Timeout(2*time.Second)); err == nil {
@@ -171,13 +176,48 @@ func proveCallout(t *testing.T, url, calloutSeed string) {
 }
 
 func TestStartCalloutRejectsBadSeeds(t *testing.T) {
-	if _, err := StartCallout("nats://127.0.0.1:1", "garbage", ""); err == nil {
-		t.Fatal("garbage seed accepted")
-	}
 	us, _ := nkeys.CreateUser()
-	seed, _ := us.Seed()
-	if _, err := StartCallout("nats://127.0.0.1:1", string(seed), ""); err == nil {
-		t.Fatal("user seed accepted as a callout seed")
+	useed, _ := us.Seed()
+	for _, seed := range []string{"garbage", string(useed)} {
+		_, err := StartCallout("nats://127.0.0.1:1", seed, "")
+		if err == nil || !strings.Contains(err.Error(), "account seed") {
+			t.Fatalf("seed %.4s: err = %v, want the account-seed refusal", seed, err)
+		}
+	}
+}
+
+func TestStartCalloutNeedsABroker(t *testing.T) {
+	as, _ := nkeys.CreateAccount()
+	seed, _ := as.Seed()
+	_, err := StartCallout("nats://127.0.0.1:1", string(seed), "")
+	if err == nil || !strings.Contains(err.Error(), "connect") {
+		t.Fatalf("err = %v, want a connect error", err)
+	}
+}
+
+// A broker without JetStream cannot hold the streams: refused, not ignored.
+func TestStartCalloutNeedsJetStream(t *testing.T) {
+	us, _ := nkeys.CreateUser()
+	useed, _ := us.Seed()
+	upub, _ := us.PublicKey()
+	as, _ := nkeys.CreateAccount()
+	aseed, _ := as.Seed()
+	srv, err := server.NewServer(&server.Options{
+		Host: "127.0.0.1", Port: -1, NoSigs: true,
+		Nkeys: []*server.NkeyUser{{Nkey: upub}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Start()
+	if !srv.ReadyForConnections(5 * time.Second) {
+		t.Fatal("broker not ready")
+	}
+	defer srv.Shutdown()
+	t.Setenv(EnvSeed, string(useed))
+	_, err = StartCallout(srv.ClientURL(), string(aseed), "")
+	if err == nil || !strings.Contains(err.Error(), "stream") {
+		t.Fatalf("err = %v, want a stream error", err)
 	}
 }
 

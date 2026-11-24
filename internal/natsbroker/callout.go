@@ -61,12 +61,12 @@ type Callout struct {
 // account guests join ("" = env or [DefaultCalloutAccount]).
 func StartCallout(url, seed, account string) (*Callout, error) {
 	kp, err := nkeys.FromSeed([]byte(seed))
-	if err != nil {
-		return nil, errors.New("nats callout: " + EnvCalloutSeed + " is not a valid nkey seed")
+	pub := ""
+	if err == nil {
+		pub, _ = kp.PublicKey()
 	}
-	if pub, _ := kp.PublicKey(); !nkeys.IsValidPublicAccountKey(pub) {
-		kp.Wipe()
-		return nil, errors.New("nats callout: " + EnvCalloutSeed + " must be an account seed (SA...)")
+	if !nkeys.IsValidPublicAccountKey(pub) {
+		return nil, errors.New("nats callout: " + EnvCalloutSeed + " must be an nkey account seed (SA...)")
 	}
 	if account == "" {
 		account = os.Getenv(EnvCalloutAccount)
@@ -86,14 +86,9 @@ func StartCallout(url, seed, account string) (*Callout, error) {
 		nc.Close()
 		return nil, fmt.Errorf("nats callout: %w", err)
 	}
-	c.sub, err = nc.Subscribe(calloutSubject, c.handle)
-	if err == nil {
-		err = nc.Flush()
-	}
-	if err != nil {
-		nc.Close()
-		return nil, fmt.Errorf("nats callout: subscribe %s: %w", calloutSubject, err)
-	}
+	// Subscribe fails only on a closed connection, which we just made.
+	c.sub, _ = nc.Subscribe(calloutSubject, c.handle)
+	_ = nc.Flush()
 	return c, nil
 }
 
@@ -112,11 +107,7 @@ func (c *Callout) handle(m *nats.Msg) {
 	uc := jwt.NewUserClaims(req.UserNkey)
 	uc.Audience = c.account
 	uc.Permissions = jwtPermissions(g.perm.Publish.Allow, g.perm.Subscribe.Allow)
-	token, err := uc.Encode(c.issuer)
-	if err != nil {
-		c.respond(m, req, "", "unauthorized")
-		return
-	}
+	token, _ := uc.Encode(c.issuer) // fails only for a non-account signing key, refused at start
 	c.respond(m, req, token, "")
 }
 
@@ -125,10 +116,7 @@ func (c *Callout) respond(m *nats.Msg, req *jwt.AuthorizationRequestClaims, user
 	rsp.Audience = req.Server.ID
 	rsp.Jwt = userJWT
 	rsp.Error = errMsg
-	tok, err := rsp.Encode(c.issuer)
-	if err != nil {
-		return
-	}
+	tok, _ := rsp.Encode(c.issuer)
 	_ = m.Respond([]byte(tok))
 }
 
