@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/openweft/weft-loom-server/internal/config"
 )
@@ -13,7 +14,10 @@ import (
 func TestServeRefusesBothFormsOfASecret(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "plain")
 	t.Setenv("ANTHROPIC_API_KEY_FROM", "file:/nonexistent")
-	err := serve(context.Background(), config.Config{StorageRoot: t.TempDir()})
+	// Bounded: were the refusal missing, serve would go on to run the server.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := serve(ctx, config.Config{StorageRoot: t.TempDir()})
 	if err == nil || !strings.Contains(err.Error(), "secrets:") || strings.Contains(err.Error(), "plain") {
 		t.Fatalf("err = %v", err)
 	}
