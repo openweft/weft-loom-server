@@ -156,7 +156,7 @@ func sharesCubeFSFromEnv() *shares.CubeFSConfig {
 		Volume:    vol,
 		Masters:   masters,
 		Owner:     os.Getenv("WEFT_CUBEFS_OWNER"),
-		AccessKey: os.Getenv("WEFT_CUBEFS_ACCESS_KEY"),
+		AccessKey: secretenv.Get("WEFT_CUBEFS_ACCESS_KEY"),
 		SecretKey: secretenv.Get("WEFT_CUBEFS_SECRET_KEY"),
 	}
 }

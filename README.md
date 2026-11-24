@@ -143,7 +143,7 @@ services:
       WEFT_LOOM_SMTP_HOST:    smtp.example.org
       WEFT_LOOM_SMTP_PORT:    "587"
       WEFT_LOOM_SMTP_USER:    notify@example.org
-      WEFT_LOOM_SMTP_PASS:    ${SMTP_PASS}
+      WEFT_LOOM_SMTP_PASS_FROM: file:/run/secrets/smtp_pass
       WEFT_LOOM_SMTP_FROM:    "weft-loom <notify@example.org>"
     volumes:
       - loom-data:/var/lib/weft-loom
@@ -206,7 +206,7 @@ weft_agent_socket = "/run/weft-agent.sock"
 Most runtime knobs (SMTP, NATS, workspace backend, LSP overrides) are
 env vars — see [`docs/ADMIN_GUIDE.md`](docs/ADMIN_GUIDE.md).
 
-Secrets (`WEFT_CUBEFS_SECRET_KEY`, `ANTHROPIC_API_KEY`) are taken by
+Secrets (`WEFT_CUBEFS_SECRET_KEY`, `WEFT_CUBEFS_ACCESS_KEY`, `ANTHROPIC_API_KEY`, `WEFT_LOOM_SMTP_PASS`) are taken by
 reference: set `<VAR>_FROM=systemd-creds:<name>` (or `keychain:`,
 `keepassxc:`, `file:`) instead of the plaintext variable, which is
 deprecated and warns on stderr.

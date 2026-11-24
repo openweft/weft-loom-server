@@ -68,7 +68,9 @@ mention POSTs. Check effective config via `GET /api/admin/email/config`
 | Variable                  | Reference variable             | Purpose                                         |
 | ------------------------- | ------------------------------ | ----------------------------------------------- |
 | `WEFT_CUBEFS_SECRET_KEY`  | `WEFT_CUBEFS_SECRET_KEY_FROM`  | CubeFS secret key published to the guest mounts |
+| `WEFT_CUBEFS_ACCESS_KEY`  | `WEFT_CUBEFS_ACCESS_KEY_FROM`  | CubeFS access key published to the guest mounts |
 | `ANTHROPIC_API_KEY`       | `ANTHROPIC_API_KEY_FROM`       | Anthropic key for the AI chat panel             |
+| `WEFT_LOOM_SMTP_PASS`     | `WEFT_LOOM_SMTP_PASS_FROM`     | SMTP PLAIN auth password                        |
 
 Set `<VAR>_FROM` to a [secretsource](https://github.com/go-authn/secretsource)
 reference (`systemd-creds:NAME`, `keychain:…`, `keepassxc:…`, `file:/path`).

@@ -97,7 +97,7 @@ func serve(ctx context.Context, cfg config.Config) error {
 	// Secrets given as NAME_FROM=<secretsource ref> (or, deprecated, as
 	// plaintext NAME) are read once and removed from the environment so
 	// children (compilers, shells) do not inherit them.
-	if err := secretenv.Resolve(ctx, os.Stderr, "WEFT_CUBEFS_SECRET_KEY", "ANTHROPIC_API_KEY"); err != nil {
+	if err := secretenv.Resolve(ctx, os.Stderr, "WEFT_CUBEFS_SECRET_KEY", "WEFT_CUBEFS_ACCESS_KEY", "ANTHROPIC_API_KEY", "WEFT_LOOM_SMTP_PASS"); err != nil {
 		return fmt.Errorf("secrets: %w", err)
 	}
 
@@ -135,7 +135,7 @@ func serve(ctx context.Context, cfg config.Config) error {
 		SMTPHost: os.Getenv("WEFT_LOOM_SMTP_HOST"),
 		SMTPPort: smtpPort,
 		Username: os.Getenv("WEFT_LOOM_SMTP_USER"),
-		Password: os.Getenv("WEFT_LOOM_SMTP_PASS"),
+		Password: secretenv.Get("WEFT_LOOM_SMTP_PASS"),
 		From:     os.Getenv("WEFT_LOOM_SMTP_FROM"),
 	}, log)
 
