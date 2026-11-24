@@ -276,10 +276,19 @@ func GuestPermissions(vmID string) *server.Permissions {
 		"weft.mounts." + vmID,
 		"weft.containers." + vmID,
 		"weft.exec." + vmID + ".>",
+		// Core-NATS subjects the guest agent subscribes to when the
+		// matching feature flag is on; each is the VM's own subject.
+		"weft.mesh." + vmID,
+		"weft.firewall." + vmID,
+		"weft.properties." + vmID,
+		"weft.sshkeys." + vmID,
 		"_INBOX.>",
 	}
 	pub := []string{
 		"weft.heartbeat." + vmID,
+		// Firewall status reports and the agent's slog-over-NATS lines.
+		"weft.firewall." + vmID + ".status",
+		"weft.microvm-agent." + vmID + ".log",
 		"weft.agent." + vmID + ".>",
 		"weft.exec." + vmID + ".>",
 		"$JS.API.STREAM.INFO.weft-mounts",
