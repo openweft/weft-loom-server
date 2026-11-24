@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## v0.4.1
+
+### Added
+- `WEFT_LOOM_SMTP_PASS_FROM` and `WEFT_CUBEFS_ACCESS_KEY_FROM`, same rules as
+  below; the plaintext variables are deprecated and warn.
+
+## v0.4.0
 
 ### Added
 - `WEFT_CUBEFS_SECRET_KEY_FROM` and `ANTHROPIC_API_KEY_FROM`: take the secret
