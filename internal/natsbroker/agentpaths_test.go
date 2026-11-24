@@ -82,7 +82,7 @@ func TestAgentJetStreamPathsUnderGuestCredential(t *testing.T) {
 		t.Fatalf("mounts subscriber: %v", err)
 	}
 	t.Cleanup(func() { _ = msub.Unsubscribe() })
-	csub, err := containers.NewSubscriber(nc, vm, containers.NewStubRuntime(), logger).Start(context.Background())
+	csub, err := containers.NewSubscriber(nc, vm, noRuntime{}, logger).Start(context.Background())
 	if err != nil {
 		t.Errorf("containers subscriber: %v", err)
 	} else {
@@ -153,6 +153,15 @@ func TestAgentCoreSubjectsUnderGuestCredential(t *testing.T) {
 		t.Errorf("permissions violation: %s", v)
 	}
 }
+
+// noRuntime is a containers.Runtime that runs nothing (the package's own
+// stub is not built on linux).
+type noRuntime struct{}
+
+func (noRuntime) Pull(context.Context, string) error                 { return nil }
+func (noRuntime) Start(context.Context, pod.WorkloadContainer) error { return nil }
+func (noRuntime) Stop(context.Context, string) error                 { return nil }
+func (noRuntime) Running(context.Context) ([]string, error)          { return nil, nil }
 
 type lockedWriter struct {
 	mu *sync.Mutex
